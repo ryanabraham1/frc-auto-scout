@@ -87,6 +87,15 @@ def cmd_identify(a):
     print(r["identity"], r["identity_conf"])
 
 
+def cmd_aux(a):
+    from . import db
+    from .pipeline import RESULTS_DIR, aux_pass
+
+    r = aux_pass(a.match_key, a.video)
+    db.save_result(db.connect(), r, str(RESULTS_DIR / f"{a.match_key}.json"))
+    print(len(r.get("aux_reads", [])), "close-up reads")
+
+
 def cmd_calibrate(a):
     """Save a reference frame for an event and print the dashboard link for clicking landmarks."""
     import cv2
@@ -166,6 +175,8 @@ def main(argv=None):
     s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_recollect)
     s = sub.add_parser("identify", help="dedicated bumper-OCR identity pass over a processed match")
     s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_identify)
+    s = sub.add_parser("aux", help="read close-up camera views (e.g. reef cams) for a processed match")
+    s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_aux)
     s = sub.add_parser("calibrate"); s.add_argument("match_key"); s.add_argument("--video")
     s.add_argument("--t", type=float); s.set_defaults(f=cmd_calibrate)
     s = sub.add_parser("serve"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8000)

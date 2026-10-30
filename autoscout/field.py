@@ -75,6 +75,9 @@ class Calibration:
     frame_size: tuple[int, int] = (1920, 1080)
     reference: str | None = None  # path to reference frame (for per-video alignment)
     overlay: dict | None = None  # cached OverlayLayout for this event
+    # Extra broadcast views (picture-in-picture close-ups), keyed by the field element they show,
+    # e.g. {"blue_reef": [x, y, w, h]}. Used to read which robot is at that element.
+    aux_views: dict | None = None
     H: np.ndarray = field(default=None, repr=False)
 
     def __post_init__(self):
@@ -154,6 +157,8 @@ class Calibration:
             "points": {k: [round(float(v[0]), 1), round(float(v[1]), 1)] for k, v in self.points.items()},
             "reference": self.reference, "overlay": self.overlay,
         }
+        if self.aux_views:
+            d["aux_views"] = {k: [int(v) for v in r] for k, r in self.aux_views.items()}
         p.write_text(yaml.safe_dump(d, sort_keys=False))
         return p
 
@@ -167,7 +172,7 @@ class Calibration:
             event_key=d["event_key"], year=d["year"], view=tuple(d["view"]),
             points={k: tuple(v) for k, v in d["points"].items()},
             frame_size=tuple(d.get("frame_size", (1920, 1080))),
-            reference=d.get("reference"), overlay=d.get("overlay"),
+            reference=d.get("reference"), overlay=d.get("overlay"), aux_views=d.get("aux_views"),
         )
 
 

@@ -41,3 +41,6 @@ overlay:
   frame_size:
   - 1920
   - 1080
+aux_views:
+  blue_reef: [0, 645, 960, 370]
+  red_reef: [960, 645, 960, 370]

@@ -240,6 +240,9 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
         log(f"identity OCR: {len(evidence.timed)} matched reads")
     ctx = games.MatchContext(match=m, field=fm, cal=cal, clock=clock, timeline=tl, tracks=tracks,
                              identity={}, identity_conf={}, launches=launches)
+    ctx.aux_reads = collect_aux_reads(video, base_cal, tl, {"red": m.red, "blue": m.blue})
+    if ctx.aux_reads:
+        log(f"close-up views: {len(ctx.aux_reads)} team reads")
     if hasattr(plugin, "identity_evidence"):
         plugin.identity_evidence(ctx, evidence)
     ov = overrides_for(match_key)
@@ -271,6 +274,7 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
                        for k, tr in tracks.items()},
         "identity_scores": {f"{k[0]}:{k[1]}": round(v, 3) for k, v in evidence.score.items()},
         "identity_timed": evidence.timed,
+        "aux_reads": ctx.aux_reads,
         "identity_timeline": ctx.identity_tl,
         "calibration": {"view": list(cal.view), "points": {k: list(map(float, v)) for k, v in cal.points.items()}},
         "detector": str(det.weights.name),
@@ -327,6 +331,7 @@ def reanalyze(match_key: str, tba: TBA | None = None) -> dict:
                               rising=d.get("rising", True)) for d in v]
     ctx = games.MatchContext(match=m, field=plugin.field, cal=cal, clock=clock, timeline=tl, tracks=tracks,
                              identity={}, identity_conf={}, launches=launches)
+    ctx.aux_reads = [tuple(x) for x in old.get("aux_reads", [])]
     evidence = IdentityEvidence()
     for key, val in old.get("identity_scores", {}).items():
         slot, team = key.split(":")
@@ -408,5 +413,55 @@ def identity_pass(match_key: str, video_path: str, every: float = 1.5, budget: i
     old["identity_scores"] = {f"{k[0]}:{k[1]}": round(v, 3) for k, v in ev.score.items()}
     old["identity_timed"] = ev.timed
     old["identity_notes"] = ev.notes[-40:]
+    (RESULTS_DIR / f"{match_key}.json").write_text(json.dumps(old, default=_json_default))
+    return reanalyze(match_key)
+
+
+def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict,
+                      offsets=(4.0, 2.5, 1.0)) -> list:
+    """Read bumper numbers in the close-up views (e.g. reef cams) shortly before every score jump.
+
+    Returns [(t, view_name, team, conf)] for reads matching a team in the match. A close-up of the
+    scoring element shows who is scoring even when the wide shot has them hidden behind it.
+    """
+    from . import ocr
+
+    views = base_cal.aux_views or {}
+    if not views or timeline is None:
+        return []
+    sx = video.width / base_cal.frame_size[0]
+    sy = video.height / base_cal.frame_size[1]
+    all_teams = {str(t): t for a in ("red", "blue") for t in teams[a]}
+    out, done = [], set()
+    for alliance in ("red", "blue"):
+        for t, d in timeline.deltas(alliance):
+            for name, rect in views.items():
+                if not name.startswith(alliance):
+                    continue
+                for off in offsets:
+                    tt = round(t - off, 1)
+                    if (tt, name) in done:
+                        continue
+                    done.add((tt, name))
+                    frame = video.frame_at(tt)
+                    if frame is None:
+                        continue
+                    x, y, w, h = [int(v) for v in (rect[0] * sx, rect[1] * sy, rect[2] * sx, rect[3] * sy)]
+                    for _, txt, conf in ocr.reader().readtext(frame[y: y + h, x: x + w], allowlist="0123456789"):
+                        if txt in all_teams and conf > 0.3:
+                            out.append((tt, name, all_teams[txt], round(float(conf), 2)))
+    return out
+
+
+def aux_pass(match_key: str, video_path: str) -> dict:
+    """Collect close-up-view reads for an already processed match, then reanalyze."""
+    from .overlay import ScoreSample, ScoreTimeline
+
+    old = json.loads((RESULTS_DIR / f"{match_key}.json").read_text())
+    base = Calibration.load(old["event_key"])
+    tl_d = old["timeline"]
+    samples = [ScoreSample(t, tm, b, r) for t, tm, b, r in zip(tl_d["t"], tl_d["timer"], tl_d["blue"], tl_d["red"])]
+    tl = ScoreTimeline(samples=samples, clock=None, blue=np.array(tl_d["blue"], float), red=np.array(tl_d["red"], float))
+    old["aux_reads"] = collect_aux_reads(Video(video_path), base, tl, {"red": old["red"], "blue": old["blue"]})
     (RESULTS_DIR / f"{match_key}.json").write_text(json.dumps(old, default=_json_default))
     return reanalyze(match_key)

@@ -36,6 +36,15 @@ class MatchContext:
     launches: dict[str, list]  # piece name -> [Launch]
     notes: list[str] = field(default_factory=list)
     identity_tl: dict[str, list] = field(default_factory=dict)  # slot -> [(t0, t1, team)]
+    aux_reads: list = field(default_factory=list)  # [(t, view, team, conf)] from close-up views
+
+    def seen_in_view(self, view: str, t0: float, t1: float) -> dict[int, float]:
+        """Teams read in a close-up view (e.g. 'blue_reef') during [t0, t1] -> summed confidence."""
+        out: dict[int, float] = {}
+        for t, v, team, conf in self.aux_reads:
+            if v == view and t0 <= t <= t1:
+                out[team] = out.get(team, 0.0) + conf
+        return out
 
     def team_at(self, slot: str, t: float) -> int | None:
         """Team in a slot at video time t (slots can swap robots during collisions)."""

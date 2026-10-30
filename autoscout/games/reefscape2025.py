@@ -110,6 +110,19 @@ class Reefscape2025(GamePlugin):
                         slot = ctx.slot_of(team, t)
                         if slot:
                             near[team] = self._elem_dists(ctx, slot, t - LOOKBACK, t, a)
+                        else:
+                            near[team] = {"reef": 9e9, "net": 9e9, "processor": 9e9}
+                    # The reef close-up camera shows who is actually at the reef (the wide shot often
+                    # has them hidden behind it): those teams are at the reef, others are not.
+                    seen = ctx.seen_in_view(f"{a}_reef", t - LOOKBACK, t + 0.5)
+                    seen = {k: v for k, v in seen.items() if k in teams[a]}
+                    if seen:
+                        top = max(seen.values())
+                        for team in teams[a]:
+                            if seen.get(team, 0) >= 0.5 * top:
+                                near[team]["reef"] = 0.0
+                            else:
+                                near[team]["reef"] = max(near[team]["reef"], NEAR["reef"] + 0.6)
                     ev = self._explain(d, vals, near, extra)
                     if ev is None:
                         events.append({"t": round(t, 2), "alliance": a, "phase": phase, "points": d, "kind": "unexplained"})
