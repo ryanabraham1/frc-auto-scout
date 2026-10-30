@@ -15,6 +15,7 @@ def reader():
     from . import config
 
     warnings.filterwarnings("ignore")
+    # EasyOCR's GPU path is CUDA-only; on Apple silicon it runs on the (fast) CPU cores.
     return easyocr.Reader(["en"], gpu=config.device() == "cuda", verbose=False)
 
 
