@@ -124,6 +124,11 @@ class Calibration:
         a = self.to_image([f, f + [0.5, 0], f + [0, 0.5]])
         return float((np.linalg.norm(a[1] - a[0]) + np.linalg.norm(a[2] - a[0])))
 
+    def px_per_meter_x(self, field_pt) -> float:
+        """Image pixels per meter along the field's length axis at a field point."""
+        a = self.to_image([field_pt, (field_pt[0] + 0.5, field_pt[1])])
+        return float(np.linalg.norm(a[1] - a[0]) * 2)
+
     def field_polygon_image(self, fm: FieldModel, margin: float = 0.0) -> np.ndarray:
         m = margin
         corners = [(-m, -m), (fm.length + m, -m), (fm.length + m, fm.width + m), (-m, fm.width + m)]

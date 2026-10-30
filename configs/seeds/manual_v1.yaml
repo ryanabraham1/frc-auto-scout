@@ -7,3 +7,5 @@
 - {video: data/videos1080/Y1PRaXCfcgI.mp4, event: 2026dal, t: 170, robots: [[blue, 55, 310, 200, 410], [red, 1525, 285, 1625, 375], [red, 1835, 410, 1920, 480], [red, 1710, 465, 1850, 595]]}
 - {video: data/videos1080/j5lCuybttuY.mp4, event: 2026cosp, t: 90, robots: [[red, 1040, 380, 1200, 500], [red, 1600, 420, 1780, 530], [blue, 300, 410, 450, 535]]}
 - {video: data/videos1080/uC-szFO38xg.mp4, event: 2025mndu2, t: 80, robots: [[red, 1210, 370, 1320, 515]]}
+- {video: data/videos1080/j30ADq0xSSc.mp4, event: 2026dal, t: 90, robots: [[blue, 680, 470, 820, 600], [red, 1490, 505, 1610, 595], [red, 1720, 520, 1850, 605], [red, 1540, 395, 1630, 465]]}
+- {video: data/videos1080/u_3vEnx8aRw.mp4, event: 2026dal, t: 70, robots: [[red, 1045, 350, 1170, 435], [blue, 290, 330, 410, 410], [red, 115, 480, 290, 555], [blue, 1695, 560, 1800, 642]]}

@@ -59,6 +59,34 @@ def cmd_reanalyze(a):
         print("reanalyzed", k)
 
 
+def cmd_relaunch(a):
+    from . import db
+    from .pipeline import RESULTS_DIR, relaunch
+
+    con = db.connect()
+    keys = [a.key] if "_" in a.key else [r["match_key"] for r in con.execute(
+        "SELECT match_key FROM matches WHERE event_key=? AND status='done'", (a.key,))]
+    for k in keys:
+        r = relaunch(k)
+        db.save_result(con, r, str(RESULTS_DIR / f"{k}.json"))
+        print("relaunched", k, r.get("launch_stats"))
+
+
+def cmd_recollect(a):
+    from .pipeline import collect_blobs
+
+    collect_blobs(a.match_key, a.video)
+
+
+def cmd_identify(a):
+    from . import db
+    from .pipeline import RESULTS_DIR, identity_pass
+
+    r = identity_pass(a.match_key, a.video)
+    db.save_result(db.connect(), r, str(RESULTS_DIR / f"{a.match_key}.json"))
+    print(r["identity"], r["identity_conf"])
+
+
 def cmd_calibrate(a):
     """Save a reference frame for an event and print the dashboard link for clicking landmarks."""
     import cv2
@@ -132,6 +160,12 @@ def main(argv=None):
     s.add_argument("--weights"); s.set_defaults(f=cmd_run_event)
     s = sub.add_parser("reanalyze", help="recompute stats from saved observations (match or event key)")
     s.add_argument("key"); s.set_defaults(f=cmd_reanalyze)
+    s = sub.add_parser("relaunch", help="re-extract launches from saved blobs, then reanalyze")
+    s.add_argument("key"); s.set_defaults(f=cmd_relaunch)
+    s = sub.add_parser("recollect", help="re-collect airborne-piece blobs from video (no robot detection)")
+    s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_recollect)
+    s = sub.add_parser("identify", help="dedicated bumper-OCR identity pass over a processed match")
+    s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_identify)
     s = sub.add_parser("calibrate"); s.add_argument("match_key"); s.add_argument("--video")
     s.add_argument("--t", type=float); s.set_defaults(f=cmd_calibrate)
     s = sub.add_parser("serve"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8000)

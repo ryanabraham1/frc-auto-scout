@@ -138,3 +138,75 @@ def test_score_jump_prefers_single_action():
     assert Reefscape2025._explain(4, TELE_VALUES, near, {"foul_minor": 2}) == [(1, "L3")]
     near = {1: {"reef": 4.0, "net": 0.0, "processor": 5.0}}
     assert Reefscape2025._explain(4, TELE_VALUES, near) == [(1, "net")]
+
+
+# ---- launch extraction v2 (offline, physics-validated) --------------------------------------
+from autoscout.vision.launches import LaunchExtractor  # noqa: E402
+
+
+def _extractor(targets=None):
+    cal = houston_cal()
+    view = (0, 0, 1920, 720)
+    return LaunchExtractor(view, cal, FieldModel.load(2026), targets=targets)
+
+
+def _blobs(pts, fps=30, d=None, ex=None):
+    """Synthetic per-frame blobs for a list of image points (full piece-sized blobs)."""
+    rows = []
+    for i, (x, y) in enumerate(pts):
+        dd = d or float(ex.ball_diam_px(np.array([x]), np.array([y]))[0])
+        rows.append((i / fps, x, y, np.pi * (dd / 2) ** 2, dd * 1.4, dd))
+    return np.array(rows)
+
+
+def _arc(x0=900, y0=600, vx=250, vy=-700, g=1100, dur=1.2, fps=30):
+    t = np.arange(0, dur, 1 / fps)
+    return [(x0 + vx * s, y0 + vy * s + 0.5 * g * s * s) for s in t]
+
+
+def test_v2_airborne_arc_is_one_launch():
+    ex = _extractor()
+    L = ex.extract(_blobs(_arc(), ex=ex))
+    assert len(L) == 1 and L[0].n_pieces == 1
+
+
+def test_v2_pushed_or_rolling_pieces_are_not_launches():
+    ex = _extractor()
+    t = np.arange(0, 1.5, 1 / 30)
+    pushed = [(1000 + 20 * s, 640 - 120 * s) for s in t]  # bulldozed away from the camera
+    rolling = [(700 + 300 * s, 560 + 3 * np.sin(9 * s)) for s in t]
+    B = np.vstack([_blobs(pushed, ex=ex), _blobs(rolling, ex=ex)])
+    assert ex.extract(B) == []
+
+
+def test_v2_slivers_of_slow_pieces_are_filtered():
+    ex = _extractor()
+    B = _blobs(_arc(), ex=ex)
+    B[:, 3] *= 0.15  # crescent-shaped partial blobs (a piece moving less than its size per frame)
+    B[:, 5] *= 0.3
+    assert ex.extract(B) == []
+
+
+def test_v2_bounce_is_not_a_new_launch():
+    ex = _extractor()
+    fall = _arc(x0=700, y0=300, vx=150, vy=200, g=1100, dur=0.5)
+    bounce_start = fall[-1]
+    bounce = _arc(x0=bounce_start[0] + 3, y0=bounce_start[1], vx=120, vy=-350, g=1100, dur=0.5)
+    B = np.vstack([_blobs(fall, ex=ex), _blobs(bounce, ex=ex)])
+    B[len(fall):, 0] += len(fall) / 30 + 0.03  # bounce starts right after the landing
+    L = ex.extract(B)
+    assert len(L) <= 1
+
+
+def test_v2_made_vs_lob_over_target():
+    # a piece that vanishes at the opening is a make; one that flies past it is not
+    t = np.arange(0, 2.0, 1 / 30)
+    arc = [(600 + 300 * s, 600 - 900 * s + 0.5 * 1100 * s * s) for s in t]
+    tgt_i = 45  # descending point on the arc, chosen as the "opening"
+    target = {"blue_hub": (arc[tgt_i][0], arc[tgt_i][1], 25.0)}
+    ex = _extractor(target)
+    made = ex.extract(_blobs(arc[: tgt_i + 3], ex=ex))
+    assert len(made) == 1 and made[0].target == "blue_hub"
+    ex = _extractor(target)
+    lob = ex.extract(_blobs(arc, ex=ex))
+    assert len(lob) == 1 and lob[0].target is None

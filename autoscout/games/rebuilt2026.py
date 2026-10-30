@@ -62,6 +62,7 @@ class Rebuilt2026(GamePlugin):
         {"key": "fuel_scored_auto", "label": "Auto fuel", "group": "Scoring"},
         {"key": "fuel_scored_teleop", "label": "Teleop fuel", "group": "Scoring"},
         {"key": "fuel_shot", "label": "Fuel shot (detected)", "group": "Scoring"},
+        {"key": "est_accuracy", "label": "Est. accuracy %", "group": "Scoring"},
         {"key": "inactive_shots", "label": "Shots at inactive hub", "group": "Scoring"},
         {"key": "fuel_fed", "label": "Fuel fed", "group": "Feeding"},
         {"key": "fuel_fed_raw", "label": "Fuel fed (detected)", "group": "Feeding"},
@@ -114,6 +115,8 @@ class Rebuilt2026(GamePlugin):
 
         events = []
         shots = defaultdict(lambda: defaultdict(float))  # team -> period -> pieces
+        made = defaultdict(lambda: defaultdict(float))  # team -> period -> pieces seen entering own hub
+        have_targets = any(getattr(L, "target", None) for L in ctx.launches.get("fuel", []))
         inactive = defaultdict(float)
         feeds = defaultdict(lambda: defaultdict(float))
         feed_opp = defaultdict(float)
@@ -121,8 +124,8 @@ class Rebuilt2026(GamePlugin):
         unattributed = 0.0
         for L in ctx.launches.get("fuel", []):
             period = period_of(ctx, L.t0 + COUNT_LAG)
-            if period is None:
-                continue
+            if period is None or not getattr(L, "rising", True):
+                continue  # descent-only tracks: release not seen, can't attribute
             slot, _ = self.attribute_launch(ctx, L)
             ev = {"t": round(L.t0, 2), "period": period, "n": round(L.n_pieces, 2),
                   "start": [round(v) for v in L.start], "end": [round(v) for v in L.end]}
@@ -136,9 +139,16 @@ class Rebuilt2026(GamePlugin):
                     unattributed += L.n_pieces
                 continue
             alliance = slot[:-1]
-            team = slot_team.get(slot)
+            team = ctx.team_at(slot, L.t0)
             r = ctx.robot_at(slot, L.t0)
             zone = self.zone_for(alliance, r[:2]) if r else "own"
+            if zone == "neutral" and getattr(L, "target", None) == f"{alliance}_hub" and r is not None:
+                # a robot at the zone line whose piece drops into its own hub was shooting
+                # (foot-point / calibration error is ~0.5 m)
+                x0 = self.field.zones[f"{alliance}_alliance"]
+                dx = max(x0[0] - r[0], 0, r[0] - x0[2])
+                if dx < 1.0:
+                    zone = "own"
             ev.update(team=team, alliance=alliance, zone=zone, robot_xy=[round(r[0], 2), round(r[1], 2)] if r else None)
             if zone == "own":
                 active = hub_active(period, alliance, auto_winner)
@@ -148,6 +158,9 @@ class Rebuilt2026(GamePlugin):
                 else:
                     shots[team][period] += L.n_pieces
                     ev["kind"] = "shot"
+                    if getattr(L, "target", None) == f"{alliance}_hub":
+                        made[team][period] += L.n_pieces
+                        ev["made"] = True
             else:
                 feeds[team][period] += L.n_pieces
                 if zone == "opp":
@@ -159,10 +172,10 @@ class Rebuilt2026(GamePlugin):
         zone_time = defaultdict(lambda: defaultdict(float))  # team -> zone -> seconds
         zone_time_period = defaultdict(lambda: defaultdict(float))  # team -> period -> secs in own zone
         for slot, tr in ctx.tracks.items():
-            team = slot_team.get(slot)
             alliance = slot[:-1]
             for i in range(1, len(tr)):
                 t, x, y = tr[i][0], tr[i][1], tr[i][2]
+                team = ctx.team_at(slot, t)
                 dt = min(tr[i][0] - tr[i - 1][0], 0.5)
                 per = period_of(ctx, t)
                 if per is None:
@@ -183,17 +196,25 @@ class Rebuilt2026(GamePlugin):
                 official = hs.get(f"{per}Count")
                 if official is None:
                     official = self._overlay_count(ctx, a, per)
-                weights = {t: shots[t][per] for t in teams[a]}
+                # Evidence: pieces seen dropping into the hub count fully; other shots partially
+                # (make detection misses some, e.g. when the opening is occluded).
+                if have_targets:
+                    weights = {t: made[t][per] + 0.3 * (shots[t][per] - made[t][per]) for t in teams[a]}
+                else:
+                    weights = {t: shots[t][per] for t in teams[a]}
                 weights["HP"] = hp_shots[a][per]
                 fallback = {t: zone_time_period[t][per] for t in teams[a]}
                 split = self.proportional_split(official or 0, weights, fallback)
                 for k, v in split.items():
                     scored[k][per] = v
-                tot_raw += sum(weights.values())
+                tot_raw += sum(shots[t][per] for t in teams[a]) + hp_shots[a][per]
                 if hub_active(per, a, auto_winner) is not False:
                     tot_off += official or 0
+            det_made = sum(made[t][p] for t in teams[a] for p in PERIODS)
             alliance_summary[a] = {
                 "official_fuel": int(tot_off), "detected_shots": round(tot_raw, 1),
+                "detected_made": round(det_made, 1),
+                "made_ratio": round(det_made / tot_off, 2) if tot_off else None,
                 "detection_ratio": round(tot_raw / tot_off, 2) if tot_off else None,
                 "hp_fuel_scored": int(sum(scored["HP"][p] for p in PERIODS)) if a else 0,
                 "auto_winner": auto_winner == a,
@@ -223,6 +244,9 @@ class Rebuilt2026(GamePlugin):
                     "fuel_scored_auto": fuel_auto, "fuel_scored_teleop": fuel_tele,
                     "fuel_scored_by_period": {p: scored[team][p] for p in PERIODS},
                     "fuel_shot": round(sum(shots[team].values()), 1),
+                    "fuel_made_seen": round(sum(made[team].values()), 1),
+                    "est_accuracy": round(100 * (fuel_auto + fuel_tele) / sum(shots[team].values()))
+                    if sum(shots[team].values()) >= 3 else None,
                     "fuel_shot_by_period": {p: round(shots[team][p], 1) for p in PERIODS},
                     "inactive_shots": round(inactive[team], 1),
                     "fuel_fed_raw": round(fed_raw, 1),

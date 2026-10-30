@@ -9,6 +9,8 @@ frame_size:
 - 1920
 - 1080
 points:
+  blue_hub_top: [532, 298]
+  red_hub_top: [1410, 296]
   center_line_yW:
   - 968.0
   - 345.0

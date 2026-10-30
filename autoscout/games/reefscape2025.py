@@ -107,7 +107,7 @@ class Reefscape2025(GamePlugin):
                         extra["leave"] = 3
                     near = {}
                     for team in teams[a]:
-                        slot = team_slot.get(team)
+                        slot = ctx.slot_of(team, t)
                         if slot:
                             near[team] = self._elem_dists(ctx, slot, t - LOOKBACK, t, a)
                     ev = self._explain(d, vals, near, extra)
@@ -120,10 +120,12 @@ class Reefscape2025(GamePlugin):
                                        "team": team, "kind": cat})
         # Algae launches near the barge are direct evidence of NET shots.
         for L in ctx.launches.get("algae", []):
+            if not getattr(L, "rising", True):
+                continue
             slot, _ = self.attribute_launch(ctx, L)
             if not slot:
                 continue
-            a, team = slot[:-1], ctx.identity.get(slot)
+            a, team = slot[:-1], ctx.team_at(slot, L.t0)
             r = ctx.robot_at(slot, L.t0)
             if r and self.field.dist_to_element(r[:2], f"{a}_net_zone") < NEAR["net"]:
                 phase, _ = ctx.match_time(L.t0)
@@ -136,8 +138,9 @@ class Reefscape2025(GamePlugin):
         opp_time = defaultdict(float)
         tot_time = defaultdict(float)
         for slot, tr in ctx.tracks.items():
-            a, team = slot[:-1], ctx.identity.get(slot)
+            a = slot[:-1]
             for i in range(1, len(tr)):
+                team = ctx.team_at(slot, tr[i][0])
                 dt = min(tr[i][0] - tr[i - 1][0], 0.5)
                 phase, _ = ctx.match_time(tr[i][0])
                 if phase not in ("auto", "teleop"):

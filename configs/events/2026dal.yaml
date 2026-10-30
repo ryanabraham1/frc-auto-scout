@@ -9,6 +9,12 @@ frame_size:
 - 1920
 - 1080
 points:
+  blue_hub_top:
+  - 478.0
+  - 236.0
+  red_hub_top:
+  - 1442.0
+  - 236.0
   center_line_yW:
   - 952.0
   - 268.0
@@ -21,7 +27,7 @@ points:
   red_hub_center:
   - 1455.0
   - 400.0
-reference: null
+reference: configs/events/2026dal_ref.jpg
 overlay:
   timer:
   - 888

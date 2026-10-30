@@ -35,6 +35,20 @@ class MatchContext:
     identity_conf: dict[str, float]  # slot key -> confidence 0..1
     launches: dict[str, list]  # piece name -> [Launch]
     notes: list[str] = field(default_factory=list)
+    identity_tl: dict[str, list] = field(default_factory=dict)  # slot -> [(t0, t1, team)]
+
+    def team_at(self, slot: str, t: float) -> int | None:
+        """Team in a slot at video time t (slots can swap robots during collisions)."""
+        for a, b, team in self.identity_tl.get(slot, []):
+            if a <= t < b:
+                return team
+        return self.identity.get(slot)
+
+    def slot_of(self, team: int, t: float) -> str | None:
+        for slot in self.tracks:
+            if self.team_at(slot, t) == team:
+                return slot
+        return self.team_slot(team)
 
     def team_slot(self, team: int) -> str | None:
         for k, v in self.identity.items():
@@ -77,10 +91,23 @@ class GamePlugin:
 
     # ---- shared helpers ------------------------------------------------------------------
     @staticmethod
+    def robot_box(ctx: MatchContext, slot: str, t: float):
+        """Image box of a robot at time t: the last detection (<1 s old) if any, otherwise a box
+        projected from the tracker's (coasting) field position. Returns (box, observed) or None."""
+        r = ctx.robot_at(slot, t)
+        if r is None:
+            return None
+        if r[3] is not None:
+            return tuple(r[3]), True
+        foot = ctx.cal.to_image([(r[0], r[1])])[0]
+        w = 0.95 * ctx.cal.px_per_meter_x((r[0], r[1]))
+        return (foot[0] - w / 2, foot[1] - 0.8 * w, foot[0] + w / 2, foot[1]), False
+
+    @staticmethod
     def attribute_launch(ctx: MatchContext, launch, alliances=("red", "blue")):
         """Find the robot slot that released a launch (nearest robot box to the release point).
 
-        Returns (slot_key | None, distance_px). The release point is the first airborne sighting,
+        Returns (slot_key | None, distance). The release point is the first airborne sighting,
         which sits above/inside the shooter's image box.
         """
         best, best_d = None, 1e9
@@ -88,16 +115,16 @@ class GamePlugin:
         for slot in ctx.tracks:
             if slot[:-1] not in alliances:
                 continue
-            r = ctx.robot_at(slot, launch.t0)
-            if r is None or r[3] is None:
+            rb = GamePlugin.robot_box(ctx, slot, launch.t0)
+            if rb is None:
                 continue
-            x0, y0, x1, y1 = r[3]
+            (x0, y0, x1, y1), observed = rb
             w, h = x1 - x0, y1 - y0
             # distance from the release point to the box, allowing release above the box (shooters
             # sit on top of the robot; a bumper-only box is short, so also allow ~1 box width)
             dx = max(x0 - sx, 0, sx - x1)
             dy = max((y0 - max(1.5 * h, 1.0 * w)) - sy, 0, sy - y1)
-            d = float(np.hypot(dx, dy)) / max(w, 20)
+            d = float(np.hypot(dx, dy)) / max(w, 20) + (0.0 if observed else 0.25)
             if d < best_d:
                 best, best_d = slot, d
         return (best, best_d) if best_d < 1.0 else (None, best_d)

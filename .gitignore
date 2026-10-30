@@ -12,3 +12,4 @@ __pycache__/
 runs/
 !models/autoscout-robots.pt
 *.bundle
+demo/

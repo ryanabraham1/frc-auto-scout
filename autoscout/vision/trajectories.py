@@ -57,16 +57,19 @@ class Launch:
     robot: int | None = None
     kind: str = ""  # "shot" | "feed" | "other"
     zone: str = ""
+    target: str | None = None  # scoring opening the flight came down into (e.g. "blue_hub")
+    rising: bool = True  # first seen moving up (a release); False = only the descent was visible
 
     def to_dict(self):
         return {"t0": round(self.t0, 3), "t1": round(self.t1, 3), "start": [round(v, 1) for v in self.start],
                 "end": [round(v, 1) for v in self.end], "apex": [round(v, 1) for v in self.apex],
-                "n": round(self.n_pieces, 2), "robot": self.robot, "kind": self.kind, "zone": self.zone}
+                "n": round(self.n_pieces, 2), "robot": self.robot, "kind": self.kind, "zone": self.zone,
+                "target": self.target, "rising": self.rising}
 
 
 class LaunchDetector:
     def __init__(self, hsv_lo, hsv_hi, view, piece_area_fn=None, min_area: int = 6,
-                 cal=None, field_model=None):
+                 cal=None, field_model=None, lag: int = 1):
         self.lo = np.array(hsv_lo, np.uint8)
         self.hi = np.array(hsv_hi, np.uint8)
         self.view = view
@@ -81,19 +84,30 @@ class LaunchDetector:
         self.cal = cal
         self.fm = field_model
         self.rejected_ground = 0
+        self.blobs: list[tuple] = []  # (t, x, y, area, w, h) view coords, for offline re-tracking
+        # Compare against the mask `lag` frames back: at 60 fps a piece moves too little per frame
+        # to appear as a whole new blob, but sampling every frame makes linking unambiguous.
+        self.lag = max(1, lag)
+        self.history: list = []
 
     def step(self, t: float, frame_view: np.ndarray) -> None:
         m = cv2.inRange(cv2.cvtColor(frame_view, cv2.COLOR_BGR2HSV), self.lo, self.hi)
-        if self.prev is None:
-            self.prev = m
-            return
-        mv = cv2.bitwise_and(m, cv2.bitwise_not(cv2.dilate(self.prev, self.kernel)))
+        if self.prev is None:  # reset (start or after a camera cut)
+            self.history = []
+        self.history.append(m)
         self.prev = m
+        if len(self.history) <= self.lag:
+            return
+        ref = self.history.pop(0)
+        mv = cv2.bitwise_and(m, cv2.bitwise_not(cv2.dilate(ref, self.kernel)))
         mv = cv2.morphologyEx(mv, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
         if self.ignore is not None:
             mv[self.ignore > 0] = 0
         n, _, st, c = cv2.connectedComponentsWithStats(mv)
-        dets = [(c[i][0], c[i][1], st[i, 4]) for i in range(1, n) if st[i, 4] >= self.min_area]
+        keep = [i for i in range(1, n) if st[i, 4] >= self.min_area]
+        for i in keep:
+            self.blobs.append((t, c[i][0], c[i][1], st[i, 4], st[i, 2], st[i, 3]))
+        dets = [(c[i][0], c[i][1], st[i, 4]) for i in keep]
         self._associate(t, dets)
 
     def _associate(self, t, dets):
