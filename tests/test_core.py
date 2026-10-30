@@ -75,7 +75,10 @@ def test_identity_solver_uses_evidence_and_overrides():
     ev = IdentityEvidence()
     ev.add("red0", 254, 2.0); ev.add("red1", 1678, 2.0); ev.add("red2", 118, 1.0)
     m, conf = ev.solve(["red0", "red1", "red2"], [118, 254, 1678])
-    assert m == {"red0": 254, "red1": 1678, "red2": 118} and conf > 0.5
+    assert m == {"red0": 254, "red1": 1678, "red2": 118} and min(conf.values()) > 0.5
+    ev2 = IdentityEvidence(); ev2.add("red0", 254, 3.0)
+    _, conf2 = ev2.solve(["red0", "red1", "red2"], [118, 254, 1678])
+    assert conf2["red0"] > 0.9 and conf2["red1"] == 0.0
     m, _ = ev.solve(["red0", "red1", "red2"], [118, 254, 1678], {"red0": 118})
     assert m["red0"] == 118
     assert digit_similarity("254", 254) == 1.0 and digit_similarity("67", 1678) > 0.3
@@ -128,3 +131,10 @@ def test_fragmented_flight_counts_once():
             continue
         det._associate(i / 30, [(x - det.view[0], y - det.view[1], 30)])
     assert len(det.finish()) == 1
+
+
+def test_score_jump_prefers_single_action():
+    near = {1: {"reef": 0.0, "net": 3.0, "processor": 5.0}}
+    assert Reefscape2025._explain(4, TELE_VALUES, near, {"foul_minor": 2}) == [(1, "L3")]
+    near = {1: {"reef": 4.0, "net": 0.0, "processor": 5.0}}
+    assert Reefscape2025._explain(4, TELE_VALUES, near) == [(1, "net")]

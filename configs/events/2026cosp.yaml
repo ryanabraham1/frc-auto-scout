@@ -1,9 +1,43 @@
 event_key: 2026cosp
 year: 2026
-view: [0, 250, 1920, 450]
-frame_size: [1920, 1080]
+view:
+- 0
+- 250
+- 1920
+- 450
+frame_size:
+- 1920
+- 1080
 points:
-  center_line_yW: [968, 345]
-  center_line_y0: [980, 688]
-  blue_hub_center: [520, 455]
-  red_hub_center: [1405, 445]
+  center_line_yW:
+  - 968.0
+  - 345.0
+  center_line_y0:
+  - 980.0
+  - 688.0
+  blue_hub_center:
+  - 520.0
+  - 455.0
+  red_hub_center:
+  - 1405.0
+  - 445.0
+reference: null
+overlay:
+  timer:
+  - 888
+  - 68
+  - 143
+  - 55
+  blue_score:
+  - 777
+  - 67
+  - 109
+  - 59
+  red_score:
+  - 1033
+  - 65
+  - 113
+  - 62
+  frame_size:
+  - 1920
+  - 1080

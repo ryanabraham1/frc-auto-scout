@@ -120,7 +120,7 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
                  for name, (lo, hi) in plugin.launch_pieces.items()}
     tracker = SlotTracker(cal, fm)
     evidence = IdentityEvidence()
-    ocr_budget = 400 if gpu else 60
+    ocr_budget = 400 if gpu else 150
     last_ocr = {}
     t0, t1 = clock.start_vt - 0.5, clock.teleop_end_vt + 3.5
     writer = None
@@ -190,7 +190,7 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
         keys = [f"{a}{i}" for i in range(3)]
         mapping, conf = evidence.solve(keys, m.teams(a), ov)
         ctx.identity.update(mapping)
-        ctx.identity_conf[a] = round(conf, 2)
+        ctx.identity_conf.update(conf)
     log("identity " + ", ".join(f"{k}={v}" for k, v in ctx.identity.items()) + f" conf {ctx.identity_conf}")
 
     # ---- game analysis -------------------------------------------------------------------
@@ -276,7 +276,7 @@ def reanalyze(match_key: str, tba: TBA | None = None) -> dict:
         keys = [f"{a}{i}" for i in range(3)]
         mapping, conf = evidence.solve(keys, m.teams(a), ov)
         ctx.identity.update(mapping)
-        ctx.identity_conf[a] = round(conf, 2)
+        ctx.identity_conf.update(conf)
     res = plugin.analyze(ctx)
     old.update(res)
     old.update(identity=ctx.identity, identity_conf=ctx.identity_conf, red_score=m.red_score, blue_score=m.blue_score)

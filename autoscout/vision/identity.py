@@ -60,22 +60,27 @@ class IdentityEvidence:
                     self.add(slot_key, team, s * conf * 2.0)
 
     def solve(self, slot_keys: list[str], teams: list[int], overrides: dict[str, int] | None = None):
-        """Best permutation; returns ({slot_key: team}, confidence 0..1)."""
+        """Best permutation; returns ({slot_key: team}, {slot_key: confidence 0..1}).
+
+        A slot's confidence is how much worse the best assignment gets if that slot were given
+        any other team (so one well-identified robot is confident even if the other two tie).
+        """
         overrides = overrides or {}
-        best, best_s, second = None, -1e9, -1e9
+        scored = []
         for perm in itertools.permutations(teams):
             m = dict(zip(slot_keys, perm))
             if any(m.get(k) != v for k, v in overrides.items() if k in m):
                 continue
-            s = sum(self.score.get((k, t), 0.0) for k, t in m.items())
-            if s > best_s:
-                best, best_s, second = m, s, best_s
-            elif s > second:
-                second = s
-        if best is None:
-            best = dict(zip(slot_keys, teams))
-        margin = best_s - second if second > -1e9 else best_s
-        conf = float(1 - np.exp(-max(margin, 0.0)))
-        if overrides and all(k in overrides for k in slot_keys):
-            conf = 1.0
+            scored.append((sum(self.score.get((k, t), 0.0) for k, t in m.items()), m))
+        if not scored:
+            return dict(zip(slot_keys, teams)), {k: 0.0 for k in slot_keys}
+        best_s, best = max(scored, key=lambda x: x[0])
+        conf = {}
+        for k in slot_keys:
+            if k in overrides:
+                conf[k] = 1.0
+                continue
+            alt = [s for s, m in scored if m[k] != best[k]]
+            margin = best_s - max(alt) if alt else 10.0
+            conf[k] = round(float(1 - np.exp(-max(margin, 0.0))), 2)
         return best, conf

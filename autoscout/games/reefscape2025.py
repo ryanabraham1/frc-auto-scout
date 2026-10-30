@@ -19,6 +19,7 @@ AUTO_VALUES = {"L1": 3, "L2": 4, "L3": 6, "L4": 7, "net": 4, "processor": 6}
 TELE_VALUES = {"L1": 2, "L2": 3, "L3": 4, "L4": 5, "net": 4, "processor": 6}
 ENDGAME_PTS = {"DeepCage": 12, "ShallowCage": 6, "Parked": 2, "None": 0}
 CATS = ["L1", "L2", "L3", "L4", "net", "processor"]
+NON_ROBOT = {"foul_minor": 2, "foul_major": 6, "hp_net": 4}  # jumps no robot action explains
 NEAR = {"reef": 1.1, "net": 1.0, "processor": 1.3}  # meters from element edge
 LOOKBACK = 5.0  # s: scoring is often posted a few seconds after it happens
 
@@ -101,12 +102,15 @@ class Reefscape2025(GamePlugin):
                     if phase not in ("auto", "teleop"):
                         continue
                     vals = AUTO_VALUES if phase == "auto" else TELE_VALUES
+                    extra = dict(NON_ROBOT)
+                    if phase == "auto" or t - ctx.clock.auto_end_vt < 4:
+                        extra["leave"] = 3
                     near = {}
                     for team in teams[a]:
                         slot = team_slot.get(team)
                         if slot:
                             near[team] = self._elem_dists(ctx, slot, t - LOOKBACK, t, a)
-                    ev = self._explain(d, vals, near)
+                    ev = self._explain(d, vals, near, extra)
                     if ev is None:
                         events.append({"t": round(t, 2), "alliance": a, "phase": phase, "points": d, "kind": "unexplained"})
                         continue
@@ -213,12 +217,21 @@ class Reefscape2025(GamePlugin):
                                              for a in ("red", "blue")}, moved, 1.0, "leave")
 
     @staticmethod
-    def _explain(points: int, vals: dict[str, int], near: dict[int, dict[str, float]]):
-        """Pick the most plausible (team, category) actions behind a score increase."""
+    def _explain(points: int, vals: dict[str, int], near: dict[int, dict[str, float]], extra: dict[str, int] | None = None):
+        """Pick the most plausible (team, category) actions behind a score increase.
+
+        Score jumps also come from things no robot scoring action explains (LEAVE points posted
+        at the end of AUTO, opponent fouls, human-player NET shots); those are allowed as
+        explanations with a neutral score, so they absorb jumps no robot was positioned for.
+        """
+        allowed = dict(vals, **(extra or {}))
         best, best_s = None, -1e9
-        for combo in _decompose(points, vals):
-            assigned, score, used = [], 0.0, set()
+        for combo in _decompose(points, allowed):
+            assigned, score = [], 0.0
             for cat in combo:
+                if cat in (extra or {}):
+                    score += 0.6 if cat == "leave" else -0.2
+                    continue
                 elem = "reef" if cat.startswith("L") else cat
                 cands = sorted(((d[elem], t) for t, d in near.items()), key=lambda x: x[0])
                 if not cands or cands[0][0] > NEAR[elem] + 1.0:
@@ -228,7 +241,7 @@ class Reefscape2025(GamePlugin):
                 dist, team = cands[0]
                 score += 1.0 - dist / (NEAR[elem] + 1.0)
                 assigned.append((team, cat))
-            score -= 0.4 * (len(combo) - 1)  # prefer simple explanations
+            score -= 1.2 * (len(combo) - 1)  # prefer simple explanations (> max per-action score)
             if score > best_s:
                 best, best_s = assigned, score
         if best is None or best_s < -1.0:

@@ -23,7 +23,7 @@ def event_report(con, event_key: str) -> str:
                 ratios.append(al["detection_ratio"])
             if al.get("coverage"):
                 ratios.append(al["coverage"])
-            id_conf.append(res.get("identity_conf", {}).get(a, 0))
+        id_conf.extend(v for k, v in res.get("identity_conf", {}).items() if k[:-1] in ("red", "blue"))
     if score_err:
         lines.append(f"Overlay score read vs official final score: mean abs diff {np.mean(score_err):.1f} pts "
                      f"(official includes post-match penalty adjustments), exact in {np.mean(np.array(score_err) == 0):.0%}")
@@ -32,5 +32,5 @@ def event_report(con, event_key: str) -> str:
                      f"(1.0 = every scored piece seen; per-robot splits only need the *relative* shares)")
     if id_conf:
         lines.append(f"Robot identity confidence: median {np.median(id_conf):.2f}; "
-                     f"{np.mean(np.array(id_conf) < 0.5):.0%} of alliances need a manual check")
+                     f"{np.mean(np.array(id_conf) < 0.5):.0%} of robots need a manual check (dashboard: Robot identity)")
     return "\n".join(lines)

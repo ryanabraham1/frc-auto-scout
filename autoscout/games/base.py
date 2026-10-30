@@ -32,7 +32,7 @@ class MatchContext:
     timeline: ScoreTimeline | None
     tracks: dict[str, list]  # slot key ("red0") -> [(t, x, y, observed, box)]
     identity: dict[str, int]  # slot key -> team number
-    identity_conf: dict[str, float]  # alliance -> confidence
+    identity_conf: dict[str, float]  # slot key -> confidence 0..1
     launches: dict[str, list]  # piece name -> [Launch]
     notes: list[str] = field(default_factory=list)
 

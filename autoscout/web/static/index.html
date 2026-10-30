@@ -141,12 +141,13 @@ async function viewMatch(mk) {
       ${r.alliances?.[a] ? `<div class="small muted" style="margin-top:8px">${Object.entries(r.alliances[a]).map(([k, v]) => `${esc(k)}: <b>${fmt(v)}</b>`).join(' · ')}</div>` : ''}
     </div>`; };
   const slotRows = ['red','blue'].map(a => [0,1,2].map(i => { const s = `${a}${i}`;
-    return `<label class="small">${s} <select data-slot="${s}">${r[a].map(t => `<option ${r.identity[s] == t ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`; }).join(' ')).join('<br>');
+    const c = r.identity_conf[s]; const cc = c >= 0.7 ? 'good' : 'warn';
+    return `<label class="small">${s} <span class="chip ${cc}" title="identity confidence">${c ?? '?'}</span><select data-slot="${s}">${r[a].map(t => `<option ${r.identity[s] == t ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`; }).join(' ')).join('<br>');
   const yt = t => `https://www.youtube.com/watch?v=${r.video}&t=${Math.max(0, Math.floor(t - 2))}s`;
   app.innerHTML = `<h1>${esc(r.label)} <span class="muted small">${mk}</span></h1>
   <div class="card">${timelineSVG(r.timeline, r.clock)}</div>
   ${allianceTable('red')}${allianceTable('blue')}
-  <div class="card"><b>Robot identity</b> <span class="muted small">confidence red ${r.identity_conf.red} · blue ${r.identity_conf.blue}. Fix a wrong mapping and stats recompute instantly.</span>
+  <div class="card"><b>Robot identity</b> <span class="muted small">Each tracked robot slot is matched to a team from bumper-number OCR and official per-robot results; low-confidence slots (orange) should be checked on the video. Fixing one recomputes the stats instantly.</span>
    <div style="margin:8px 0">${slotRows}</div><button id="ov">Save identity</button></div>
   <h2>Events</h2><div class="card scroll"><table><thead><tr><th>Video time</th><th>Kind</th><th>Team</th><th>Period</th><th>Zone</th><th>Pieces</th></tr></thead><tbody>
   ${(r.events || []).filter(e => e.kind !== 'unexplained').slice(0, 600).map(e => `<tr><td><a target="_blank" href="${yt(e.t)}">${e.t.toFixed(1)}s</a></td><td>${esc(e.kind)}</td>
