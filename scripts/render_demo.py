@@ -3,8 +3,9 @@ game pieces, and a live scoreboard panel of what each robot has been credited wi
 
 Usage: python scripts/render_demo.py MATCH_KEY VIDEO OUT.mp4 [--width 1280]
 
-The live panel counts the *detected* events as they happen (each robot's coral by level, algae,
-shots, feeds...). The final column ("official split") shows the end-of-match numbers after the
+The live panel counts events as they happen: in 2026 "Scored" is the live broadcast score credited to
+the robot shooting just before each increase; the other columns count *detected* events (each
+robot's coral by level, algae, shots, feeds...). The final column ("official split") shows the end-of-match numbers after the
 official FMS totals were split among robots, i.e. what the dashboard reports.
 """
 import argparse
@@ -53,10 +54,10 @@ if year == 2025:
     FINAL = lambda m: f"{m['coral_total']}c {m['algae_net']}n {m['algae_processor']}p"  # noqa: E731
     KEEP = set(COLS)
 else:
-    COLS = ["shot", "made", "feed"]
-    HEAD = ["Shots", "Seen in", "Fed"]
+    COLS = ["scored", "shot", "feed"]
+    HEAD = ["Scored", "Shots", "Fed"]
     FINAL = lambda m: f"{m['fuel_scored']} scored {m['fuel_fed']} fed"  # noqa: E731
-    KEEP = {"shot", "feed"}
+    KEEP = {"scored", "shot", "feed"}
 events = sorted([e for e in r.get("events", []) if e.get("team") and e.get("kind") in KEEP], key=lambda e: e["t"])
 
 # launches with their points for drawing flights
@@ -136,7 +137,8 @@ for t, frame in video.iter_frames(t0, t1, step=step):
         counts[team][k] += n if year == 2026 else 1
         if year == 2026 and e.get("made"):
             counts[team]["made"] += n
-        flash[team] = (t + 1.2, ("+" + k.upper()) if year == 2025 else ("+shot" if k == "shot" else "+feed"))
+        if k != "scored":  # credit from the live score: counted, not flashed (it arrives ball by ball)
+            flash[team] = (t + 1.2, ("+" + k.upper()) if year == 2025 else ("+shot" if k == "shot" else "+feed"))
         ei += 1
     # panel
     panel = np.full((H - vh, W, 3), 25, np.uint8)

@@ -44,3 +44,46 @@ def recognize(crop: np.ndarray, allow: str = "0123456789") -> tuple[str, float]:
         return "", 0.0
     best = max(res, key=lambda r: r[2])
     return best[1].replace(" ", ""), float(best[2])
+
+
+@functools.lru_cache(maxsize=1)
+def _vision():
+    """Apple's Vision text recognizer (macOS), or None. It reads small, blurred, stylized bumper
+    numbers far better than EasyOCR and almost never invents digits."""
+    import sys
+
+    if sys.platform != "darwin":
+        return None
+    try:
+        import Vision
+        from Foundation import NSData
+    except ImportError:
+        return None
+    return Vision, NSData
+
+
+def has_vision() -> bool:
+    return _vision() is not None
+
+
+def read_lines(img: np.ndarray, words: list[str] | None = None) -> list[tuple[str, float]]:
+    """Text lines in an image as [(text, conf)]: Apple Vision when available, else EasyOCR (digits).
+
+    `words` biases Vision toward expected strings (e.g. the match's team numbers).
+    """
+    vn = _vision()
+    if vn is None:
+        return [(txt, float(conf)) for _, txt, conf in reader().readtext(img, allowlist="0123456789")]
+    Vision, NSData = vn
+    ok, buf = cv2.imencode(".png", img)
+    if not ok:
+        return []
+    req = Vision.VNRecognizeTextRequest.alloc().init()
+    req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+    req.setUsesLanguageCorrection_(bool(words))
+    if words:
+        req.setCustomWords_(words)
+    handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
+        NSData.dataWithBytes_length_(buf.tobytes(), len(buf)), None)
+    handler.performRequests_error_([req], None)
+    return [(str(c.string()), float(c.confidence())) for o in (req.results() or []) for c in o.topCandidates_(1)]

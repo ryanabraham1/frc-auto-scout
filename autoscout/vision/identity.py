@@ -55,6 +55,53 @@ def read_bumper(frame, box) -> list[tuple[str, float]]:
     return out
 
 
+def bumper_color(frame, box) -> str | None:
+    """Alliance colour of a robot's bumper ("red" / "blue"), or None when unclear."""
+    import cv2
+
+    x0, y0, x1, y1 = [int(v) for v in box]
+    strip = frame[max(0, y0 + int(0.6 * (y1 - y0))): y1, max(0, x0): x1]
+    if strip.size == 0:
+        return None
+    hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
+    sat = (hsv[..., 1] > 90) & (hsv[..., 2] > 50)
+    hue = hsv[..., 0]
+    red = (sat & ((hue < 10) | (hue > 165))).mean()
+    blue = (sat & (hue > 98) & (hue < 130)).mean()
+    if max(red, blue) < 0.08:
+        return None
+    return "red" if red > 2 * blue else "blue" if blue > 2 * red else None
+
+
+def read_team_numbers(frame, box, all_teams: list[int]) -> dict[int, float]:
+    """Team numbers read on a robot's bumper -> evidence weight.
+
+    Apple Vision (macOS) rarely invents digits, so only exact team numbers count. The EasyOCR
+    fallback is noisier: a partial read counts only if it names exactly one team.
+    """
+    import cv2
+
+    x0, y0, x1, y1 = [int(v) for v in box]
+    h, w = y1 - y0, x1 - x0
+    out: dict[int, float] = {}
+    if not ocr.has_vision():
+        for txt, conf in read_bumper(frame, box):
+            d = re.sub(r"\D", "", txt)
+            hits = [t for t in all_teams if len(d) >= 3 and d in str(t)]
+            if len(hits) == 1:
+                out[hits[0]] = out.get(hits[0], 0.0) + (0.4 + 0.8 * len(d) / len(str(hits[0]))) * max(conf, 0.2)
+        return out
+    crop = frame[max(0, y0 + int(0.35 * h)): y1 + int(0.12 * h), max(0, x0 - int(0.12 * w)): x1 + int(0.12 * w)]
+    if crop.shape[0] < 8 or crop.shape[1] < 16:
+        return out
+    crop = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    for txt, conf in ocr.read_lines(crop, [str(t) for t in all_teams]):
+        for d in re.findall(r"\d{3,5}", txt):
+            if int(d) in all_teams:
+                out[int(d)] = out.get(int(d), 0.0) + 1.5 * max(conf, 0.3)
+    return out
+
+
 class IdentityEvidence:
     def __init__(self):
         # score[(slot_key, team)] -> accumulated log-likelihood-ish score
@@ -90,6 +137,16 @@ class IdentityEvidence:
                 s = digit_similarity(digits, team)
                 if s > 0.6:
                     self.add(slot_key, team, s * conf)
+
+    def vision_bumper(self, frame, slot_key: str, box, teams: list[int], all_teams: list[int]) -> None:
+        """Bumper read of a slot's box; a box whose bumper is the other alliance's colour means the
+        slot is on the wrong robot, so it gives no evidence."""
+        col = bumper_color(frame, box)
+        if col and col != slot_key[:-1]:
+            return
+        for team, v in read_team_numbers(frame, box, all_teams).items():
+            if team in teams:
+                self.add(slot_key, team, v, f"bumper '{team}'")
 
     def solve(self, slot_keys: list[str], teams: list[int], overrides: dict[str, int] | None = None):
         """Best permutation; returns ({slot_key: team}, {slot_key: confidence 0..1}).

@@ -29,6 +29,13 @@ a { color: var(--accent); }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
 .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
 .muted { color: var(--muted); } .small { font-size: 12px; }
+.robots { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.robot { margin: 0; } .robot.done { opacity: .75; }
+.robot img { width: 100%; height: 160px; object-fit: contain; background: #000; border-radius: 6px; margin-bottom: 6px; }
+.robot .teams { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.robot button.team { padding: 3px 8px; font-size: 13px; }
+.robot button.team.red { color: var(--red); } .robot button.team.blue { color: var(--blue); }
+.robot button.team.on { background: var(--accent); color: #fff; border-color: transparent; }
 .chip { display: inline-block; padding: 1px 8px; border-radius: 99px; background: var(--chip); font-size: 12px; margin-right: 4px; }
 .chip.red { background: var(--red-soft); color: var(--red); } .chip.blue { background: var(--blue-soft); color: var(--blue); }
 .chip.good { color: var(--good); } .chip.warn { color: var(--warn); }
@@ -52,15 +59,38 @@ pre { background: var(--chip); padding: 10px; border-radius: 8px; max-height: 26
 .legend span { display: inline-flex; align-items: center; gap: 5px; margin-right: 12px; font-size: 12px; color: var(--muted); }
 .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 @media (max-width: 640px) { main { padding: 14px 16px; } header { gap: 10px; } }
+
+/* A quiet competition workspace, with alliance rails as the visual signature. */
+:root { --bg:#f3f6fa; --panel:#fff; --ink:#172b43; --muted:#607186; --line:#dce4ee; --accent:#245fc4; --chip:#edf2f8; }
+body { font-family:"Avenir Next", "Segoe UI", sans-serif; }
+header { padding:18px max(24px,calc((100vw - 1248px)/2)); gap:40px; box-shadow:0 2px 12px #172b4305; }
+header b { letter-spacing:-.6px; font-size:20px; white-space:nowrap; }
+header b::before { content:""; display:inline-block; width:9px; height:24px; margin-right:12px; vertical-align:middle; border-left:4px solid var(--red); border-right:4px solid var(--blue); transform:skew(-12deg); }
+header nav { display:flex; gap:8px; } header nav a { margin:0; padding:8px 12px; border-radius:7px; font-weight:600; }
+header nav a[aria-current] { background:var(--blue-soft); color:var(--accent); }
+main { padding-top:32px; } h1 { font-size:30px; letter-spacing:-1px; margin-bottom:20px; } h2 { margin-top:28px; font-size:18px; }
+.card { padding:20px; border-radius:12px; box-shadow:0 3px 12px #172b4303; }
+.grid { gap:16px; } .grid .card { margin:0; } .grid .card b { font-size:19px; }
+button,select,input { min-height:40px; } button:hover { border-color:var(--accent); background:var(--blue-soft); } button.primary:hover { background:#194d9e; }
+button:disabled { opacity:.5; cursor:wait; } :focus-visible { outline:3px solid #5c9cf1; outline-offset:3px; }
+th,td { padding:12px; } td { font-variant-numeric:tabular-nums; } th { font-size:11px; letter-spacing:.3px; }
+.scroll { padding:4px; } .toolbar { margin-bottom:16px; } .toolbar input { flex:1; min-width:150px; }
+.notice { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); padding:14px 20px; background:var(--ink); color:var(--panel); border-radius:10px; z-index:20; max-width:90vw; box-shadow:0 6px 24px #0002; }
+.page-intro { margin:-12px 0 24px; color:var(--muted); max-width:720px; } .empty { padding:28px; text-align:center; color:var(--muted); }
+canvas { touch-action:none; } .breadcrumb { display:block; margin-bottom:12px; font-size:13px; }
+@media(prefers-color-scheme:dark) { :root { --bg:#121b28; --panel:#1a2738; --ink:#e5edf8; --muted:#a2b2c7; --line:#304157; --accent:#8db5ff; --chip:#26364b; } }
+@media(max-width:640px) { header { padding:12px 16px; gap:10px; flex-wrap:wrap; position:relative; } header nav { width:100%; } header nav a { padding:6px 10px; } main { padding-top:24px; } h1 { font-size:26px; } .card { padding:14px; } .scroll { padding:2px; } #vid { max-width:100%; } }
 </style>
 </head>
 <body>
 <header><b>FRC Auto-Scout</b><nav><a href="#/">Events</a><a href="#/jobs">Processing</a><a href="#/label">Label robots</a></nav></header>
-<main id="app"><p class="muted">Loading…</p></main>
+<div id="notice" role="status" hidden></div><main id="app" aria-live="polite"><p class="muted">Loading…</p></main>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 const app = $('#app');
-const api = async (p, opt) => { const r = await fetch(p, opt); if (!r.ok) throw new Error(await r.text()); return r.headers.get('content-type')?.includes('json') ? r.json() : r.text(); };
+function notify(message) { const n=$('#notice'); n.className='notice'; n.textContent=message; n.hidden=false; clearTimeout(window.noticeTimer); window.noticeTimer=setTimeout(()=>n.hidden=true,7000); }
+window.addEventListener('unhandledrejection', e => { e.preventDefault(); notify(e.reason?.message || 'Action failed. Try again.'); document.querySelectorAll('button:disabled').forEach(b=>b.disabled=false); });
+const api = async (p, opt) => { const r = await fetch(p, opt); if (!r.ok) { let msg=await r.text(); try { msg=JSON.parse(msg).detail || msg; } catch {} throw new Error(msg); } return r.headers.get('content-type')?.includes('json') ? r.json() : r.text(); };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = v => typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(1)) : (v === true ? 'Yes' : v === false ? 'No' : esc(v ?? '–'));
 const PERIOD_COLORS = ['#7b61ff','#9aa3b2','#2a9d8f','#e9c46a','#f4a261','#e76f51','#264653'];
@@ -76,14 +106,14 @@ function sortable(table) {
 
 async function viewEvents() {
   const evs = await api('/api/events');
-  app.innerHTML = `<h1>Events</h1>
+  app.innerHTML = `<h1>Event workspace</h1><p class="page-intro">Turn match video into team insights. Choose an event to review results, check robot identities, or process new matches.</p>
   <div class="card row"><input id="ek" placeholder="event key, e.g. 2026txhou" style="min-width:240px">
   <button class="primary" id="go">Open</button><span class="muted small">An event must be calibrated once (Calibrate) before matches can be processed.</span></div>
   <div class="grid">${evs.map(e => `<div class="card"><div class="row" style="justify-content:space-between"><a href="#/event/${e.event_key}"><b>${e.event_key}</b></a>
     <span class="chip ${e.calibrated ? 'good' : 'warn'}">${e.calibrated ? 'calibrated' : 'needs calibration'}</span></div>
     <div class="muted small">${e.done}/${e.matches} matches processed</div>
     <div class="small" style="margin-top:6px"><a href="#/calibrate/${e.event_key}">Calibrate</a></div></div>`).join('') || '<p class="muted">No events yet.</p>'}</div>`;
-  $('#go').onclick = () => location.hash = `#/event/${$('#ek').value.trim()}`;
+  $('#go').onclick = () => { const k=$('#ek').value.trim().toLowerCase(); if (!/^20(25|26)[a-z0-9]+$/.test(k)) return notify('Enter a 2025 or 2026 event key, such as 2026txhou.'); location.hash = `#/event/${k}`; }; $('#ek').onkeydown=e=>{if(e.key==='Enter') $('#go').click();};
 }
 
 async function viewEvent(ek) {
@@ -92,20 +122,27 @@ async function viewEvent(ek) {
   const cols = defs.map(m => `<th title="${esc(m.group)}">${esc(m.label)}</th>`).join('');
   const cell = (t, m) => { const v = t[`${m.key}.avg`]; if (v !== undefined) return `<td data-v="${v}">${fmt(v)}</td>`;
     const c = t[`${m.key}.counts`]; return `<td class="small">${c ? Object.entries(c).map(([k, n]) => `${esc(k)}×${n}`).join(' ') : '–'}</td>`; };
-  app.innerHTML = `<h1>${ek}</h1>
+  app.innerHTML = `<a class="breadcrumb" href="#/">← All events</a><h1>${esc(ek)}</h1><p class="page-intro">Review team averages and match evidence. Robot contributions are estimates allocated from official alliance totals.</p>
   <div class="card row"><button class="primary" id="run">Process new matches</button><a href="#/calibrate/${ek}">Calibrate</a>
-   <a href="/api/run/${ek}/log" target="_blank">Processing log</a><span class="muted small" id="job">${d.job?.running ? 'processing…' : ''}</span></div>
-  <h2>Teams <span class="muted small">(averages per match; click a column to sort)</span></h2>
+   <a href="/api/event/${ek}/export" download>Export CSV</a><a href="/api/event/${ek}/report" target="_blank">Validation report</a><button id="reanalyze">Recompute saved matches</button><a href="#/jobs">View processing</a><button id="refresh">Refresh results</button><a href="/api/run/${ek}/log" target="_blank">Processing log</a><span class="muted small" id="job">${d.job?.running ? 'processing…' : ''}</span></div>
+  <div class="row toolbar"><input id="search" aria-label="Search teams or matches" placeholder="Search team number or match…"><select id="metrics" aria-label="Metric group"><option value="">All metrics</option>${[...new Set(defs.map(m=>m.group))].map(g=>`<option>${esc(g)}</option>`).join('')}</select></div><h2>Teams <span class="muted small">(averages per match; click a column to sort)</span></h2>
   <div class="card scroll"><table id="tt"><thead><tr><th>Team</th><th>Matches</th>${cols}</tr></thead><tbody>
   ${d.teams.map(t => `<tr><td><a href="#/team/${ek}/${t.team}">${t.team}</a></td><td>${t.matches}</td>${defs.map(m => cell(t, m)).join('')}</tr>`).join('')}
   </tbody></table></div>
-  <h2>Matches</h2><div class="card scroll"><table><thead><tr><th>Match</th><th>Red</th><th>Blue</th><th>Score</th><th>Status</th></tr></thead><tbody>
+  <div class="row toolbar"><label>Match status <select id="status" aria-label="Match status"><option value="">All statuses</option><option>done</option><option>error</option></select></label></div><h2>Matches</h2><div class="card scroll"><table><thead><tr><th>Match</th><th>Red</th><th>Blue</th><th>Score</th><th>Status</th></tr></thead><tbody>
   ${d.matches.map(m => `<tr><td>${m.status === 'done' ? `<a href="#/match/${m.match_key}">${esc(m.label || m.match_key)}</a>` : esc(m.label || m.match_key)}</td>
    <td style="color:var(--red)">${m.red.join(' ')}</td><td style="color:var(--blue)">${m.blue.join(' ')}</td>
    <td>${m.red_score ?? ''}–${m.blue_score ?? ''}</td><td>${m.status === 'error' ? `<span class="chip warn" title="${esc(m.error)}">error</span>` : `<span class="chip">${esc(m.status)}</span>`}</td></tr>`).join('')}
   </tbody></table></div>`;
   sortable($('#tt'));
-  $('#run').onclick = async () => { await api(`/api/run/${ek}`, {method: 'POST'}); $('#job').textContent = 'processing… (refresh to see new matches)'; };
+  const filter = () => { const q=$('#search').value.toLowerCase(); app.querySelectorAll('tbody tr').forEach(r=>r.hidden=!r.textContent.toLowerCase().includes(q) || (r.closest('table').id!=='tt' && $('#status').value && !r.cells[4].textContent.includes($('#status').value))); };
+  $('#metrics').onchange=()=>{[...$('#tt').rows].forEach(r=>[...r.cells].forEach((c,i)=>{c.hidden=i>1 && $('#metrics').value && defs[i-2].group!==$('#metrics').value;}));};
+  $('#search').oninput=filter; $('#status').onchange=filter;
+  $('#refresh').onclick=()=>viewEvent(ek);
+  $('#reanalyze').onclick=async()=>{await api(`/api/event/${ek}/reanalyze`,{method:'POST'}); notify('Recomputing saved matches. Follow progress in the processing log.');};
+  $('#run').disabled=!!d.job?.running;
+  $('#run').onclick = async () => { const res=await api(`/api/run/${ek}`, {method: 'POST'}); $('#run').disabled=true; $('#job').textContent=res.started ? 'Processing started · open Processing for progress' : res.reason; };
+  app.querySelectorAll('tbody').forEach(b=>{if(!b.rows.length)b.innerHTML=`<tr><td colspan="${b.closest('table').rows[0].cells.length}" class="empty">No processed results yet. Calibrate the event, then process new matches.</td></tr>`;});
 }
 
 function timelineSVG(tl, clock) {
@@ -144,16 +181,22 @@ async function viewMatch(mk) {
     const c = r.identity_conf[s]; const cc = c >= 0.7 ? 'good' : 'warn';
     return `<label class="small">${s} <span class="chip ${cc}" title="identity confidence">${c ?? '?'}</span><select data-slot="${s}">${r[a].map(t => `<option ${r.identity[s] == t ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`; }).join(' ')).join('<br>');
   const yt = t => `https://www.youtube.com/watch?v=${r.video}&t=${Math.max(0, Math.floor(t - 2))}s`;
+  const av = r.annotated_video, seekable = av && av.offset != null;
   app.innerHTML = `<h1>${esc(r.label)} <span class="muted small">${mk}</span></h1>
+  <div class="card row"><a href="#/robots/${mk}"><b>Who is this?</b></a><span class="muted small">Label a few robots the tracker couldn't read: every stat follows the labels, and later matches at this event learn what each robot looks like.</span></div>
+  ${av ? `<div class="card"><b>Annotated video</b> <span class="muted small">${av.kind === 'demo' ? 'tracked robots, game-piece flights and live per-robot credit' : 'raw tracker debug view'}${seekable ? ' · click an event time below to jump here' : ''}</span>
+   <video id="av" controls preload="metadata" style="width:100%;margin-top:8px;border-radius:6px;background:#000" src="/api/match/${mk}/video.mp4"></video></div>` : ''}
   <div class="card">${timelineSVG(r.timeline, r.clock)}</div>
   ${allianceTable('red')}${allianceTable('blue')}
   <div class="card"><b>Robot identity</b> <span class="muted small">Each tracked robot slot is matched to a team from bumper-number OCR and official per-robot results; low-confidence slots (orange) should be checked on the video. Fixing one recomputes the stats instantly.</span>
    <div style="margin:8px 0">${slotRows}</div><button id="ov">Save identity</button></div>
   <h2>Events</h2><div class="card scroll"><table><thead><tr><th>Video time</th><th>Kind</th><th>Team</th><th>Period</th><th>Zone</th><th>Pieces</th></tr></thead><tbody>
-  ${(r.events || []).filter(e => e.kind !== 'unexplained').slice(0, 600).map(e => `<tr><td><a target="_blank" href="${yt(e.t)}">${e.t.toFixed(1)}s</a></td><td>${esc(e.kind)}</td>
+  ${(r.events || []).filter(e => e.kind !== 'unexplained' && e.kind !== 'scored').slice(0, 600).map(e => `<tr><td>${seekable ? `<a href="javascript:void 0" data-seek="${e.t}">${e.t.toFixed(1)}s</a> <a class="muted small" target="_blank" href="${yt(e.t)}">YT</a>` : `<a target="_blank" href="${yt(e.t)}">${e.t.toFixed(1)}s</a>`}</td><td>${esc(e.kind)}</td>
    <td>${e.team ?? (e.alliance ? e.alliance + ' HP' : '–')}</td><td>${esc(e.period || e.phase || '')}</td><td>${esc(e.zone || '')}</td><td>${fmt(e.n ?? e.points)}</td></tr>`).join('')}
   </tbody></table></div>
   <p class="muted small">Detector: ${esc(r.detector)} · processed in ${r.processing_s}s · scored totals come from the official FMS breakdown; per-robot splits come from video.</p>`;
+  document.querySelectorAll('[data-seek]').forEach(a => a.onclick = () => { const v = $('#av');
+    v.currentTime = Math.max(0, +a.dataset.seek - av.offset - 2); v.play(); v.scrollIntoView({behavior: 'smooth', block: 'center'}); });
   $('#ov').onclick = async () => { const body = {}; document.querySelectorAll('select[data-slot]').forEach(s => body[s.dataset.slot] = +s.value);
     await api(`/api/override/${mk}`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body)}); viewMatch(mk); };
 }
@@ -170,7 +213,7 @@ async function viewTeam(ek, team) {
 
 async function viewCalibrate(ek) {
   const c = await api(`/api/calibration/${ek}`);
-  if (!c.has_reference) { app.innerHTML = `<h1>Calibrate ${ek}</h1><div class="card">No reference frame yet. Run:<pre>autoscout calibrate ${ek}_qm1</pre>then reload this page.</div>`; return; }
+  if (!c.has_reference) { app.innerHTML = `<h1>Calibrate ${ek}</h1><div class="card">Prepare a reference frame from a match video, then mark the field landmarks.<div class="row" style="margin-top:16px"><input id="refmatch" aria-label="Reference match key" value="${ek}_qm1"><button id="prepare" class="primary">Prepare reference frame</button><button id="reload">Check reference</button><a href="/api/run/${ek}/log" target="_blank">Preparation log</a></div></div>`; $('#prepare').onclick=async()=>{await api(`/api/calibration/${ek}/prepare`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({match_key:$('#refmatch').value.trim()})}); notify('Preparing reference frame. Check the reference after the job finishes.');}; $('#reload').onclick=()=>viewCalibrate(ek); return; }
   const pts = {...c.points}; let view = c.view || null; let mode = 'point';
   app.innerHTML = `<h1>Calibrate ${ek}</h1>
   <div class="card small">1. Drag a rectangle around the <b>wide shot of the whole field</b> (exclude the score bar and picture-in-picture views).
@@ -178,7 +221,7 @@ async function viewCalibrate(ek) {
    x = 0 is the blue alliance wall; y = 0 is the side named in configs/fields/${c.year}.yaml.</div>
   <div class="card row"><button id="mv">Draw view rectangle</button><select id="lm">${Object.keys(c.landmarks).map(k => `<option>${k}</option>`).join('')}</select>
    <button id="mp" class="primary">Click landmark</button><button id="clr">Remove landmark</button><button id="save" class="primary">Save</button><span id="msg" class="muted small"></span></div>
-  <div class="canvaswrap card" style="padding:4px"><img id="img" src="/api/calibration/${ek}/ref.jpg"><canvas id="cv"></canvas></div>
+  <div class="canvaswrap card" style="padding:0;overflow:hidden"><img id="img" src="/api/calibration/${ek}/ref.jpg"><canvas id="cv"></canvas></div>
   <h2>Preview</h2><div class="card" style="padding:4px"><img id="prev" style="max-width:100%" src="/api/calibration/${ek}/preview.jpg?${Date.now()}"></div>`;
   const img = $('#img'), cv = $('#cv'), ctx = cv.getContext('2d');
   const draw = () => { cv.width = img.naturalWidth; cv.height = img.naturalHeight; ctx.clearRect(0, 0, cv.width, cv.height); ctx.lineWidth = 3;
@@ -187,8 +230,8 @@ async function viewCalibrate(ek) {
   img.onload = draw;
   const toImg = e => { const b = cv.getBoundingClientRect(); return [(e.clientX - b.left) * cv.width / b.width, (e.clientY - b.top) * cv.height / b.height]; };
   let drag = null;
-  cv.onmousedown = e => { if (mode === 'view') drag = toImg(e); };
-  cv.onmouseup = e => { const p = toImg(e); if (mode === 'view' && drag) { view = [Math.round(Math.min(drag[0], p[0])), Math.round(Math.min(drag[1], p[1])), Math.round(Math.abs(p[0] - drag[0])), Math.round(Math.abs(p[1] - drag[1]))]; drag = null; mode = 'point'; }
+  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); if (mode === 'view') drag = toImg(e); };
+  cv.onpointerup = e => { const p = toImg(e); if (mode === 'view' && drag) { view = [Math.round(Math.min(drag[0], p[0])), Math.round(Math.min(drag[1], p[1])), Math.round(Math.abs(p[0] - drag[0])), Math.round(Math.abs(p[1] - drag[1]))]; drag = null; mode = 'point'; }
     else if (mode === 'point') pts[$('#lm').value] = p.map(Math.round); draw(); };
   $('#mv').onclick = () => mode = 'view'; $('#mp').onclick = () => mode = 'point'; $('#clr').onclick = () => { delete pts[$('#lm').value]; draw(); };
   $('#save').onclick = async () => { if (!view) { $('#msg').textContent = 'draw the view rectangle first'; return; }
@@ -198,6 +241,7 @@ async function viewCalibrate(ek) {
 
 async function viewLabel() {
   const [vids, ds] = await Promise.all([api('/api/videos'), api('/api/dataset')]);
+  if (!vids.length) { app.innerHTML='<h1>Label robots</h1><div class="card empty">No local match videos yet. Process a match to download its video, then return here to label robots.</div>'; return; }
   const boxes = [];
   app.innerHTML = `<h1>Label robots</h1>
   <div class="card small"><b>Suggest</b> pre-fills boxes from the current detector. Fix them: draw a box around <b>every</b> robot you can see (whole robot incl. bumpers; pick the alliance first),
@@ -208,7 +252,7 @@ async function viewLabel() {
    <select id="al"><option>red</option><option>blue</option></select><button id="sug">Suggest</button><button id="undo">Undo box</button>
    <button class="primary" id="save">Save frame</button><button id="next">Save &amp; +5 s</button><button id="prop" title="SAM2 tracking; drifts after a few seconds">Propagate 5 s</button>
    <button id="train">Train detector</button><span id="msg" class="muted small"></span></div>
-  <div class="canvaswrap card" style="padding:4px"><img id="img"><canvas id="cv"></canvas></div>`;
+  <div class="canvaswrap card" style="padding:0;overflow:hidden"><img id="img"><canvas id="cv"></canvas></div>`;
   const img = $('#img'), cv = $('#cv'), ctx = cv.getContext('2d');
   const draw = () => { cv.width = img.naturalWidth; cv.height = img.naturalHeight; ctx.lineWidth = 3;
     boxes.forEach(([a, x0, y0, x1, y1]) => { ctx.strokeStyle = a === 'red' ? '#ff3b3b' : '#3b8bff'; ctx.strokeRect(x0, y0, x1 - x0, y1 - y0); }); };
@@ -216,8 +260,8 @@ async function viewLabel() {
   const load = () => { img.src = `/api/frame.jpg?video=${encodeURIComponent($('#vid').value)}&t=${$('#t').value}`; boxes.length = 0; draw(); };
   $('#load').onclick = load;
   const toImg = e => { const b = cv.getBoundingClientRect(); return [(e.clientX - b.left) * cv.width / b.width, (e.clientY - b.top) * cv.height / b.height]; };
-  let s = null; cv.onmousedown = e => s = toImg(e);
-  cv.onmouseup = e => { if (!s) return; const p = toImg(e);
+  let s = null; cv.onpointerdown = e => {cv.setPointerCapture(e.pointerId); s = toImg(e);};
+  cv.onpointerup = e => { if (!s) return; const p = toImg(e);
     if (Math.abs(p[0] - s[0]) <= 6) { const i = boxes.findIndex(b => p[0] >= b[1] && p[0] <= b[3] && p[1] >= b[2] && p[1] <= b[4]); if (i >= 0) boxes.splice(i, 1); s = null; draw(); return; }
     boxes.push([$('#al').value, Math.min(s[0], p[0]), Math.min(s[1], p[1]), Math.max(s[0], p[0]), Math.max(s[1], p[1])].map((v, i) => i ? Math.round(v) : v)); s = null; draw(); };
   $('#undo').onclick = () => { boxes.pop(); draw(); };
@@ -237,8 +281,8 @@ async function viewJobs() {
   const fmtS = s => s == null ? '–' : s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
   const draw = async () => {
     if (!location.hash.startsWith('#/jobs')) { clearInterval(jobsTimer); return; }
-    const jobs = await api('/api/progress');
-    app.innerHTML = `<h1>Processing</h1><p class="muted small">Updates every 2 seconds.</p>` + (jobs.map(j => {
+    const [jobs, processes] = await Promise.all([api('/api/progress'),api('/api/jobs')]);
+    app.innerHTML = `<h1>Processing</h1><p class="muted small">Updates every 2 seconds.</p>${processes.map(p=>`<div class="card row"><b>${esc(p.key)}</b><span class="chip ${p.running ? '' : p.returncode === 0 ? 'good' : 'warn'}">${p.running ? 'Running' : p.returncode === 0 ? 'Completed' : 'Failed'}</span>${!['train','label'].includes(p.key) ? `<a target="_blank" href="/api/run/${p.key}/log">View log</a><a href="#/event/${p.key}">Open event</a>` : ''}</div>`).join('')}` + (jobs.map(j => {
       const col = j.stage === 'error' ? 'var(--red)' : j.stage === 'done' ? 'var(--good)' : 'var(--accent)';
       return `<div class="card"><div class="row" style="justify-content:space-between"><b>${j.stage === 'done' ? `<a href="#/match/${j.match_key}">${j.match_key}</a>` : esc(j.match_key)}</b>
         <span class="small muted">${esc(j.stage)}${j.stale ? ' · no update for 2+ min' : ''} · elapsed ${fmtS(j.elapsed_s)}${j.eta_s != null ? ' · ~' + fmtS(j.eta_s) + ' left' : ''}</span></div>
@@ -248,11 +292,44 @@ async function viewJobs() {
   clearInterval(jobsTimer); await draw(); jobsTimer = setInterval(draw, 2000);
 }
 
+async function viewRobots(mk) {
+  const pending = {};
+  const draw = d => {
+    const all = [...d.teams.red.map(t => [t, 'red']), ...d.teams.blue.map(t => [t, 'blue'])];
+    const fmtT = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+    app.innerHTML = `<h1>Who is this? <span class="muted small">${mk}</span></h1>
+    <div class="card"><span class="small">Click the team for each robot, then save. ${d.n_labelled} labelled so far.
+      Robots are picked where the bumper couldn't be read; each label also fixes the robot before and after it.</span>
+      <div class="row" style="margin-top:8px"><button class="primary" id="save" disabled>Save labels & recompute</button>
+      <a href="#/match/${mk}">Back to match</a><span id="msg" class="muted small"></span></div></div>
+    <div class="robots">${d.robots.map(r => {
+      const cur = pending[r.id] !== undefined ? pending[r.id] : r.manual;
+      return `<div class="card robot ${r.manual != null ? 'done' : ''}"><img src="/api/match/${mk}/robot/${r.id}.jpg" alt="robot ${r.id}" loading="lazy">
+        <div class="small muted">video ${fmtT(r.t0)}–${fmtT(r.t1)} · guess <b>${r.team ?? 'none'}</b>${r.read ? ` · read ${r.read}` : ''}</div>
+        <div class="teams">${all.map(([t, a]) => `<button data-id="${r.id}" data-team="${t}" class="team ${a} ${cur === t ? 'on' : ''}">${t}</button>`).join('')}
+          <button data-id="${r.id}" data-team="0" class="team ${cur === 0 ? 'on' : ''}">not a robot</button></div></div>`; }).join('')}</div>`;
+    app.querySelectorAll('button.team').forEach(b => b.onclick = () => {
+      const id = +b.dataset.id, t = +b.dataset.team;
+      pending[id] = pending[id] === t ? null : t; draw(d); $('#save').disabled = !Object.keys(pending).length; });
+    $('#save').disabled = !Object.keys(pending).length;
+    $('#save').onclick = async () => {
+      $('#save').disabled = true; $('#msg').textContent = 'recomputing...';
+      const nd = await api(`/api/match/${mk}/robots`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(pending)});
+      for (const k in pending) delete pending[k];
+      draw(nd); $('#msg').textContent = 'saved: stats recomputed';
+    };
+  };
+  draw(await api(`/api/match/${mk}/robots`));
+}
+
 async function route() {
+  clearInterval(jobsTimer);
   const h = location.hash.slice(2).split('/');
+  document.querySelectorAll('header nav a').forEach(a=>{a.removeAttribute('aria-current');if(a.hash === '#/'+(h[0] === 'jobs' || h[0] === 'label' ? h[0] : '')) a.setAttribute('aria-current','page');});
   try {
     if (h[0] === 'event') await viewEvent(h[1]);
     else if (h[0] === 'match') await viewMatch(h[1]);
+    else if (h[0] === 'robots') await viewRobots(h[1]);
     else if (h[0] === 'team') await viewTeam(h[1], h[2]);
     else if (h[0] === 'calibrate') await viewCalibrate(h[1]);
     else if (h[0] === 'label') await viewLabel();

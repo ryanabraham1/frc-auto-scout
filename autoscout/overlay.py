@@ -215,18 +215,20 @@ class ScoreTimeline:
         }
 
 
-def clean_scores(raw: list[int | None], confirm: int = 2, window: int = 4) -> np.ndarray:
+def clean_scores(raw: list[int | None], confirm: int = 2, window: int = 4, max_rise: int = 15) -> np.ndarray:
     """Turn noisy OCR reads into a non-decreasing score series.
 
-    A new value is accepted only once `confirm` of the next `window` reads agree with it
-    (within the accepted value), which rejects single-frame OCR mistakes.
+    A new value is accepted only once `confirm` of the next `window` reads are consistent with
+    it: equal, or higher by no more than `max_rise` points per read (scores that climb ball by
+    ball, as in 2026, never repeat a value). A misread like 4 -> 423 -> 4 is rejected.
     """
     out = np.zeros(len(raw), dtype=float)
     cur = 0
     for i, v in enumerate(raw):
         if v is not None and v != cur:
-            nxt = [x for x in raw[i + 1: i + 1 + window] if x is not None]
-            support = sum(1 for x in nxt if x == v)  # OCR misreads rarely repeat identically
+            nxt = [(k, x) for k, x in enumerate(raw[i + 1: i + 1 + window], 1) if x is not None]
+            support = sum(1 for k, x in nxt if v <= x <= v + max_rise * k)
+            nxt = [x for _, x in nxt]
             if v > cur and support >= min(confirm, len(nxt)) and len(nxt) > 0:
                 cur = v
             elif v < cur and support >= window - 1 and len(nxt) >= window - 1:

@@ -23,8 +23,8 @@ zones:
   blue_side: [0.0, 0.0, 8.774, 8.052]
   red_side: [8.774, 0.0, 17.548, 8.052]
 elements:
-  blue_reef: {center: [4.489, 4.026], radius: 0.83}
-  red_reef: {center: [13.059, 4.026], radius: 0.83}
+  blue_reef: {center: [4.489, 4.026], radius: 0.83, height: 2.1}
+  red_reef: {center: [13.059, 4.026], radius: 0.83, height: 2.1}
   barge: {center: [8.774, 4.026], size: [0.6, 8.052]}
   # Robots score algae into the NET from their own side of the barge (blue scores from x < 8.77).
   blue_net_zone: {center: [7.75, 4.026], size: [1.5, 8.052]}

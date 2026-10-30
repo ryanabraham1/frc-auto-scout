@@ -37,6 +37,9 @@ class MatchContext:
     notes: list[str] = field(default_factory=list)
     identity_tl: dict[str, list] = field(default_factory=dict)  # slot -> [(t0, t1, team)]
     aux_reads: list = field(default_factory=list)  # [(t, view, team, conf)] from close-up views
+    blobs: dict = field(default_factory=dict, repr=False)  # piece -> moving-piece blobs (t, x, y, area, w, h)
+    blob_view: tuple | None = None  # image offset of the blob coordinates
+    _ts: dict = field(default_factory=dict, repr=False)  # slot -> track times (lookup cache)
 
     def seen_in_view(self, view: str, t0: float, t1: float) -> dict[int, float]:
         """Teams read in a close-up view (e.g. 'blue_reef') during [t0, t1] -> summed confidence."""
@@ -76,7 +79,10 @@ class MatchContext:
         return "red" if team in self.match.red else "blue"
 
     def robot_at(self, slot: str, t: float):
-        return slot_position_at(self.tracks.get(slot, []), t)
+        tr = self.tracks.get(slot, [])
+        if slot not in self._ts or len(self._ts[slot]) != len(tr):
+            self._ts[slot] = np.array([r[0] for r in tr])
+        return slot_position_at(tr, t, self._ts[slot])
 
     def match_time(self, vt: float) -> tuple[str, float]:
         return self.clock.phase(vt) if self.clock else ("unknown", 0.0)
@@ -139,6 +145,34 @@ class GamePlugin:
         return (best, best_d) if best_d < 1.0 else (None, best_d)
 
     @staticmethod
+    def trace_back(ctx: MatchContext, launch, alliances=("red", "blue"), max_back: float = 1.6):
+        """Shooter of a flight first seen already in the air (ascent hidden in a dense volley or
+        behind the goal): run its fitted arc backward in time and take the robot whose shooter it
+        passes through. Returns (slot | None, distance in box widths)."""
+        from ..vision.launches import fit_flight
+
+        P = np.asarray(launch.pts, dtype=float)
+        if len(P) < 4:
+            return None, 9.0
+        cx, cy, _ = fit_flight(P)
+        best, best_d = None, 9.0
+        for dt in np.arange(-0.1, -max_back, -0.1):
+            sx, sy = np.polyval(cx, dt), np.polyval(cy, dt)
+            for slot in ctx.tracks:
+                if slot[:-1] not in alliances:
+                    continue
+                rb = GamePlugin.robot_box(ctx, slot, P[0, 0] + dt)
+                if rb is None:
+                    continue
+                (x0, y0, x1, y1), observed = rb
+                w, h = x1 - x0, y1 - y0
+                d = float(np.hypot(max(x0 - sx, 0, sx - x1), max((y0 - max(1.5 * h, w)) - sy, 0, sy - y1)))
+                d = d / max(w, 20) + (0.0 if observed else 0.25)
+                if d < best_d:
+                    best, best_d = slot, d
+        return (best, best_d) if best_d < 0.6 else (None, best_d)
+
+    @staticmethod
     def proportional_split(total: float, weights: dict[str, float], fallback: dict[str, float] | None = None):
         """Split an exact (official) total among teams proportionally to weights (integers, largest remainder)."""
         w = {k: max(v, 0.0) for k, v in weights.items()}
@@ -182,3 +216,28 @@ def add_station_evidence(ctx: MatchContext, evidence, per_station: dict[str, lis
                 if flag is None:
                     continue
                 evidence.add(slot, team, weight if flag == obs else -weight, why if flag == obs else "")
+
+
+def add_closeup_evidence(ctx: MatchContext, evidence, weight: float = 0.6, max_dist: float = 3.0) -> None:
+    """Close-up camera reads (a hub/reef cam named after its field element): the team read there is the
+    robot of its alliance nearest that element at that moment. Reads of the opposing alliance identify
+    defenders the same way."""
+    red = set(ctx.match.teams("red"))
+    for t, view, team, conf in ctx.aux_reads:
+        if view not in ctx.field.elements:
+            continue
+        a = "red" if team in red else "blue"
+        d = {}
+        for i in range(3):
+            P = slot_positions_between(ctx, f"{a}{i}", t - 0.75, t + 0.75)
+            if len(P):
+                d[f"{a}{i}"] = min(ctx.field.dist_to_element(p, view) for p in P)
+        ranked = sorted(d.items(), key=lambda x: x[1])
+        if not ranked or ranked[0][1] > max_dist:
+            continue
+        margin = ranked[1][1] - ranked[0][1] if len(ranked) > 1 else max_dist
+        if margin < 0.5:
+            continue  # two robots equally close: the read doesn't say which
+        evidence.t = t
+        evidence.add(ranked[0][0], team, weight * conf * min(1.0, margin / 2), f"close-up {view}")
+    evidence.t = None

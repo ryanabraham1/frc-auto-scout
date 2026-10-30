@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": ".venv/bin/autoscout",
+      "runtimeArgs": ["serve", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}

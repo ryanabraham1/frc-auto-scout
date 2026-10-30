@@ -1,7 +1,10 @@
 """End-to-end processing of one match video into per-team stats."""
 from __future__ import annotations
 
+import copy
 import json
+import re
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,17 +13,47 @@ import cv2
 import numpy as np
 import yaml
 
-from . import config, games, overlay
+from . import config, games, ocr, overlay
+from .games.base import add_closeup_evidence
 from .field import Calibration, align_to_reference, view_similarity
 from .tba import TBA, MatchInfo
 from .video import Video, download
 from .vision.detect import RobotDetector, StaticSuppressor, alliance_from_pixels, default_detector
 from .vision.identity import IdentityEvidence, identity_timeline
-from .vision.tracker import SlotTracker
+from .vision.appearance import add_to_bank, load_bank
+from .vision.tracker import RobotTracker
 from .vision.launches import LaunchExtractor
 from .vision.trajectories import Launch, LaunchDetector
 
 RESULTS_DIR = config.DATA_DIR / "results"
+TRACKER_EVIDENCE = 8.0  # the tracker labels robots by team, so its station slots are the identity
+
+
+def load_labels(match_key: str) -> dict[int, int]:
+    """Robots a person labelled on the dashboard: {tracklet id: team, or 0 for 'not a robot'}."""
+    p = RESULTS_DIR / f"{match_key}_labels.json"
+    return {int(k): int(v) for k, v in json.loads(p.read_text()).items()} if p.exists() else {}
+
+
+def _remember_appearance(event_key: str, match_key: str, tracker) -> None:
+    """Add this match's surely-identified robots to the event's appearance bank: tracklets a person
+    labelled, and tracklets whose bumper was read as the team they were assigned to."""
+    ex: dict[int, list] = {}
+    for t in tracker.done + tracker.active:
+        if t.emb is None or t.team is None:
+            continue
+        if t.manual == t.team or (t.reads.get(t.team, 0.0) >= 1.0 and max(t.reads, key=t.reads.get) == t.team):
+            ex.setdefault(t.team, []).append((f"{match_key}:{t.id}", t.emb))
+    add_to_bank(event_key, ex)
+
+
+def _to_h264(path: Path):
+    """OpenCV writes mp4v, which browsers won't play; re-encode in place so the dashboard can show it."""
+    tmp = path.with_suffix(".h264.mp4")
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(path), "-c:v", "libx264", "-preset", "veryfast",
+                        "-crf", "26", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(tmp)])
+    if r.returncode == 0:
+        tmp.replace(path)
 
 
 class NeedsCalibration(RuntimeError):
@@ -30,8 +63,7 @@ class NeedsCalibration(RuntimeError):
 @dataclass
 class Options:
     robot_hz: float = 0.0  # 0 = auto (10 Hz on GPU, 5 Hz on CPU)
-    launch_fps: float = 30.0
-    ocr_identity: bool = True
+    launch_fps: float = 60.0  # airborne-piece frame rate (capped at the video's); dense volleys need 60
     debug_video: bool = False
     weights: str | None = None
     video_height: int = 1080
@@ -48,7 +80,7 @@ def launch_view(cal: Calibration) -> tuple:
     return (x, 0, w, y + h)
 
 
-def collect_blobs(match_key: str, video_path: str, fps: float = 30.0) -> None:
+def collect_blobs(match_key: str, video_path: str, fps: float = 60.0) -> None:
     """Re-run only the airborne-piece blob collection for a processed match (fast; no robots)."""
     old = json.loads((RESULTS_DIR / f"{match_key}.json").read_text())
     plugin = games.get(old["year"])
@@ -184,7 +216,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     lag = max(1, int(round(fps / launch_step / 30.0)))
     launchers = {name: LaunchDetector(lo, hi, lview, piece_area_fn=ppm_fn, cal=cal, field_model=fm, lag=lag)
                  for name, (lo, hi) in plugin.launch_pieces.items()}
-    tracker = SlotTracker(cal, fm)
+    tracker = RobotTracker(cal, fm, {"red": m.red, "blue": m.blue})
     evidence = IdentityEvidence()
     t0, t1 = clock.start_vt - 0.5, clock.teleop_end_vt + 3.5
     writer = None
@@ -217,12 +249,10 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
             tracker.update(t, frame, static([d for d in dets if d.alliance]))
         if writer is not None:
             vis = view.copy()
-            for s in tracker.all_slots():
-                if s.box is not None and t - s.last_t < 0.5:
-                    b = s.box
-                    col = (0, 0, 255) if s.alliance == "red" else (255, 0, 0)
-                    cv2.rectangle(vis, (int(b.x0 - x), int(b.y0 - y)), (int(b.x1 - x), int(b.y1 - y)), col, 2)
-                    cv2.putText(vis, s.key, (int(b.x0 - x), int(b.y0 - y) - 4), 0, 0.6, col, 2)
+            for tid, al, b in tracker.live_boxes(t):
+                col = (0, 0, 255) if al == "red" else (255, 0, 0) if al == "blue" else (200, 200, 200)
+                cv2.rectangle(vis, (int(b[0] - x), int(b[1] - y)), (int(b[2] - x), int(b[3] - y)), col, 2)
+                cv2.putText(vis, f"#{tid}", (int(b[0] - x), int(b[1] - y) - 4), 0, 0.6, col, 2)
             for L in launchers.values():
                 for tr in L.tracks:
                     if len(tr.pts) > 1:
@@ -233,6 +263,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
             writer.write(vis)
     if writer is not None:
         writer.release()
+        _to_h264(out)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     blobs = {k: np.array(L.blobs, dtype=np.float32).reshape(-1, 6) for k, L in launchers.items()}
     np.savez_compressed(RESULTS_DIR / f"{match_key}_blobs.npz", **blobs, view=np.array(lview))
@@ -246,29 +277,35 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "; rejected ground-rolling " + ", ".join(f"{k}={L.rejected_ground}" for k, L in launchers.items()))
 
     # ---- identity ------------------------------------------------------------------------
+    # The tracker read bumpers while tracking; close-up reads join them, then every tracklet is
+    # labelled with a team and slot "red0" is red's first team (bumper reads decide, not order).
+    prog.update("close-ups", 0.0, "reading close-up camera views", force=True)
+    aux_reads = collect_aux_reads(video, base_cal, tl, {"red": m.red, "blue": m.blue})
+    if aux_reads:
+        log(f"close-up views: {len(aux_reads)} team reads")
+    prog.update("identity", 0.5, "labelling robots with teams", force=True)
+    tracker.embed()
+    tracker.finalize(aux_reads, lambda p, view: fm.dist_to_element(p, view) if view in fm.elements else None,
+                     bank=load_bank(m.event_key), manual=load_labels(match_key))
+    # robots identified for sure (bumper read / labelled) teach the bank; label again with it
+    _remember_appearance(m.event_key, match_key, tracker)
+    tracker.relabel(load_bank(m.event_key), load_labels(match_key))
+    tracker.save_thumbs(RESULTS_DIR / f"{match_key}_robots")
+    (RESULTS_DIR / f"{match_key}_tracklets.json").write_text(json.dumps(tracker.to_dict()))
+    log(f"tracker: {tracker.stats}")
     tracks = {s.key: s.track for s in tracker.all_slots()}
-    if opts.ocr_identity:
-        prog.update("identity", 0.0, "reading bumper numbers", force=True)
-        collect_identity(video, tracks, {"red": m.red, "blue": m.blue}, evidence,
-                         budget=600 if gpu else 250)
-        log(f"identity OCR: {len(evidence.timed)} matched reads")
+    for s in tracker.all_slots():
+        team = m.teams(s.alliance)[s.index]
+        evidence.add(s.key, team, TRACKER_EVIDENCE, f"tracker ({tracker.confidence(team):.0%} read)")
     ctx = games.MatchContext(match=m, field=fm, cal=cal, clock=clock, timeline=tl, tracks=tracks,
                              identity={}, identity_conf={}, launches=launches)
-    prog.update("close-ups", 0.0, "reading close-up camera views", force=True)
-    ctx.aux_reads = collect_aux_reads(video, base_cal, tl, {"red": m.red, "blue": m.blue})
-    if ctx.aux_reads:
-        log(f"close-up views: {len(ctx.aux_reads)} team reads")
+    ctx.aux_reads = aux_reads
+    ctx.blobs, ctx.blob_view = blobs, tuple(lview)
     if hasattr(plugin, "identity_evidence"):
         plugin.identity_evidence(ctx, evidence)
     ov = overrides_for(match_key)
     ov.update(_db_overrides(match_key))
-    for a in ("red", "blue"):
-        keys = [f"{a}{i}" for i in range(3)]
-        mapping, conf = evidence.solve(keys, m.teams(a), ov)
-        ctx.identity.update(mapping)
-        ctx.identity_conf.update(conf)
-        ctx.identity_tl.update(identity_timeline(evidence.timed, keys, m.teams(a), mapping,
-                                                 clock.start_vt, clock.teleop_end_vt + 4, ov))
+    solved = _solve_identity(ctx, evidence, m, clock, ov)
     log("identity " + ", ".join(f"{k}={v}" for k, v in ctx.identity.items()) + f" conf {ctx.identity_conf}")
 
     # ---- game analysis -------------------------------------------------------------------
@@ -281,13 +318,11 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "video": m.videos[0] if m.videos else Path(video_path).stem,
         "video_offset": round(clock.start_vt, 2), "clock": clock.to_dict(),
         "timeline": tl.to_dict(), "identity": {k: v for k, v in ctx.identity.items()},
-        "identity_conf": ctx.identity_conf, "identity_notes": evidence.notes[-30:],
-        "tracks": {k: [(round(r[0], 2), round(r[1], 2), round(r[2], 2), bool(r[3])) for r in tr[::2]]
-                   for k, tr in tracks.items()},
+        "identity_conf": ctx.identity_conf, "identity_notes": solved.notes[-30:],
+        **_track_fields(tracks),
         "launches": {k: [dict(l.to_dict(), pts=[[round(a, 2), round(b), round(c)] for a, b, c in l.pts[::3]])
                          for l in v] for k, v in launches.items()},
-        "raw_tracks": {k: [(round(r[0], 3), round(r[1], 3), round(r[2], 3), bool(r[3]), r[4]) for r in tr]
-                       for k, tr in tracks.items()},
+        "tracker": tracker.stats,
         "identity_scores": {f"{k[0]}:{k[1]}": round(v, 3) for k, v in evidence.score.items()},
         "identity_timed": evidence.timed,
         "aux_reads": ctx.aux_reads,
@@ -349,6 +384,11 @@ def reanalyze(match_key: str, tba: TBA | None = None) -> dict:
     ctx = games.MatchContext(match=m, field=plugin.field, cal=cal, clock=clock, timeline=tl, tracks=tracks,
                              identity={}, identity_conf={}, launches=launches)
     ctx.aux_reads = [tuple(x) for x in old.get("aux_reads", [])]
+    bp = RESULTS_DIR / f"{match_key}_blobs.npz"
+    if bp.exists():
+        z = np.load(bp)
+        ctx.blobs = {k: z[k] for k in z.files if k != "view"}
+        ctx.blob_view = tuple(int(v) for v in z["view"]) if "view" in z.files else tuple(cal.view)
     evidence = IdentityEvidence()
     for key, val in old.get("identity_scores", {}).items():
         slot, team = key.split(":")
@@ -356,19 +396,77 @@ def reanalyze(match_key: str, tba: TBA | None = None) -> dict:
     evidence.timed = [tuple(x) for x in old.get("identity_timed", [])]
     ov = overrides_for(match_key)
     ov.update(_db_overrides(match_key))
-    for a in ("red", "blue"):
-        keys = [f"{a}{i}" for i in range(3)]
-        mapping, conf = evidence.solve(keys, m.teams(a), ov)
-        ctx.identity.update(mapping)
-        ctx.identity_conf.update(conf)
-        ctx.identity_tl.update(identity_timeline(evidence.timed, keys, m.teams(a), mapping,
-                                                 clock.start_vt, clock.teleop_end_vt + 4, ov))
+    solved = _solve_identity(ctx, evidence, m, clock, ov)
     res = plugin.analyze(ctx)
     old["identity_timeline"] = ctx.identity_tl
     old.update(res)
-    old.update(identity=ctx.identity, identity_conf=ctx.identity_conf, red_score=m.red_score, blue_score=m.blue_score)
+    old.update(identity=ctx.identity, identity_conf=ctx.identity_conf, identity_notes=solved.notes[-30:],
+               red_score=m.red_score, blue_score=m.blue_score)
     path.write_text(json.dumps(old, default=_json_default))
     return old
+
+
+def relabel(match_key: str, tba: TBA | None = None) -> dict:
+    """Re-label the saved tracklets (after robots were labelled on the dashboard, or the event's
+    appearance bank grew), rewrite the per-team tracks, then reanalyze. No video needed."""
+    path = RESULTS_DIR / f"{match_key}.json"
+    old = json.loads(path.read_text())
+    tp = RESULTS_DIR / f"{match_key}_tracklets.json"
+    if not tp.exists():
+        raise FileNotFoundError(f"{match_key} was processed before tracklets were saved: run it again")
+    tracker = RobotTracker.from_dict(json.loads(tp.read_text()), field_model=games.get(old["year"]).field)
+    labels = load_labels(match_key)
+    tracker.relabel(None, labels)
+    _remember_appearance(old["event_key"], match_key, tracker)
+    tracker.relabel(load_bank(old["event_key"]), labels)
+    tracks = {s.key: s.track for s in tracker.all_slots()}
+    old.update(_track_fields(tracks))
+    old["identity_scores"] = {f"{s.key}:{old[s.alliance][s.index]}": TRACKER_EVIDENCE for s in tracker.all_slots()}
+    old["identity_timed"] = []
+    old["tracker"] = tracker.stats
+    path.write_text(json.dumps(old, default=_json_default))
+    tp.write_text(json.dumps(tracker.to_dict()))
+    return reanalyze(match_key, tba)
+
+
+def save_labels(match_key: str, labels: dict[int, int | None]) -> dict:
+    """Merge robot labels from the dashboard ({tracklet id: team, 0 = not a robot, None = clear})."""
+    cur = load_labels(match_key)
+    for k, v in labels.items():
+        if v is None:
+            cur.pop(int(k), None)
+        else:
+            cur[int(k)] = int(v)
+    (RESULTS_DIR / f"{match_key}_labels.json").write_text(json.dumps({str(k): v for k, v in cur.items()}))
+    return relabel(match_key)
+
+
+def _track_fields(tracks: dict) -> dict:
+    return {
+        "tracks": {k: [(round(r[0], 2), round(r[1], 2), round(r[2], 2), bool(r[3])) for r in tr[::2]]
+                   for k, tr in tracks.items()},
+        "raw_tracks": {k: [(round(r[0], 3), round(r[1], 3), round(r[2], 3), bool(r[3]), r[4]) for r in tr]
+                       for k, tr in tracks.items()},
+    }
+
+
+def rescore(match_key: str, tba: TBA | None = None) -> dict:
+    """Re-read the broadcast score timeline (e.g. after a fix to score reading), then reanalyze."""
+    path = RESULTS_DIR / f"{match_key}.json"
+    old = json.loads(path.read_text())
+    video_path = download(old["video"])
+    video = Video(video_path)
+    base_cal = Calibration.load(old["event_key"])
+    layout = None
+    if base_cal.overlay and tuple(base_cal.overlay.get("frame_size", ())) == (video.width, video.height):
+        layout = overlay.OverlayLayout.from_dict(base_cal.overlay)
+    if layout is None:
+        layout = overlay.detect_layout(video)
+    fm = games.get(old["year"]).field
+    tl = overlay.read_timeline(video, layout, fm.auto_len, fm.teleop_len)
+    old["timeline"] = tl.to_dict()
+    path.write_text(json.dumps(old, default=_json_default))
+    return reanalyze(match_key, tba)
 
 
 def relaunch(match_key: str, tba: TBA | None = None) -> dict:
@@ -399,9 +497,27 @@ def relaunch(match_key: str, tba: TBA | None = None) -> dict:
     return reanalyze(match_key, tba)
 
 
+def _solve_identity(ctx, evidence: IdentityEvidence, m: MatchInfo, clock, ov: dict) -> IdentityEvidence:
+    """Best slot->team mapping per alliance into ctx. Close-up reads are added to a copy, so the stored
+    identity scores stay the re-derivable OCR + station evidence; returns that copy (for its notes)."""
+    ev = copy.deepcopy(evidence)
+    ev.t = None
+    add_closeup_evidence(ctx, ev)
+    for a in ("red", "blue"):
+        keys = [f"{a}{i}" for i in range(3)]
+        mapping, conf = ev.solve(keys, m.teams(a), ov)
+        ctx.identity.update(mapping)
+        ctx.identity_conf.update(conf)
+        ctx.identity_tl.update(identity_timeline(ev.timed, keys, m.teams(a), mapping,
+                                                 clock.start_vt, clock.teleop_end_vt + 4, ov))
+    return ev
+
+
 def collect_identity(video: Video, tracks: dict, teams: dict, evidence: IdentityEvidence,
                      every: float = 1.5, budget: int = 400) -> None:
     """Bumper-number OCR on robot boxes sampled across the whole match (time-stamped evidence)."""
+    if ocr.has_vision():
+        return _collect_identity_dense(video, tracks, teams, evidence)
     jobs = []
     for slot, tr in tracks.items():
         last = -9.0
@@ -421,6 +537,26 @@ def collect_identity(video: Video, tracks: dict, teams: dict, evidence: Identity
     evidence.t = None
 
 
+def _collect_identity_dense(video: Video, tracks: dict, teams: dict, evidence: IdentityEvidence,
+                            every: float = 0.5, min_w: int = 24) -> None:
+    """Apple Vision bumper reads of every slot every `every` s, decoding the video once in order."""
+    arr = {k: np.array([r[0] for r in v]) for k, v in tracks.items() if v}
+    if not arr:
+        return
+    t0 = min(a[0] for a in arr.values())
+    t1 = max(a[-1] for a in arr.values())
+    all_teams = teams["red"] + teams["blue"]
+    for t, frame in video.iter_frames(t0, t1, step=max(1, int(round(video.fps * every)))):
+        for slot, a in arr.items():
+            i = int(np.argmin(np.abs(a - t)))
+            row = tracks[slot][i]
+            if abs(row[0] - t) > 0.25 or not row[3] or not row[4] or row[4][2] - row[4][0] < min_w:
+                continue
+            evidence.t = t
+            evidence.vision_bumper(frame, slot, row[4], teams[slot[:-1]], all_teams)
+    evidence.t = None
+
+
 def identity_pass(match_key: str, video_path: str, every: float = 1.5, budget: int = 400) -> dict:
     """Re-run the bumper-OCR identity pass for a processed match using its stored robot boxes."""
     old = json.loads((RESULTS_DIR / f"{match_key}.json").read_text())
@@ -434,40 +570,32 @@ def identity_pass(match_key: str, video_path: str, every: float = 1.5, budget: i
     return reanalyze(match_key)
 
 
-def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict,
-                      offsets=(4.0, 2.5, 1.0), min_gap: float = 1.5) -> list:
-    """Read bumper numbers in the close-up views (e.g. reef cams) shortly before every score jump.
+def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict, every: float = 1.0) -> list:
+    """Read bumper numbers in the close-up views (e.g. reef/hub cams) every `every` s of the match.
 
-    Returns [(t, view_name, team, conf)] for reads matching a team in the match. A close-up of the
-    scoring element shows who is scoring even when the wide shot has them hidden behind it.
+    Returns [(t, view_name, team, conf)] for reads matching a team in the match. Close-ups show
+    bumpers several times larger than the wide shot, so they identify robots near that element
+    (including defenders) even when the wide-shot bumper is unreadable.
     """
-    from . import ocr
-
     views = base_cal.aux_views or {}
-    if not views or timeline is None:
+    if not views or timeline is None or not timeline.samples:
         return []
+    clock = getattr(timeline, "clock", None)
+    t0 = clock.start_vt if clock else timeline.samples[0].t
+    t1 = clock.teleop_end_vt + 2 if clock else timeline.samples[-1].t
     sx = video.width / base_cal.frame_size[0]
     sy = video.height / base_cal.frame_size[1]
     all_teams = {str(t): t for a in ("red", "blue") for t in teams[a]}
-    out, done = [], set()
-    for alliance in ("red", "blue"):
-        for t, d in timeline.deltas(alliance):
-            for name, rect in views.items():
-                if not name.startswith(alliance):
-                    continue
-                for off in offsets:
-                    tt = round(t - off, 1)
-                    bucket = (round(tt / min_gap), name)  # at most one read per view per min_gap s
-                    if bucket in done:
-                        continue
-                    done.add(bucket)
-                    frame = video.frame_at(tt)
-                    if frame is None:
-                        continue
-                    x, y, w, h = [int(v) for v in (rect[0] * sx, rect[1] * sy, rect[2] * sx, rect[3] * sy)]
-                    for _, txt, conf in ocr.reader().readtext(frame[y: y + h, x: x + w], allowlist="0123456789"):
-                        if txt in all_teams and conf > 0.3:
-                            out.append((tt, name, all_teams[txt], round(float(conf), 2)))
+    words = list(all_teams)
+    out = []
+    for t, frame in video.iter_frames(t0, t1, step=max(1, int(round(video.fps * every)))):
+        for name, rect in views.items():
+            x, y, w, h = [int(v) for v in (rect[0] * sx, rect[1] * sy, rect[2] * sx, rect[3] * sy)]
+            pane = cv2.resize(frame[y: y + h, x: x + w], None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+            for txt, conf in ocr.read_lines(pane, words):
+                for d in set(re.findall(r"\d{3,5}", txt)):
+                    if d in all_teams and conf > 0.3:
+                        out.append((round(t, 2), name, all_teams[d], round(float(conf), 2)))
     return out
 
 

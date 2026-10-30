@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import csv
+import io
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +49,7 @@ def events():
 
 @app.get("/api/event/{event_key}")
 def event(event_key: str):
+    _event_key(event_key)
     c = con()
     ms = [dict(r) for r in c.execute(
         "SELECT match_key,label,comp_level,set_number,match_number,red,blue,red_score,blue_score,status,error "
@@ -75,7 +79,73 @@ def match(match_key: str):
         r["metric_defs"] = games.get(r["year"]).metric_defs
     except KeyError:
         r["metric_defs"] = []
+    kind, _ = _annotated_video(match_key)
+    clock = r.get("clock") or {}
+    # demo videos (scripts/render_demo.py) run in real time from 1 s before auto, so video time maps to demo time
+    offset = clock["auto_end_vt"] - clock["auto_len"] - 1.0 if kind == "demo" and "auto_end_vt" in clock else None
+    r["annotated_video"] = {"kind": kind, "offset": offset} if kind else None
     return r
+
+
+def _annotated_video(match_key: str):
+    for kind, p in (("demo", config.ROOT / "demo" / f"{match_key}.mp4"),
+                    ("debug", config.DATA_DIR / "results" / f"{match_key}_debug.mp4")):
+        if p.exists():
+            return kind, p
+    return None, None
+
+
+@app.get("/api/match/{match_key}/robots")
+def robots(match_key: str, n: int = 16):
+    """Robots (tracklets) worth a person's label, plus the ones already labelled."""
+    from ..pipeline import RESULTS_DIR, load_labels
+    from ..vision.tracker import RobotTracker
+
+    tp = RESULTS_DIR / f"{match_key}_tracklets.json"
+    if not tp.exists():
+        raise HTTPException(404, "no saved robot tracklets: process the match again")
+    tracker = RobotTracker.from_dict(json.loads(tp.read_text()))
+    labels = load_labels(match_key)
+    for t in tracker.done:
+        t.manual = labels.get(t.id)
+    ask = set(tracker.to_ask(n))
+    thumbs = RESULTS_DIR / f"{match_key}_robots"
+
+    def row(t):
+        votes = [o[4] for o in t.obs if o[4]]
+        return {"id": t.id, "t0": round(t.t0, 1), "t1": round(t.t1, 1), "team": t.team, "manual": t.manual,
+                "read": max(t.reads, key=t.reads.get) if t.reads else None,
+                "alliance": max(set(votes), key=votes.count) if votes else None}
+    items = [row(t) for t in tracker.done if (t.id in ask or t.id in labels) and (thumbs / f"{t.id}.jpg").exists()]
+    return {"teams": tracker.teams, "robots": sorted(items, key=lambda r: r["t0"]), "n_labelled": len(labels)}
+
+
+@app.get("/api/match/{match_key}/robot/{tid}.jpg")
+def robot_thumb(match_key: str, tid: int):
+    from ..pipeline import RESULTS_DIR
+
+    p = RESULTS_DIR / f"{match_key}_robots" / f"{tid}.jpg"
+    if not p.exists():
+        raise HTTPException(404, "no image")
+    return FileResponse(p, media_type="image/jpeg")
+
+
+@app.post("/api/match/{match_key}/robots")
+def label_robots(match_key: str, body: dict):
+    """{tracklet id: team | 0 (not a robot) | null (clear)} -> relabel the match and recompute stats."""
+    from ..pipeline import RESULTS_DIR, save_labels
+
+    r = save_labels(match_key, {int(k): v for k, v in body.items()})
+    db.save_result(con(), r, str(RESULTS_DIR / f"{match_key}.json"))
+    return robots(match_key)
+
+
+@app.get("/api/match/{match_key}/video.mp4")
+def match_video(match_key: str):
+    _, p = _annotated_video(match_key)
+    if p is None:
+        raise HTTPException(404, "no annotated video (run with --debug-video or scripts/render_demo.py)")
+    return FileResponse(p, media_type="video/mp4")
 
 
 @app.get("/api/team/{event_key}/{team}")
@@ -106,6 +176,10 @@ def _job_status(key):
 
 @app.post("/api/run/{event_key}")
 def run_event(event_key: str, limit: int = 0):
+    _event_key(event_key)
+    cal = Calibration.load(event_key)
+    if not cal or len(cal.points) < 4:
+        raise HTTPException(400, "Calibrate this event before processing matches")
     if _job_status(event_key) and _job_status(event_key)["running"]:
         return {"started": False, "reason": "already running"}
     log = open(config.DATA_DIR / f"run_{event_key}.log", "w")
@@ -280,6 +354,8 @@ def save_labels(body: dict):
 
 @app.post("/api/train")
 def train():
+    if _job_status("train") and _job_status("train")["running"]:
+        raise HTTPException(409, "Detector training is already running")
     log = open(config.DATA_DIR / "train.log", "w")
     JOBS["train"] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", "train-robots"],
                                      stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
@@ -292,3 +368,64 @@ def dataset():
 
     n = len(list((DATASET / "images").glob("*.jpg"))) if (DATASET / "images").exists() else 0
     return {"images": n, "label_job": _job_status("label"), "train_job": _job_status("train")}
+
+
+# Dashboard workflow endpoints reuse the same commands as the CLI.
+def _event_key(key: str):
+    if not re.fullmatch(r"20\d{2}[a-z0-9]+", key):
+        raise HTTPException(400, "Enter an event key such as 2026txhou")
+    if int(key[:4]) not in (2025, 2026):
+        raise HTTPException(400, "Supported seasons are 2025 and 2026")
+
+
+def _start_job(key: str, args: list[str]):
+    if _job_status(key) and _job_status(key)["running"]:
+        raise HTTPException(409, "This job is already running")
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(config.DATA_DIR / f"run_{key}.log", "w") as log:
+        JOBS[key] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", *args],
+                                     stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
+    return {"started": True}
+
+
+@app.post("/api/event/{event_key}/reanalyze")
+def dashboard_reanalyze(event_key: str):
+    _event_key(event_key)
+    return _start_job(event_key, ["reanalyze", event_key])
+
+
+@app.post("/api/calibration/{event_key}/prepare")
+def prepare_calibration(event_key: str, body: dict):
+    _event_key(event_key)
+    mk = str(body.get("match_key", ""))
+    if not re.fullmatch(re.escape(event_key) + r"_(?:qm\d+|(?:ef|qf|sf|f)\d+m\d+)", mk):
+        raise HTTPException(400, "Enter a match key from this event, such as " + event_key + "_qm1")
+    return _start_job(event_key, ["calibrate", mk])
+
+
+@app.get("/api/event/{event_key}/report", response_class=Response)
+def dashboard_report(event_key: str):
+    from ..validate import event_report
+    _event_key(event_key)
+    with con() as c:
+        return Response(event_report(c, event_key), media_type="text/plain")
+
+
+@app.get("/api/event/{event_key}/export")
+def dashboard_export(event_key: str):
+    _event_key(event_key)
+    with con() as c:
+        rows = [{"match_key": r["match_key"], "team": r["team"], **json.loads(r["metrics"])}
+                for r in c.execute("SELECT match_key, team, metrics FROM team_matches WHERE event_key=? ORDER BY team, match_key", (event_key,))]
+    out = io.StringIO()
+    keys = list(dict.fromkeys(k for row in rows for k in row)) or ["match_key", "team"]
+    writer = csv.DictWriter(out, fieldnames=keys)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({k: json.dumps(v) if isinstance(v, (dict, list)) else v for k, v in row.items()})
+    return Response(out.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{event_key}.csv"'})
+
+
+@app.get("/api/jobs")
+def dashboard_jobs():
+    return [{"key": key, **_job_status(key)} for key in JOBS]

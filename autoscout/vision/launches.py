@@ -65,6 +65,14 @@ class LaunchExtractor:
         self.fm = field_model
         self.targets = targets or {}
         self.stats = {}
+        # tracking knobs (benchmarked against the live score: share of HUB entries tracked)
+        self.gate_est = 0.35  # m: link gate for an established track (>= 3 points)
+        self.gate_new = 0.9  # m: link gate for a fresh track with no velocity yet
+        self.flow = True  # a fresh track borrows the velocity of nearby tracks (pieces in a volley fly together)
+        self.max_miss = None  # frames a track may go unseen (None: ~0.09 s at the blob frame rate)
+        self.min_len = 5  # points for a flight
+        self.min_dur = None  # s a flight must span (None: 4 frame intervals, at least 0.08 s)
+        self.split = True  # cut a track that fails the physics check at its worst kink (a mislink)
 
     # ---- geometry helpers ---------------------------------------------------------------
     def ppm(self, x, y):
@@ -120,11 +128,18 @@ class LaunchExtractor:
             D = B[idx[k]: idx[k + 1]]
             if live and len(D):
                 cost = np.full((len(live), len(D)), 1e9)
+                flow = self._flow(live) if self.flow else None
                 for i, tr in enumerate(live):
                     px, py = tr.predict(t)
                     ppm = self.ppm(px + vx0, py + vy0)
-                    # gate: 0.35 m for established tracks, 0.9 m for a fresh 1-point track
-                    gate = (0.35 if len(tr.pts) >= 3 else 0.9) * ppm + 6 * (tr.miss + 1)
+                    gate_m = self.gate_est if len(tr.pts) >= 3 else self.gate_new
+                    if flow is not None and len(tr.pts) == 1:
+                        v = self._flow_at(flow, tr.pts[-1][1], tr.pts[-1][2], 1.5 * ppm)
+                        if v is not None:  # moving with the volley around it: predict like an established track
+                            h = t - tr.pts[-1][0]
+                            px, py = px + v[0] * h, py + v[1] * h
+                            gate_m = 0.5 * (self.gate_est + self.gate_new)
+                    gate = gate_m * ppm + 6 * (tr.miss + 1)
                     d = np.hypot(D[:, 1] - px, D[:, 2] - py)
                     ok = d < gate
                     cost[i, ok] = d[ok]
@@ -142,17 +157,36 @@ class LaunchExtractor:
             for i, tr in enumerate(live):
                 if i not in used_t:
                     tr.miss += 1
-                (done if tr.miss > 3 else nxt).append(tr)
+                (done if tr.miss > self.max_miss else nxt).append(tr)
             live = nxt
             for j in range(len(D)):
                 if j not in used_d:
                     live.append(_Trk([tuple(D[j])]))
         return done + live
 
+    @staticmethod
+    def _flow(live: list) -> np.ndarray | None:
+        """(x, y, vx, vy) of established tracks, for the flow prior."""
+        rows = []
+        for tr in live:
+            if len(tr.pts) >= 3:
+                (t1, x1, y1), (t2, x2, y2) = tr.pts[-2][:3], tr.pts[-1][:3]
+                dt = max(t2 - t1, 1e-3)
+                rows.append((x2, y2, (x2 - x1) / dt, (y2 - y1) / dt))
+        return np.array(rows) if len(rows) >= 2 else None
+
+    @staticmethod
+    def _flow_at(flow: np.ndarray, x, y, radius):
+        near = np.hypot(flow[:, 0] - x, flow[:, 1] - y) < radius
+        if near.sum() < 2:
+            return None
+        return np.median(flow[near, 2]), np.median(flow[near, 3])
+
     # ---- 2. physics ---------------------------------------------------------------------------
-    def ballistic(self, P: np.ndarray):
-        """Return fit info if the track is a plausible free flight, else None."""
-        if len(P) < 5 or P[-1, 0] - P[0, 0] < 0.12:
+    def ballistic(self, P: np.ndarray, strict: bool = False):
+        """Return fit info if the track is a plausible free flight, else None. `strict`: only clear
+        gravity counts (for pieces cut out of a longer track, which have less to vouch for them)."""
+        if len(P) < self.min_len or P[-1, 0] - P[0, 0] < self.min_dur:
             return None
         x0, y0 = P[0, 1] + self.view[0], P[0, 2] + self.view[1]
         ppm = self.ppm(x0, y0)
@@ -169,6 +203,8 @@ class LaunchExtractor:
         # gravity: clear downward curvature, or a rising segment too fast to be on the floor
         g_like = ay > 1.5 * ppm
         floor_speed = self._floor_speed(P)
+        if strict and ay < 4.0 * ppm:  # ~0.4 g: a real free fall curves at ~9.8 px-per-metre per s^2
+            return None
         if not (g_like or floor_speed > 9.0 or (rises > 0.5 * ppm and dur < 0.4 and cy[1] < -2.5 * ppm)):
             return None
         if ay < -1.0 * ppm:
@@ -185,6 +221,22 @@ class LaunchExtractor:
         if ok.sum() < 2:
             return 0.0
         return float(np.median(np.linalg.norm(np.diff(f, axis=0), axis=1)[ok] / dt[ok]))
+
+    def split_ballistic(self, P: np.ndarray, depth: int = 0) -> list:
+        """Ballistic pieces of a track. In a volley the linker sometimes hops from one piece to its
+        neighbour, so a whole track fails the physics check although each part is a clean flight:
+        cut it where the path kinks hardest and test each part."""
+        fit = self.ballistic(P, strict=depth > 0)
+        if fit is not None:
+            return [(P, fit)]
+        if len(P) < 2 * self.min_len or depth >= 3:
+            return []
+        acc = np.hypot(np.diff(P[:, 1], 2), np.diff(P[:, 2], 2))  # second difference ~ kink
+        lo, hi = self.min_len - 1, len(P) - self.min_len - 1
+        if hi < lo:
+            return []
+        k = lo + int(np.argmax(acc[lo: hi + 1])) + 1
+        return self.split_ballistic(P[:k], depth + 1) + self.split_ballistic(P[k:], depth + 1)
 
     # ---- 3. re-join split flights ----------------------------------------------------------------
     def rejoin(self, flights: list[tuple]) -> list[tuple]:
@@ -257,6 +309,12 @@ class LaunchExtractor:
             return []
         B = np.asarray(blobs, dtype=np.float64)
         self.stats = {}
+        ts = np.unique(B[:, 0])
+        fps = 1.0 / float(np.median(np.diff(ts))) if len(ts) > 2 else 30.0
+        if self.max_miss is None:
+            self.max_miss = max(2, int(round(0.09 * fps)))
+        if self.min_dur is None:
+            self.min_dur = max(0.08, 4.0 / fps)
         B = self.filter_blobs(B)
         tracks = self.link(B)
         flights, ends = [], []
@@ -266,24 +324,32 @@ class LaunchExtractor:
             if len(P) >= 2:
                 vy_end = (P[-1, 2] - P[-2, 2]) / max(P[-1, 0] - P[-2, 0], 1e-3)
                 ends.append((P[-1, 0], P[-1, 1], P[-1, 2], vy_end))
-            if len(P) < 5:
+            if len(P) < self.min_len:
                 rej["short"] += 1
                 continue
-            fit = self.ballistic(P)
-            if fit is None:
-                rej["not_ballistic"] += 1
-                continue
-            flights.append((P, fit))
+            parts = self.split_ballistic(P) if self.split else []
+            if not parts:
+                fit = self.ballistic(P)
+                if fit is None:
+                    rej["not_ballistic"] += 1
+                    continue
+                parts = [(P, fit)]
+            flights += parts
         ends = np.array(ends).reshape(-1, 4)
         flights = self.rejoin(flights)
         kept = []
         for P, fit in flights:
-            if self.is_bounce(P, ends):
-                rej["bounce"] += 1
-                continue
-            if not self._plausible_origin(P):
-                rej["origin"] += 1
-                continue
+            # A flight that drops into a goal opening is a shot even if it was first seen in mid
+            # air: its first sighting maps to a meaningless floor point (origin check), and inside
+            # a volley the piece ahead ends right where it starts (bounce check). Ejections leave a
+            # HUB from its base and floor bounces can't reach the opening, so neither applies.
+            if not (self.targets and self.made_into(P, fit)):
+                if self.is_bounce(P, ends):
+                    rej["bounce"] += 1
+                    continue
+                if not self._plausible_origin(P):
+                    rej["origin"] += 1
+                    continue
             kept.append((P, fit))
         # piece count relative to typical single-piece tracks at similar image height
         med_area = np.array([np.median(P[:, 3]) for P, _ in kept]) if kept else np.zeros(0)

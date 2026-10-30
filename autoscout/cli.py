@@ -72,6 +72,32 @@ def cmd_relaunch(a):
         print("relaunched", k, r.get("launch_stats"))
 
 
+def cmd_relabel(a):
+    from . import db
+    from .pipeline import RESULTS_DIR, relabel
+
+    con = db.connect()
+    keys = [a.key] if "_" in a.key else [r["match_key"] for r in con.execute(
+        "SELECT match_key FROM matches WHERE event_key=? AND status='done'", (a.key,))]
+    for k in keys:
+        r = relabel(k)
+        db.save_result(con, r, str(RESULTS_DIR / f"{k}.json"))
+        print("relabelled", k, r.get("tracker"))
+
+
+def cmd_rescore(a):
+    from . import db
+    from .pipeline import RESULTS_DIR, rescore
+
+    con = db.connect()
+    keys = [a.key] if "_" in a.key else [r["match_key"] for r in con.execute(
+        "SELECT match_key FROM matches WHERE event_key=? AND status='done'", (a.key,))]
+    for k in keys:
+        r = rescore(k)
+        db.save_result(con, r, str(RESULTS_DIR / f"{k}.json"))
+        print("rescored", k)
+
+
 def cmd_recollect(a):
     from .pipeline import collect_blobs
 
@@ -171,6 +197,10 @@ def main(argv=None):
     s.add_argument("key"); s.set_defaults(f=cmd_reanalyze)
     s = sub.add_parser("relaunch", help="re-extract launches from saved blobs, then reanalyze")
     s.add_argument("key"); s.set_defaults(f=cmd_relaunch)
+    s = sub.add_parser("relabel", help="re-label robots from saved tracklets + dashboard labels, then reanalyze")
+    s.add_argument("key"); s.set_defaults(f=cmd_relabel)
+    s = sub.add_parser("rescore", help="re-read the broadcast score timeline from video, then reanalyze")
+    s.add_argument("key"); s.set_defaults(f=cmd_rescore)
     s = sub.add_parser("recollect", help="re-collect airborne-piece blobs from video (no robot detection)")
     s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_recollect)
     s = sub.add_parser("identify", help="dedicated bumper-OCR identity pass over a processed match")

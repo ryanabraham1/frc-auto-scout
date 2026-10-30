@@ -210,3 +210,49 @@ def test_v2_made_vs_lob_over_target():
     ex = _extractor(target)
     lob = ex.extract(_blobs(arc, ex=ex))
     assert len(lob) == 1 and lob[0].target is None
+
+
+def _tracklet(tid, t0, t1, x0, x1, alliance, reads=None):
+    from autoscout.vision.tracker import Tracklet
+
+    ts = np.arange(t0, t1 + 1e-9, 0.25)
+    xs = np.linspace(x0, x1, len(ts))
+    return Tracklet(tid, obs=[(float(t), float(x), 4.0, (0, 0, 40, 40), alliance) for t, x in zip(ts, xs)],
+                    reads=reads or {})
+
+
+def test_robot_tracker_follows_robots_across_a_crossing():
+    """Two red robots cross; tracklets are cut at the crossing. Motion continuity plus one bumper
+    read per robot must keep each robot's pieces with its own team (no swap)."""
+    from autoscout.vision.tracker import RobotTracker
+
+    tr = RobotTracker(None, None, {"red": [111, 222, 333], "blue": [444, 555, 666]})
+    tr.done = [_tracklet(0, 0, 5, 2.0, 7.0, "red", {111: 3.0}),   # A heading right
+               _tracklet(1, 0, 5, 12.0, 7.6, "red", {222: 3.0}),  # B heading left
+               _tracklet(2, 6, 10, 7.4, 12.0, "red"),             # A after crossing
+               _tracklet(3, 6, 10, 7.0, 2.6, "red")]              # B after crossing
+    tr.times = [float(t) for t in np.arange(0, 10.01, 0.25)]
+    tr.relabel()
+    assert [t.team for t in tr.done] == [111, 222, 111, 222]
+    assert tr.slots["red0"].track[-1][1] == pytest.approx(12.0)  # team 111's track ends on the right
+
+
+def test_robot_tracker_manual_label_wins_and_round_trips():
+    from autoscout.vision.tracker import NOT_ROBOT, RobotTracker
+
+    tr = RobotTracker(None, None, {"red": [111, 222, 333], "blue": [444, 555, 666]})
+    tr.done = [_tracklet(0, 0, 5, 2.0, 7.0, "red", {111: 3.0}), _tracklet(1, 0, 5, 9.0, 9.5, "blue")]
+    tr.times = [0.0, 5.0]
+    tr.relabel(manual={0: 222, 1: NOT_ROBOT})
+    assert tr.done[0].team == 222 and tr.done[1].team is None
+    back = RobotTracker.from_dict(tr.to_dict())
+    assert [t.team for t in back.done] == [222, None] and back.done[0].reads == {111: 3.0}
+
+
+def test_clean_scores_follows_a_score_climbing_ball_by_ball():
+    """2026 HUB scores rise every read during a volley, so no value repeats; it must still be
+    followed live (not held until it settles), while a one-off misread is still rejected."""
+    raw = [0, 0, 3, 7, 12, 18, 25, 31, 38, 380, 44, 50, 50, 50]
+    out = clean_scores(raw)
+    assert out[3] == 7 and out[8] == 38 and out[-1] == 50
+    assert max(out) == 50 and all(np.diff(out) >= 0)

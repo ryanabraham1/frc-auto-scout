@@ -26,6 +26,8 @@ TELEOP_BOUNDS = [  # (period, clock_hi, clock_lo) in TELEOP remaining seconds
 ]
 TOWER_PTS_AUTO = {"Level1": 15}
 TOWER_PTS_END = {"Level1": 10, "Level2": 20, "Level3": 30}
+COLUMN_WEIGHT = 0.05  # launch-column blobs per detected shot (a volley fills a column with ~20 per ball-second)
+SHOT_WINDOW = 3.0  # s before a score increase in which the scoring shot was released
 COUNT_LAG = 1.0  # s between release and the hub sensor counting the FUEL
 
 
@@ -163,17 +165,28 @@ class Rebuilt2026(GamePlugin):
         knocked = defaultdict(float)
         hp_shots = defaultdict(lambda: defaultdict(float))  # alliance -> period -> pieces
         unattributed = 0.0
+        shot_log = []  # (t0, team or "HP", alliance, pieces, made) for time-local attribution
         for L in ctx.launches.get("fuel", []):
             period = period_of(ctx, L.t0 + COUNT_LAG)
-            if period is None or not getattr(L, "rising", True):
-                continue  # descent-only tracks: release not seen, can't attribute
-            slot, _ = self.attribute_launch(ctx, L)
+            if period is None:
+                continue
+            if getattr(L, "rising", True):
+                slot, _ = self.attribute_launch(ctx, L)
+            elif L.target and L.target.endswith("_hub"):
+                # descent-only (ascent hidden, typical inside a volley) but dropping into a HUB:
+                # trace the arc back to the shooter of that HUB's alliance
+                slot, _ = self.trace_back(ctx, L, alliances=(L.target[:-4],))
+                if slot is None:
+                    continue
+            else:
+                continue  # descent-only and not into a goal: release not seen, can't attribute
             ev = {"t": round(L.t0, 2), "period": period, "n": round(L.n_pieces, 2),
                   "start": [round(v) for v in L.start], "end": [round(v) for v in L.end]}
             if slot is None:
                 hp = self.outpost_alliance(ctx, L)
                 if hp:
                     hp_shots[hp][period] += L.n_pieces
+                    shot_log.append((L.t0, "HP", hp, L.n_pieces, False))
                     ev.update(kind="human_player", alliance=hp)
                     events.append(ev)
                 else:
@@ -199,9 +212,11 @@ class Rebuilt2026(GamePlugin):
                 else:
                     shots[team][period] += L.n_pieces
                     ev["kind"] = "shot"
-                    if getattr(L, "target", None) == f"{alliance}_hub":
+                    is_made = getattr(L, "target", None) == f"{alliance}_hub"
+                    if is_made:
                         made[team][period] += L.n_pieces
                         ev["made"] = True
+                    shot_log.append((L.t0, team, alliance, L.n_pieces, is_made))
             else:
                 # A FEED is a piece *shot* from the neutral/opponent zone that lands in the robot's
                 # own ALLIANCE ZONE. Pieces knocked up while a robot drives through a pile land
@@ -234,6 +249,11 @@ class Rebuilt2026(GamePlugin):
                     zone_time_period[team][per] += dt
 
         # Split official per-period hub counts among robots (+ human player).
+        live = {}
+        columns = self.column_activity(ctx)
+        for a in ("red", "blue"):
+            live[a], credit = self.live_weights(ctx, a, teams[a], shot_log, columns)
+            events += credit
         scored = defaultdict(lambda: defaultdict(int))
         source = "breakdown" if bd else "overlay"
         alliance_summary = {}
@@ -246,11 +266,15 @@ class Rebuilt2026(GamePlugin):
                     official = self._overlay_count(ctx, a, per)
                 # Evidence: pieces seen dropping into the hub count fully; other shots partially
                 # (make detection misses some, e.g. when the opening is occluded).
-                if have_targets:
+                if live[a] is not None:
+                    weights = {t: live[a][t][per] for t in teams[a]}
+                    weights["HP"] = live[a]["HP"][per]
+                elif have_targets:
                     weights = {t: made[t][per] + 0.3 * (shots[t][per] - made[t][per]) for t in teams[a]}
+                    weights["HP"] = hp_shots[a][per]
                 else:
                     weights = {t: shots[t][per] for t in teams[a]}
-                weights["HP"] = hp_shots[a][per]
+                    weights["HP"] = hp_shots[a][per]
                 fallback = {t: zone_time_period[t][per] for t in teams[a]}
                 split = self.proportional_split(official or 0, weights, fallback)
                 for k, v in split.items():
@@ -310,6 +334,101 @@ class Rebuilt2026(GamePlugin):
                 }
         return {"teams": teams_out, "alliances": alliance_summary, "events": events,
                 "auto_winner": auto_winner, "count_source": source}
+
+    def column_activity(self, ctx: MatchContext):
+        """Moving FUEL in the air right above each robot, per blob frame: (times, {slot: counts}).
+
+        Inside a dense volley single balls can't be followed (identical pieces a few cm apart get
+        linked to each other), but the launch column above the shooter fills with moving FUEL
+        whether or not any one ball is tracked, so it says who is firing."""
+        B = ctx.blobs.get("fuel")
+        if B is None or not len(B) or ctx.blob_view is None:
+            return None, {}
+        T = B[:, 0]
+        X, Y = B[:, 1] + ctx.blob_view[0], B[:, 2] + ctx.blob_view[1]
+        # FUEL dropping into either HUB passes over robots parked beside it: never count it
+        away = np.ones(len(T), bool)
+        for hub in ("red_hub", "blue_hub"):
+            top = ctx.cal.points.get(f"{hub}_top")
+            if top is not None:
+                r = 0.6 * self.field.elements[hub]["size"][0] * ctx.cal.px_per_meter_x(self.field.elements[hub]["center"])
+                away &= ~((np.abs(X - top[0]) < 2.0 * r) & (Y < top[1] + r))
+        times, starts = np.unique(T, return_index=True)
+        ends = np.r_[starts[1:], len(T)]
+        counts = {slot: np.zeros(len(times)) for slot in ctx.tracks}
+        for k in range(0, len(times), 2):  # every other blob frame is plenty
+            sel = away[starts[k]: ends[k]]
+            x, y = X[starts[k]: ends[k]][sel], Y[starts[k]: ends[k]][sel]
+            for slot in ctx.tracks:
+                r = ctx.robot_at(slot, times[k])
+                if r is None or self.zone_for(slot[:-1], r[:2]) != "own":
+                    continue  # FUEL only scores when shot from the ALLIANCE ZONE; a defender at the
+                    # opponent's HUB has the opponent's stream overhead
+                rb = self.robot_box(ctx, slot, times[k])
+                if rb is None:
+                    continue
+                (x0, y0, x1, y1), _ = rb
+                w, h = x1 - x0, y1 - y0
+                counts[slot][k] = np.count_nonzero((x > x0 - 0.25 * w) & (x < x1 + 0.25 * w)
+                                                   & (y < y0 - 0.1 * h) & (y > y0 - 2.5 * h))
+        return times, {slot: np.cumsum(c) for slot, c in counts.items()}
+
+    def live_weights(self, ctx: MatchContext, alliance: str, teams: list[int], shot_log: list, columns=None):
+        """Credit every live score increase to whoever was shooting just before it.
+
+        The broadcast score rises ball by ball as the HUB counts FUEL, so it says *when* each
+        alliance scored even when a volley is too dense to track ball by ball. Each increase is
+        shared among the alliance's robots by their detected shots in the few seconds before it
+        (a seen make counts double) and by how much moving FUEL filled the launch column above
+        each of them (what reveals a volley); with neither, among robots in shooting position: in
+        their ALLIANCE ZONE, weighted toward the HUB.
+        Returns ({team | "HP": {period: points}}, credit events), or (None, []) without a live
+        score timeline.
+        """
+        tl = ctx.timeline
+        if tl is None or ctx.clock is None:
+            return None, []
+        deltas = tl.deltas(alliance)
+        if len(deltas) < 15:
+            return None, []  # score posted in chunks, not live: no timing to work with
+        ends = (ctx.clock.auto_end_vt, ctx.clock.teleop_end_vt)
+        out = defaultdict(lambda: defaultdict(float))
+        credit = []  # per score increase: who was credited, for the timeline / annotated video
+        hub = f"{alliance}_hub"
+        for t, d in deltas:
+            if d >= 10 and any(-1.0 < t - e < 4.0 for e in ends):
+                continue  # TOWER points posted at the end of AUTO / the match, not FUEL
+            per = period_of(ctx, t - COUNT_LAG)
+            if per is None:
+                continue
+            lo, hi = t - SHOT_WINDOW, t - 0.3
+            w = defaultdict(float)
+            for t0, who, a, n, is_made in shot_log:
+                if a == alliance and lo <= t0 <= hi:
+                    w[who] += n * (2.0 if is_made else 1.0)
+            ctimes, csum = columns or (None, {})
+            if ctimes is not None:
+                i0, i1 = np.searchsorted(ctimes, lo), np.searchsorted(ctimes, hi) - 1
+                for team in teams:
+                    slot = ctx.slot_of(team, t)
+                    if slot in csum and i1 >= max(i0, 0):
+                        c = csum[slot][i1] - (csum[slot][i0 - 1] if i0 > 0 else 0.0)
+                        if c > 0:
+                            w[team] += COLUMN_WEIGHT * c
+            if not w:
+                for team in teams:
+                    slot = ctx.slot_of(team, t)
+                    pos = [ctx.robot_at(slot, x) for x in np.linspace(lo, hi, 5)] if slot else []
+                    pos = [q for q in pos if q is not None and self.zone_for(alliance, q[:2]) == "own"]
+                    for q in pos:
+                        w[team] += 1.0 / (1.0 + self.field.dist_to_element(q[:2], hub) / 2.0)
+            tot = sum(w.values())
+            for who, v in w.items():
+                out[who][per] += d * v / tot
+                if who != "HP":
+                    credit.append({"t": round(t, 2), "kind": "scored", "team": who, "alliance": alliance,
+                                   "period": per, "n": round(d * v / tot, 2)})
+        return out, credit
 
     def identity_evidence(self, ctx: MatchContext, evidence) -> None:
         """Climb results per station vs. which slot ends at its TOWER."""
