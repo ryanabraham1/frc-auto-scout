@@ -256,7 +256,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
                              identity={}, identity_conf={}, launches=launches)
     prog.update("close-ups", 0.0, "reading close-up camera views", force=True)
     ctx.aux_reads = collect_aux_reads(video, base_cal, tl, {"red": m.red, "blue": m.blue}, clock,
-                                      budget=400 if gpu else 150)
+                                      budget=400 if gpu else 150, own_ref=own_ref, view=cal.view)
     if ctx.aux_reads:
         log(f"close-up views: {len(ctx.aux_reads)} team reads")
     if hasattr(plugin, "identity_evidence"):
@@ -444,12 +444,14 @@ def identity_pass(match_key: str, video_path: str, every: float = 1.5, budget: i
 
 
 def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict, clock=None,
-                      budget: int = 300) -> list:
+                      budget: int = 300, own_ref: np.ndarray | None = None, view=None) -> list:
     """Read bumper numbers in the close-up views (reef / hub cams): before every score jump and
     periodically through the match (see closeup.sample_times).
 
     Returns [(t, view_name, team, conf)] for reads matching a team in the match. A close-up of the
     scoring element shows who is there even when the wide shot has them hidden behind it.
+    Frames whose wide shot (`view`) doesn't match this video's own (`own_ref`) are skipped:
+    replays and full-screen shots change the layout, and a replay shows the past.
     """
     from .vision.closeup import read_view, sample_times
 
@@ -463,6 +465,9 @@ def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict
     for tt, name in sample_times(views, timeline, clock, budget=budget):
         if tt != frame_t:  # samples are sorted: views read at the same time share one decode
             frame, frame_t = video.frame_at(tt), tt
+            if frame is not None and own_ref is not None and view is not None \
+                    and view_similarity(frame, own_ref, view) < 0.45:
+                frame = None  # camera cut
         if frame is None:
             continue
         x, y, w, h = [int(v) for v in (views[name][0] * sx, views[name][1] * sy,
@@ -482,7 +487,9 @@ def aux_pass(match_key: str, video_path: str, budget: int = 300) -> dict:
     tl_d = old["timeline"]
     samples = [ScoreSample(t, tm, b, r) for t, tm, b, r in zip(tl_d["t"], tl_d["timer"], tl_d["blue"], tl_d["red"])]
     tl = ScoreTimeline(samples=samples, clock=clock, blue=np.array(tl_d["blue"], float), red=np.array(tl_d["red"], float))
-    old["aux_reads"] = collect_aux_reads(Video(video_path), base, tl, {"red": old["red"], "blue": old["blue"]},
-                                         clock, budget)
+    video = Video(video_path)
+    old["aux_reads"] = collect_aux_reads(video, base, tl, {"red": old["red"], "blue": old["blue"]}, clock, budget,
+                                         own_ref=video.frame_at(clock.teleop_start_vt + 20),
+                                         view=tuple(old["calibration"]["view"]))
     (RESULTS_DIR / f"{match_key}.json").write_text(json.dumps(old, default=_json_default))
     return reanalyze(match_key)
