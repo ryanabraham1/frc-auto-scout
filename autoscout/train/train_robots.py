@@ -37,7 +37,7 @@ def train(base: str | None = None, epochs: int = 60, imgsz: int = 1280, batch: i
     if not Path(base).exists():
         base = "yolo11s.pt"
     model = YOLO(base)
-    dev = device or ("0" if config.device() == "cuda" else "cpu")
+    dev = device or {"cuda": "0", "mps": "mps"}.get(config.device(), "cpu")
     res = model.train(data=str(data), epochs=epochs, imgsz=imgsz, batch=batch, device=dev,
                       project=str(config.DATA_DIR / "runs"), name="robots", exist_ok=True,
                       mosaic=0.5, fliplr=0.5, hsv_h=0.0,  # keep hue: red vs blue matters

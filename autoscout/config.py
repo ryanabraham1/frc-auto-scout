@@ -54,13 +54,25 @@ def yt_cookies() -> Path | None:
 
 
 def device() -> str:
-    """'cuda' when a GPU is available (e.g. RTX 3060), else 'cpu'."""
+    """'cuda' (NVIDIA, e.g. RTX 3060), 'mps' (Apple silicon GPU, e.g. M3), else 'cpu'.
+
+    Override with AUTOSCOUT_DEVICE=cpu|cuda|mps.
+    """
     forced = os.environ.get("AUTOSCOUT_DEVICE")
     if forced:
         return forced
     try:
         import torch
 
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            return "cuda"
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return "mps"
+        return "cpu"
     except Exception:
         return "cpu"
+
+
+def has_gpu() -> bool:
+    return device() in ("cuda", "mps")

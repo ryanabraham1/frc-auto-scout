@@ -173,7 +173,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     # ---- frame loop ---------------------------------------------------------------------
     det = detector or default_detector(opts.weights)
     static = StaticSuppressor()
-    gpu = config.device() == "cuda"
+    gpu = config.has_gpu()
     robot_hz = opts.robot_hz or (10.0 if gpu else 4.0)
     x, y, w, h = cal.view
     fps = video.fps

@@ -95,6 +95,10 @@ To build a good detector, use the dashboard's **Label robots** page:
 About 150 frames across a few matches of an event gives a solid model. Then click **Train detector**, or run
 `autoscout train-robots`. On an RTX 3060 that takes about 15 minutes.
 
+## Mac (Apple silicon)
+
+See [docs/SETUP_MAC.md](docs/SETUP_MAC.md). Robot detection and training use the Apple GPU automatically.
+
 ## Hardware (i9-12900K + RTX 3060)
 
 See [docs/SETUP_PC.md](docs/SETUP_PC.md). With CUDA:
