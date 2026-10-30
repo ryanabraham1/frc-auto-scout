@@ -226,7 +226,7 @@ def clean_scores(raw: list[int | None], confirm: int = 2, window: int = 4) -> np
     for i, v in enumerate(raw):
         if v is not None and v != cur:
             nxt = [x for x in raw[i + 1: i + 1 + window] if x is not None]
-            support = sum(1 for x in nxt if abs(x - v) <= max(2, 0.05 * v))
+            support = sum(1 for x in nxt if x == v)  # OCR misreads rarely repeat identically
             if v > cur and support >= min(confirm, len(nxt)) and len(nxt) > 0:
                 cur = v
             elif v < cur and support >= window - 1 and len(nxt) >= window - 1:

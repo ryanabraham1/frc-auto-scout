@@ -131,9 +131,39 @@ class LaunchDetector:
                 self.tracks.append(Track(self.next_id, [(t, *d)]))
                 self.next_id += 1
 
+    @staticmethod
+    def _merge_fragments(tracks: list[Track], max_gap: float = 0.3) -> list[Track]:
+        """Join tracks that are pieces of one flight (broken by occlusion or a missed frame).
+
+        Track B continues track A if B starts shortly after A ends, close to where A's motion
+        (with its fitted image-space gravity) predicts the piece to be.
+        """
+        tracks = sorted((t for t in tracks if t.pts), key=lambda t: t.pts[0][0])
+        merged: list[Track] = []
+        open_ends: list[Track] = []
+        for tr in tracks:
+            t0, x0, y0, _ = tr.pts[0]
+            best, best_d = None, 1e9
+            for a in open_ends:
+                ta = a.pts[-1][0]
+                if not (0 < t0 - ta <= max_gap) or len(a.pts) < 3:
+                    continue
+                px, py, gate = a.predict(t0)
+                d = np.hypot(px - x0, py - y0)
+                if d < max(25.0, gate) and d < best_d:
+                    best, best_d = a, d
+            if best is not None:
+                best.pts.extend(tr.pts)
+            else:
+                merged.append(tr)
+                open_ends.append(tr)
+            open_ends = [a for a in open_ends if t0 - a.pts[-1][0] <= max_gap]
+        return merged
+
     def finish(self) -> list[Launch]:
         self.done.extend(self.tracks)
         self.tracks = []
+        self.done = self._merge_fragments(self.done)
         vx, vy = self.view[0], self.view[1]
         out = []
         for tr in self.done:

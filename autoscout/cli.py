@@ -23,7 +23,7 @@ def cmd_run_event(a):
     from . import db
     from .pipeline import NeedsCalibration, Options, RESULTS_DIR, process_match
     from .tba import TBA, MatchInfo, sort_key
-    from .vision.detect import RobotDetector
+    from .vision.detect import default_detector
 
     tba = TBA(max_age_s=300)
     con = db.connect()
@@ -33,7 +33,7 @@ def cmd_run_event(a):
     done = {r["match_key"] for r in con.execute("SELECT match_key FROM matches WHERE status='done'")}
     todo = [m for m in ms if a.force or m.key not in done][: a.limit or None]
     print(f"{a.event_key}: {len(ms)} matches with video, {len(todo)} to process")
-    det = RobotDetector(a.weights)
+    det = default_detector(a.weights)
     for m in todo:
         try:
             r = process_match(m.key, Options(weights=a.weights), tba=tba, detector=det)

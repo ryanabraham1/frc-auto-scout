@@ -93,9 +93,10 @@ class GamePlugin:
                 continue
             x0, y0, x1, y1 = r[3]
             w, h = x1 - x0, y1 - y0
-            # distance from the release point to the box, allowing release up to ~1.5 box heights above
+            # distance from the release point to the box, allowing release above the box (shooters
+            # sit on top of the robot; a bumper-only box is short, so also allow ~1 box width)
             dx = max(x0 - sx, 0, sx - x1)
-            dy = max((y0 - 1.5 * h) - sy, 0, sy - y1)
+            dy = max((y0 - max(1.5 * h, 1.0 * w)) - sy, 0, sy - y1)
             d = float(np.hypot(dx, dy)) / max(w, 20)
             if d < best_d:
                 best, best_d = slot, d

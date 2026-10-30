@@ -95,6 +95,77 @@ class RobotDetector:
         return out[0] if single else out
 
 
+class EnsembleDetector:
+    """Union of several robot detectors (e.g. our full-robot model + Spy Glass bumper model).
+
+    Boxes from different models describe the same robot differently (whole robot vs. bumper),
+    but their ground-contact point (bottom-center) agrees, so detections of the same alliance
+    whose foot points are close are merged, keeping the larger (whole-robot) box.
+    """
+
+    def __init__(self, detectors: list["RobotDetector"]):
+        self.detectors = detectors
+        self.weights = Path("+".join(d.weights.name for d in detectors))
+
+    def __call__(self, image: np.ndarray, conf: float | None = None) -> list[Det]:
+        dets = []
+        for d in self.detectors:
+            for b in d(image, conf=conf):
+                if not b.alliance:
+                    b.alliance, _ = alliance_from_pixels(image, b)
+                dets.append(b)
+        dets.sort(key=lambda b: -(b.w * b.h))
+        out: list[Det] = []
+        for b in dets:
+            fx, fy = b.foot
+            dup = False
+            for k in out:
+                kx, ky = k.foot
+                if (b.alliance == k.alliance or not b.alliance) and abs(fx - kx) < 0.45 * k.w and abs(fy - ky) < 0.5 * k.h:
+                    k.conf = max(k.conf, b.conf)
+                    dup = True
+                    break
+            if not dup:
+                out.append(b)
+        return out
+
+
+class StaticSuppressor:
+    """Drop detections that sit at the same image spot for most of the match (field elements
+    such as alliance-colored ramps that look like bumpers). Robots never park that long."""
+
+    def __init__(self, cell: int = 24, min_frames: int = 40, frac: float = 0.5):
+        self.cell = cell
+        self.counts: dict[tuple, int] = {}
+        self.frames = 0
+        self.min_frames = min_frames
+        self.frac = frac
+
+    def _key(self, d: Det):
+        return (d.alliance, int(d.foot[0] // self.cell), int(d.foot[1] // self.cell), int(d.w // (2 * self.cell)))
+
+    def __call__(self, dets: list[Det]) -> list[Det]:
+        self.frames += 1
+        for d in dets:
+            k = self._key(d)
+            self.counts[k] = self.counts.get(k, 0) + 1
+        if self.frames < self.min_frames:
+            return dets
+        lim = self.frac * self.frames
+        return [d for d in dets if self.counts.get(self._key(d), 0) < lim]
+
+
+def default_detector(weights: str | Path | None = None, conf: float = 0.3):
+    """Our fine-tuned model ensembled with Spy Glass when both are available."""
+    if weights:
+        return RobotDetector(weights, conf=conf)
+    own = [p for p in DEFAULT_WEIGHTS[:3] if Path(p).exists()]
+    spy = DEFAULT_WEIGHTS[3]
+    if own and Path(spy).exists():
+        return EnsembleDetector([RobotDetector(own[0], conf=conf), RobotDetector(spy, conf=conf)])
+    return RobotDetector(conf=conf)
+
+
 def iou(a: Det, b: Det) -> float:
     ix = max(0, min(a.x1, b.x1) - max(a.x0, b.x0))
     iy = max(0, min(a.y1, b.y1) - max(a.y0, b.y0))

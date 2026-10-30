@@ -14,7 +14,7 @@ from . import config, games, overlay
 from .field import Calibration, align_to_reference, view_similarity
 from .tba import TBA, MatchInfo
 from .video import Video, download
-from .vision.detect import RobotDetector, alliance_from_pixels
+from .vision.detect import RobotDetector, StaticSuppressor, alliance_from_pixels, default_detector
 from .vision.identity import IdentityEvidence
 from .vision.tracker import SlotTracker
 from .vision.trajectories import LaunchDetector
@@ -107,9 +107,10 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
         ref = mid
 
     # ---- frame loop ---------------------------------------------------------------------
-    det = detector or RobotDetector(opts.weights)
+    det = detector or default_detector(opts.weights)
+    static = StaticSuppressor()
     gpu = config.device() == "cuda"
-    robot_hz = opts.robot_hz or (10.0 if gpu else 5.0)
+    robot_hz = opts.robot_hz or (10.0 if gpu else 4.0)
     x, y, w, h = cal.view
     fps = video.fps
     launch_step = max(1, int(round(fps / opts.launch_fps)))
@@ -147,7 +148,7 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
                 d.x0 += x; d.x1 += x; d.y0 += y; d.y1 += y
                 if not d.alliance:
                     d.alliance, _ = alliance_from_pixels(frame, d)
-            tracker.update(t, frame, [d for d in dets if d.alliance])
+            tracker.update(t, frame, static([d for d in dets if d.alliance]))
             if opts.ocr_identity and ocr_budget > 0:
                 for s in tracker.all_slots():
                     if s.box is not None and s.last_t == t and t - last_ocr.get(s.key, -9) > 3.0 and s.box.w > 40:

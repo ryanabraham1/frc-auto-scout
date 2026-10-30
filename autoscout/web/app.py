@@ -247,11 +247,11 @@ _DET = {}
 
 
 def _detector():
-    from ..vision.detect import RobotDetector, find_weights
+    from ..vision.detect import default_detector, find_weights
 
     w = find_weights()
     if _DET.get("w") != w:
-        _DET.update(w=w, det=RobotDetector(w))
+        _DET.update(w=w, det=default_detector())
     return _DET["det"]
 
 

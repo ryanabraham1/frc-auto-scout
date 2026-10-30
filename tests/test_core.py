@@ -116,3 +116,15 @@ def test_rolling_ball_sideways_is_not_a_launch():
     t = np.arange(0, 1.5, 1 / 30)
     pts = [(700 + 300 * s, 560 + 5 * np.sin(8 * s)) for s in t]
     assert _run(det, pts) == []
+
+
+def test_fragmented_flight_counts_once():
+    det = _detector()
+    t = np.arange(0, 1.2, 1 / 30)
+    pts = [(900 + 250 * s, 600 - 700 * s + 0.5 * 1100 * s * s) for s in t]
+    for i, (x, y) in enumerate(pts):
+        if 12 <= i < 18:  # occluded for 0.2 s (e.g. behind the hub)
+            det._associate(i / 30, [])
+            continue
+        det._associate(i / 30, [(x - det.view[0], y - det.view[1], 30)])
+    assert len(det.finish()) == 1

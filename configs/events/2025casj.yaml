@@ -1,9 +1,43 @@
 event_key: 2025casj
 year: 2025
-view: [0, 200, 1920, 430]
-frame_size: [1920, 1080]
+view:
+- 0
+- 200
+- 1920
+- 430
+frame_size:
+- 1920
+- 1080
 points:
-  blue_reef_center: [555, 450]
-  red_reef_center: [1365, 455]
-  center_line_yW: [962, 335]
-  center_line_y0: [958, 628]
+  blue_reef_center:
+  - 555.0
+  - 450.0
+  red_reef_center:
+  - 1365.0
+  - 455.0
+  center_line_yW:
+  - 962.0
+  - 335.0
+  center_line_y0:
+  - 958.0
+  - 628.0
+reference: null
+overlay:
+  timer:
+  - 888
+  - 66
+  - 143
+  - 55
+  blue_score:
+  - 775
+  - 63
+  - 111
+  - 62
+  red_score:
+  - 1033
+  - 63
+  - 112
+  - 62
+  frame_size:
+  - 1920
+  - 1080
