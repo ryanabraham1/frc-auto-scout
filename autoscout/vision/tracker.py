@@ -101,11 +101,25 @@ class SlotTracker:
             if free:
                 self._assign(free.pop(0), t, dets[j], pts[j], apps[j], init=True)
             else:
-                # Re-acquire: hand the detection to the slot lost the longest (if lost > 1.5 s).
-                lost = [s for s in slots if t - s.last_t > 1.5]
-                if lost and dets[j].conf > 0.4:
-                    s = min(lost, key=lambda s: s.last_t)
-                    self._assign(s, t, dets[j], pts[j], apps[j], init=True)
+                # Re-acquire a lost slot only with a robot that could be the same one: reachable
+                # from where it was last seen, and looking like it. Otherwise a slot whose robot
+                # left the view would jump onto a different robot and inherit its stats.
+                best, best_c = None, 1e9
+                for s in slots:
+                    gone = t - s.last_t
+                    if gone <= 1.5 or s.pos is None:
+                        continue
+                    reach = 1.0 + MAX_SPEED * min(gone, 6.0)
+                    dist = float(np.linalg.norm(pts[j] - s.pos))
+                    app = 0.5
+                    if s.hist is not None and apps[j] is not None:
+                        app = cv2.compareHist(s.hist, apps[j], cv2.HISTCMP_BHATTACHARYYA)
+                    ok = (dist <= reach and app < 0.55) or (gone > 8.0 and app < 0.4)
+                    c = app + dist / max(reach, 1.0)
+                    if ok and c < best_c:
+                        best, best_c = s, c
+                if best is not None and dets[j].conf > 0.4:
+                    self._assign(best, t, dets[j], pts[j], apps[j], init=True)
 
     def _assign(self, s: Slot, t, d: Det, p, app, init=False):
         if s.pos is not None and not init:

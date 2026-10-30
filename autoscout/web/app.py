@@ -114,6 +114,13 @@ def run_event(event_key: str, limit: int = 0):
     return {"started": True}
 
 
+@app.get("/api/progress")
+def progress():
+    from ..progress import all_progress
+
+    return all_progress()
+
+
 @app.get("/api/run/{event_key}/log")
 def run_log(event_key: str):
     p = config.DATA_DIR / f"run_{event_key}.log"

@@ -116,11 +116,22 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
     m = MatchInfo.from_tba(tba.match(match_key))
     plugin = games.get(m.year)
     fm = plugin.field
+    from .progress import Progress
 
+    prog = Progress(match_key)
+    try:
+        return _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin, fm, prog)
+    except Exception as e:
+        prog.done(error=str(e)[:300])
+        raise
+
+
+def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin, fm, prog):
     # ---- video ------------------------------------------------------------------------
     if video_path is None:
         if not m.videos:
             raise RuntimeError(f"{match_key}: no video on TBA")
+        prog.update("download", 0.1, "downloading video")
         video_path = str(download(m.videos[0], height=opts.video_height))
     video = Video(video_path)
     log(f"video {Path(video_path).name} {video.width}x{video.height} {video.fps:.0f}fps {video.duration:.0f}s")
@@ -144,6 +155,7 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
         if tuple(base_cal.frame_size) == (video.width, video.height):
             base_cal.overlay = layout.to_dict()
             base_cal.save()
+    prog.update("scoreboard", 0.1, "reading match clock and score", force=True)
     tl = overlay.read_timeline(video, layout, fm.auto_len, fm.teleop_len)
     clock = tl.clock
     if clock is None:
@@ -184,6 +196,7 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
     n_frames = n_cut = 0
     for i, (t, frame) in enumerate(video.iter_frames(t0, t1, step=launch_step)):
         n_frames += 1
+        prog.update("frames", (t - t0) / max(t1 - t0, 1), f"tracking robots and game pieces ({t - t0:.0f}/{t1 - t0:.0f} s of match)")
         if i % max(1, int(round(0.5 * fps / launch_step))) == 0:
             cut = view_similarity(frame, own_ref, cal.view) < 0.45
         if cut:
@@ -235,11 +248,13 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
     # ---- identity ------------------------------------------------------------------------
     tracks = {s.key: s.track for s in tracker.all_slots()}
     if opts.ocr_identity:
+        prog.update("identity", 0.0, "reading bumper numbers", force=True)
         collect_identity(video, tracks, {"red": m.red, "blue": m.blue}, evidence,
                          budget=600 if gpu else 250)
         log(f"identity OCR: {len(evidence.timed)} matched reads")
     ctx = games.MatchContext(match=m, field=fm, cal=cal, clock=clock, timeline=tl, tracks=tracks,
                              identity={}, identity_conf={}, launches=launches)
+    prog.update("close-ups", 0.0, "reading close-up camera views", force=True)
     ctx.aux_reads = collect_aux_reads(video, base_cal, tl, {"red": m.red, "blue": m.blue})
     if ctx.aux_reads:
         log(f"close-up views: {len(ctx.aux_reads)} team reads")
@@ -257,6 +272,7 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
     log("identity " + ", ".join(f"{k}={v}" for k, v in ctx.identity.items()) + f" conf {ctx.identity_conf}")
 
     # ---- game analysis -------------------------------------------------------------------
+    prog.update("analysis", 0.5, "attributing scoring to robots", force=True)
     res = plugin.analyze(ctx)
     result = {
         "match_key": match_key, "event_key": m.event_key, "year": m.year, "label": m.label,
@@ -283,6 +299,7 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     (RESULTS_DIR / f"{match_key}.json").write_text(json.dumps(result, default=_json_default))
+    prog.done()
     log(f"done in {result['processing_s']}s")
     return result
 
@@ -418,7 +435,7 @@ def identity_pass(match_key: str, video_path: str, every: float = 1.5, budget: i
 
 
 def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict,
-                      offsets=(4.0, 2.5, 1.0)) -> list:
+                      offsets=(4.0, 2.5, 1.0), min_gap: float = 1.5) -> list:
     """Read bumper numbers in the close-up views (e.g. reef cams) shortly before every score jump.
 
     Returns [(t, view_name, team, conf)] for reads matching a team in the match. A close-up of the
@@ -440,9 +457,10 @@ def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict
                     continue
                 for off in offsets:
                     tt = round(t - off, 1)
-                    if (tt, name) in done:
+                    bucket = (round(tt / min_gap), name)  # at most one read per view per min_gap s
+                    if bucket in done:
                         continue
-                    done.add((tt, name))
+                    done.add(bucket)
                     frame = video.frame_at(tt)
                     if frame is None:
                         continue

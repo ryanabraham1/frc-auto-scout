@@ -55,7 +55,7 @@ pre { background: var(--chip); padding: 10px; border-radius: 8px; max-height: 26
 </style>
 </head>
 <body>
-<header><b>FRC Auto-Scout</b><nav><a href="#/">Events</a><a href="#/label">Label robots</a></nav></header>
+<header><b>FRC Auto-Scout</b><nav><a href="#/">Events</a><a href="#/jobs">Processing</a><a href="#/label">Label robots</a></nav></header>
 <main id="app"><p class="muted">Loading…</p></main>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
@@ -232,6 +232,22 @@ async function viewLabel() {
   if (vids.length) load();
 }
 
+let jobsTimer = null;
+async function viewJobs() {
+  const fmtS = s => s == null ? '–' : s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+  const draw = async () => {
+    if (!location.hash.startsWith('#/jobs')) { clearInterval(jobsTimer); return; }
+    const jobs = await api('/api/progress');
+    app.innerHTML = `<h1>Processing</h1><p class="muted small">Updates every 2 seconds.</p>` + (jobs.map(j => {
+      const col = j.stage === 'error' ? 'var(--red)' : j.stage === 'done' ? 'var(--good)' : 'var(--accent)';
+      return `<div class="card"><div class="row" style="justify-content:space-between"><b>${j.stage === 'done' ? `<a href="#/match/${j.match_key}">${j.match_key}</a>` : esc(j.match_key)}</b>
+        <span class="small muted">${esc(j.stage)}${j.stale ? ' · no update for 2+ min' : ''} · elapsed ${fmtS(j.elapsed_s)}${j.eta_s != null ? ' · ~' + fmtS(j.eta_s) + ' left' : ''}</span></div>
+        <div class="bar" style="height:12px;margin:8px 0" role="progressbar" aria-valuenow="${j.pct}"><span style="width:${j.pct}%;background:${col}"></span></div>
+        <div class="small muted">${j.pct.toFixed(0)}% · ${esc(j.error || j.detail || '')}</div></div>`; }).join('') || '<p class="muted">Nothing processing right now.</p>');
+  };
+  clearInterval(jobsTimer); await draw(); jobsTimer = setInterval(draw, 2000);
+}
+
 async function route() {
   const h = location.hash.slice(2).split('/');
   try {
@@ -240,6 +256,7 @@ async function route() {
     else if (h[0] === 'team') await viewTeam(h[1], h[2]);
     else if (h[0] === 'calibrate') await viewCalibrate(h[1]);
     else if (h[0] === 'label') await viewLabel();
+    else if (h[0] === 'jobs') await viewJobs();
     else await viewEvents();
   } catch (e) { app.innerHTML = `<div class="card">Error: ${esc(e.message)}</div>`; }
   window.scrollTo(0, 0);

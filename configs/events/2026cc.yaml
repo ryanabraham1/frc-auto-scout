@@ -1,0 +1,20 @@
+event_key: 2026cc
+year: 2026
+view: [0, 290, 1920, 352]
+frame_size: [1920, 1080]
+points:
+  # red alliance is on the LEFT of this broadcast (field x=0 / blue wall is on the right)
+  red_hub_center: [640, 482]
+  blue_hub_center: [1215, 492]
+  center_line_y0: [936, 398]
+  center_line_yW: [915, 592]
+  red_hub_top: [648, 372]
+  blue_hub_top: [1215, 378]
+overlay:
+  timer: [912, 118, 98, 36]
+  red_score: [735, 68, 145, 66]
+  blue_score: [1045, 68, 145, 66]
+  frame_size: [1920, 1080]
+aux_views:
+  red_hub: [0, 645, 955, 435]
+  blue_hub: [960, 645, 960, 435]

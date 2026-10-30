@@ -54,6 +54,33 @@ def hub_active(period: str, alliance: str, auto_winner: str | None) -> bool | No
     return alliance != inactive
 
 
+def landing_point(ctx: MatchContext, L):
+    """Estimated floor landing point (field meters) of a launch, or None if it can't be told.
+
+    Fits the visible flight (x(t), y(t) quadratics in image px) and follows it past the apex
+    until it is back down to about the release height (pieces leave a robot ~0.5 m up), then
+    maps that image point to the floor.
+    """
+    P = np.array([(p[0], p[1], p[2]) for p in L.pts], float)
+    if len(P) < 4:
+        return None
+    t = P[:, 0] - P[0, 0]
+    cx = np.polyfit(t, P[:, 1], 2 if len(P) >= 6 else 1)
+    cy = np.polyfit(t, P[:, 2], 2)
+    if cy[0] <= 0:  # no downward curvature: can't extrapolate a landing
+        return None
+    ppm = ctx.cal.px_per_meter(tuple(P[0, 1:3]))
+    y_land = P[0, 2] + 0.45 * ppm
+    t_apex = max(0.0, -cy[1] / (2 * cy[0]))
+    ts = np.linspace(t_apex, t[-1] + 2.5, 200)
+    ys = np.polyval(cy, ts)
+    k = np.nonzero(ys >= y_land)[0]
+    if not len(k):
+        return None
+    tl = ts[k[0]]
+    return ctx.cal.to_field([(np.polyval(cx, tl), np.polyval(cy, tl))])[0]
+
+
 class Rebuilt2026(GamePlugin):
     year = 2026
     launch_pieces = {"fuel": ((18, 90, 110), (38, 255, 255))}
@@ -75,6 +102,19 @@ class Rebuilt2026(GamePlugin):
         {"key": "pct_opp_zone", "label": "% time opp. zone", "group": "Positioning"},
         {"key": "points_contributed", "label": "Points contributed", "group": "Summary"},
     ]
+
+    def is_feed(self, ctx: MatchContext, L, alliance: str, robot) -> bool:
+        land = landing_point(ctx, L)
+        own = self.field.zones[f"{alliance}_alliance"]
+        if land is not None and -1.5 <= land[1] <= self.field.width + 1.5:
+            # landing on the own side of the zone line (past the wall counts: calibration error)
+            return land[0] <= own[2] + 0.3 if alliance == "blue" else land[0] >= own[0] - 0.3
+        # Landing not visible (arc left the frame): accept only a long flight toward the own zone.
+        if robot is None or len(L.pts) < 3:
+            return False
+        a = ctx.cal.to_field([L.pts[0][1:3], L.pts[-1][1:3]])
+        toward = (a[1][0] - a[0][0]) * (1 if alliance == "red" else -1)
+        return toward > 2.0
 
     def zone_for(self, alliance: str, p) -> str:
         z = self.field.zone_of(p)
@@ -120,6 +160,7 @@ class Rebuilt2026(GamePlugin):
         inactive = defaultdict(float)
         feeds = defaultdict(lambda: defaultdict(float))
         feed_opp = defaultdict(float)
+        knocked = defaultdict(float)
         hp_shots = defaultdict(lambda: defaultdict(float))  # alliance -> period -> pieces
         unattributed = 0.0
         for L in ctx.launches.get("fuel", []):
@@ -162,10 +203,17 @@ class Rebuilt2026(GamePlugin):
                         made[team][period] += L.n_pieces
                         ev["made"] = True
             else:
-                feeds[team][period] += L.n_pieces
-                if zone == "opp":
-                    feed_opp[team] += L.n_pieces
-                ev["kind"] = "feed"
+                # A FEED is a piece *shot* from the neutral/opponent zone that lands in the robot's
+                # own ALLIANCE ZONE. Pieces knocked up while a robot drives through a pile land
+                # nearby (or go elsewhere) and are not feeds.
+                if self.is_feed(ctx, L, alliance, r):
+                    feeds[team][period] += L.n_pieces
+                    if zone == "opp":
+                        feed_opp[team] += L.n_pieces
+                    ev["kind"] = "feed"
+                else:
+                    knocked[team] += L.n_pieces
+                    ev["kind"] = "knocked"
             events.append(ev)
 
         # Zone occupancy (for positioning stats and as fallback weights).
@@ -253,6 +301,7 @@ class Rebuilt2026(GamePlugin):
                     "fuel_fed": int(round(fed_raw * k)),
                     "fuel_fed_by_period": {p: round(feeds[team][p] * k, 1) for p in PERIODS},
                     "feed_from_opp_zone": int(round(feed_opp[team] * k)),
+                    "knocked_pieces": round(knocked[team], 1),
                     "auto_tower": at, "endgame_tower": et, "tower_points": tower_pts,
                     "pct_alliance_zone": round(100 * zt["own"] / ztot),
                     "pct_neutral_zone": round(100 * zt["neutral"] / ztot),
