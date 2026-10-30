@@ -21,6 +21,8 @@ from ..tba import MatchInfo
 from ..vision.tracker import slot_position_at
 
 REGISTRY: dict[int, type["GamePlugin"]] = {}
+AUX_NEAR = 4.0  # m: a robot farther than this from an element is not the one in its close-up
+AUX_CLEAR = 1.5  # m: nearest slot must beat the next one by this much for full-weight evidence
 
 
 @dataclass
@@ -97,6 +99,44 @@ class GamePlugin:
 
     def analyze(self, ctx: MatchContext) -> dict[str, Any]:
         raise NotImplementedError
+
+    def aux_identity_evidence(self, ctx: MatchContext, evidence, weight: float = 1.0) -> int:
+        """Close-up reads -> slot/team evidence.
+
+        A team read in the close-up of an element (view named after it, e.g. 'red_hub') was at
+        that element. Its alliance's slot nearest the element then is probably that team, by how
+        clearly it is the nearest. Reads of views that name no field element are ignored.
+        Returns how many reads became evidence.
+        """
+        n = 0
+        for t, view, team, conf in ctx.aux_reads:
+            if view not in self.field.elements:
+                continue
+            a = ctx.alliance_of(team)
+            d = {}
+            for slot in (f"{a}{i}" for i in range(3)):
+                r = ctx.robot_at(slot, t)
+                if r is not None:
+                    d[slot] = self.field.dist_to_element((r[0], r[1]), view)
+            if not d:
+                continue
+            order = sorted(d, key=d.get)
+            if d[order[0]] > AUX_NEAR:
+                continue
+            # an untracked slot could be the one there too: count it as moderately close
+            second = d[order[1]] if len(order) > 1 else AUX_NEAR
+            if len(order) < 3:
+                second = min(second, AUX_NEAR)
+            clear = min(1.0, (second - d[order[0]]) / AUX_CLEAR)
+            if clear <= 0.1:
+                continue
+            evidence.t = t
+            evidence.add(order[0], team, weight * conf * clear)
+            n += 1
+        evidence.t = None
+        if n:
+            evidence.notes.append(f"close-up views: {n} reads used")
+        return n
 
     # ---- shared helpers ------------------------------------------------------------------
     @staticmethod

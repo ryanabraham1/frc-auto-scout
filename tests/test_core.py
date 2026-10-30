@@ -210,3 +210,75 @@ def test_v2_made_vs_lob_over_target():
     ex = _extractor(target)
     lob = ex.extract(_blobs(arc, ex=ex))
     assert len(lob) == 1 and lob[0].target is None
+
+
+# ---- close-up views (hub / reef cams) -------------------------------------------------------
+def test_closeup_read_matching():
+    from autoscout.vision.closeup import match_team
+
+    teams = [254, 1678, 118, 971, 6328, 649]
+    assert match_team("1678", teams) == (1678, 1.0)
+    assert match_team("678", teams) == (1678, 0.75)  # half-hidden bumper, unique fragment
+    assert match_team("64", teams) is None  # too short to trust
+    assert match_team("12", teams) is None and match_team("", teams) is None
+
+
+def test_closeup_sampling_budget_keeps_score_jumps():
+    from types import SimpleNamespace
+
+    from autoscout.vision.closeup import sample_times
+
+    tl = SimpleNamespace(deltas=lambda a: [(50.0 + i, 1) for i in range(40)] if a == "red" else [])
+    clock = MatchClock(auto_len=20, teleop_len=140, auto_end_vt=30.0, teleop_end_vt=175.0)
+    views = {"red_hub": [0, 645, 955, 435], "blue_hub": [960, 645, 960, 435]}
+    s = sample_times(views, tl, clock, budget=1000)
+    assert len({(round(t / 1.5), v) for t, v in s}) == len(s)  # one read per view per 1.5 s
+    assert any(v == "blue_hub" for _, v in s)  # periodic reads even without blue score jumps
+    s = sample_times(views, tl, clock, budget=40)
+    assert len(s) <= 40 and sum(46 <= t <= 89 and v == "red_hub" for t, v in s) >= 20
+
+
+def _hub_ctx(reads):
+    from autoscout.games.base import MatchContext
+    from autoscout.games.rebuilt2026 import Rebuilt2026
+    from autoscout.tba import MatchInfo
+
+    p = Rebuilt2026()
+    m = MatchInfo(key="2026cc_qm1", year=2026, event_key="2026cc", comp_level="qm", match_number=1,
+                  set_number=1, red=[254, 1678, 118], blue=[971, 6328, 649], videos=[])
+    pos = {"red0": (12.6, 4.0), "red1": (14.5, 1.5), "red2": (9.0, 6.5),  # red0 next to red hub
+           "blue0": (3.0, 4.0), "blue1": (6.0, 2.0), "blue2": (6.2, 6.0)}
+    tracks = {k: [(t, x, y, True, None) for t in np.arange(0, 100, 0.5)] for k, (x, y) in pos.items()}
+    ctx = MatchContext(match=m, field=p.field, cal=houston_cal(), clock=None, timeline=None, tracks=tracks,
+                       identity={}, identity_conf={}, launches={}, aux_reads=reads)
+    return p, ctx
+
+
+def test_hub_closeup_reads_identify_the_robot_at_the_hub():
+    p, ctx = _hub_ctx([(t, "red_hub", 118, 0.9) for t in (10.0, 20.0, 30.0)] + [(40.0, "scoreboard", 254, 0.9)])
+    ev = IdentityEvidence()
+    ev.add("red0", 254, 0.5)  # weak wide-shot read pointing the wrong way
+    ev2 = ev.copy()
+    assert p.aux_identity_evidence(ctx, ev2) == 3  # the 'scoreboard' view names no element
+    assert ev.score[("red0", 118)] == 0  # the stored evidence is untouched
+    m, conf = ev2.solve(["red0", "red1", "red2"], [254, 1678, 118])
+    assert m["red0"] == 118 and conf["red0"] > 0.8
+    assert [x[1:3] for x in ev2.timed] == [("red0", 118)] * 3
+
+
+def test_closeup_read_without_a_clear_nearest_robot_is_ignored():
+    p, ctx = _hub_ctx([(10.0, "blue_hub", 971, 0.9)])
+    # blue0 (3.0, 4.0) and blue1 (6.0, 2.0) are about equally far from the blue hub
+    ctx.tracks["blue1"] = [(t, 6.0, 4.0, True, None) for t in np.arange(0, 100, 0.5)]
+    ctx.tracks["blue0"] = [(t, 3.3, 4.0, True, None) for t in np.arange(0, 100, 0.5)]
+    assert p.aux_identity_evidence(ctx, IdentityEvidence()) == 0
+
+
+def test_calibration_keeps_closeup_views(tmp_path, monkeypatch):
+    from autoscout import config
+
+    monkeypatch.setattr(config, "EVENTS_DIR", tmp_path)
+    cal = houston_cal()
+    cal.aux_views = {"red_hub": [0, 645, 955, 435]}
+    cal.save()
+    assert Calibration.load("t").aux_views == {"red_hub": [0, 645, 955, 435]}

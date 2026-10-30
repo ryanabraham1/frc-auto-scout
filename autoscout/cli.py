@@ -175,7 +175,7 @@ def main(argv=None):
     s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_recollect)
     s = sub.add_parser("identify", help="dedicated bumper-OCR identity pass over a processed match")
     s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_identify)
-    s = sub.add_parser("aux", help="read close-up camera views (e.g. reef cams) for a processed match")
+    s = sub.add_parser("aux", help="read close-up camera views (hub / reef cams) for a processed match")
     s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_aux)
     s = sub.add_parser("calibrate"); s.add_argument("match_key"); s.add_argument("--video")
     s.add_argument("--t", type=float); s.set_defaults(f=cmd_calibrate)

@@ -135,6 +135,7 @@ def get_cal(event_key: str):
     fm = FieldModel.load(year)
     return {"event_key": event_key, "year": year, "landmarks": fm.landmarks,
             "view": list(cal.view) if cal else None, "points": cal.points if cal else {},
+            "aux_views": (cal.aux_views or {}) if cal else {}, "elements": list(fm.elements),
             "has_reference": bool(cal and cal.reference and (config.ROOT / cal.reference).exists())}
 
 
@@ -154,6 +155,14 @@ def save_cal(event_key: str, body: dict):
         cal = Calibration(event_key=event_key, year=year, view=tuple(body["view"]), points={})
     cal.view = tuple(int(v) for v in body["view"])
     cal.points = {k: tuple(v) for k, v in body["points"].items()}
+    if "aux_views" in body:  # close-up views: {name: [x, y, w, h]}
+        aux = {}
+        for name, r in (body["aux_views"] or {}).items():
+            name = str(name).strip()
+            if not name or len(r) != 4 or r[2] < 8 or r[3] < 8:
+                raise HTTPException(400, f"bad close-up view {name!r}: need a name and a rectangle")
+            aux[name] = [int(v) for v in r]
+        cal.aux_views = aux or None
     err = None
     if len(cal.points) >= 4:
         err = cal.fit()
@@ -183,6 +192,9 @@ def cal_preview(event_key: str):
             c = cal.to_image([e["center"]])[0].astype(int)
             cv2.circle(im, tuple(c), 6, (0, 255, 255), -1)
             cv2.putText(im, name, (c[0] + 6, c[1]), 0, 0.5, (0, 255, 255), 1)
+    for name, (x, y, w, h) in (cal.aux_views or {}).items():
+        cv2.rectangle(im, (x, y), (x + w, y + h), (0, 200, 255), 3)
+        cv2.putText(im, name, (x + 8, y + 28), 0, 0.9, (0, 200, 255), 2)
     ok, buf = cv2.imencode(".jpg", im)
     return Response(buf.tobytes(), media_type="image/jpeg")
 

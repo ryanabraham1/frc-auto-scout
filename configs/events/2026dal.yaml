@@ -47,3 +47,7 @@ overlay:
   frame_size:
   - 1920
   - 1080
+aux_views:
+  # hub cams under the stone bar; the "Daly Division / BAE Systems" banner covers ~y 980-1056, x 510-1410
+  blue_hub: [0, 745, 940, 335]
+  red_hub: [985, 745, 935, 335]

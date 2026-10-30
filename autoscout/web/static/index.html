@@ -171,28 +171,42 @@ async function viewTeam(ek, team) {
 async function viewCalibrate(ek) {
   const c = await api(`/api/calibration/${ek}`);
   if (!c.has_reference) { app.innerHTML = `<h1>Calibrate ${ek}</h1><div class="card">No reference frame yet. Run:<pre>autoscout calibrate ${ek}_qm1</pre>then reload this page.</div>`; return; }
-  const pts = {...c.points}; let view = c.view || null; let mode = 'point';
+  const pts = {...c.points}, aux = {...c.aux_views}; let view = c.view || null; let mode = 'point';
+  const auxNames = c.elements.filter(e => /^(red|blue)_/.test(e));
   app.innerHTML = `<h1>Calibrate ${ek}</h1>
   <div class="card small">1. Drag a rectangle around the <b>wide shot of the whole field</b> (exclude the score bar and picture-in-picture views).
    2. Pick a landmark and click where it touches the carpet. Use at least 4 spread-out landmarks (corners, center-line ends, hub/reef centers).
    x = 0 is the blue alliance wall; y = 0 is the side named in configs/fields/${c.year}.yaml.</div>
   <div class="card row"><button id="mv">Draw view rectangle</button><select id="lm">${Object.keys(c.landmarks).map(k => `<option>${k}</option>`).join('')}</select>
    <button id="mp" class="primary">Click landmark</button><button id="clr">Remove landmark</button><button id="save" class="primary">Save</button><span id="msg" class="muted small"></span></div>
+  <div class="card small">Close-up views (optional): picture-in-picture cameras on one field element, e.g. hub or reef cams.
+   Name each after the element it shows so bumper numbers read there count as "this team was at that element".
+   Leave out sponsor banners and score graphics that sit over the picture.</div>
+  <div class="card row"><input id="auxn" list="auxl" placeholder="element, e.g. red_hub" style="width:14em"><datalist id="auxl">${auxNames.map(k => `<option>${k}</option>`).join('')}</datalist>
+   <button id="ma">Draw close-up</button><span id="auxs" class="row small"></span></div>
   <div class="canvaswrap card" style="padding:4px"><img id="img" src="/api/calibration/${ek}/ref.jpg"><canvas id="cv"></canvas></div>
   <h2>Preview</h2><div class="card" style="padding:4px"><img id="prev" style="max-width:100%" src="/api/calibration/${ek}/preview.jpg?${Date.now()}"></div>`;
   const img = $('#img'), cv = $('#cv'), ctx = cv.getContext('2d');
+  const listAux = () => { $('#auxs').innerHTML = Object.keys(aux).map(k => `<span class="chip">${esc(k)} <a href="#" data-k="${esc(k)}">×</a></span>`).join(' ') || '<span class="muted">none</span>';
+    $('#auxs').querySelectorAll('a').forEach(a => a.onclick = e => { e.preventDefault(); delete aux[a.dataset.k]; draw(); }); };
   const draw = () => { cv.width = img.naturalWidth; cv.height = img.naturalHeight; ctx.clearRect(0, 0, cv.width, cv.height); ctx.lineWidth = 3;
     if (view) { ctx.strokeStyle = '#fff'; ctx.strokeRect(...view); }
-    Object.entries(pts).forEach(([k, [x, y]]) => { ctx.strokeStyle = ctx.fillStyle = '#ff2bd6'; ctx.beginPath(); ctx.arc(x, y, 7, 0, 7); ctx.stroke(); ctx.font = '20px sans-serif'; ctx.fillText(k, x + 9, y - 9); }); };
+    Object.entries(aux).forEach(([k, r]) => { ctx.strokeStyle = ctx.fillStyle = '#ffb000'; ctx.setLineDash([12, 6]); ctx.strokeRect(...r); ctx.setLineDash([]); ctx.font = '22px sans-serif'; ctx.fillText(k, r[0] + 8, r[1] + 26); });
+    Object.entries(pts).forEach(([k, [x, y]]) => { ctx.strokeStyle = ctx.fillStyle = '#ff2bd6'; ctx.beginPath(); ctx.arc(x, y, 7, 0, 7); ctx.stroke(); ctx.font = '20px sans-serif'; ctx.fillText(k, x + 9, y - 9); });
+    listAux(); };
   img.onload = draw;
   const toImg = e => { const b = cv.getBoundingClientRect(); return [(e.clientX - b.left) * cv.width / b.width, (e.clientY - b.top) * cv.height / b.height]; };
+  const rect = (a, b) => [Math.round(Math.min(a[0], b[0])), Math.round(Math.min(a[1], b[1])), Math.round(Math.abs(b[0] - a[0])), Math.round(Math.abs(b[1] - a[1]))];
   let drag = null;
-  cv.onmousedown = e => { if (mode === 'view') drag = toImg(e); };
-  cv.onmouseup = e => { const p = toImg(e); if (mode === 'view' && drag) { view = [Math.round(Math.min(drag[0], p[0])), Math.round(Math.min(drag[1], p[1])), Math.round(Math.abs(p[0] - drag[0])), Math.round(Math.abs(p[1] - drag[1]))]; drag = null; mode = 'point'; }
+  cv.onmousedown = e => { if (mode === 'view' || mode === 'aux') drag = toImg(e); };
+  cv.onmouseup = e => { const p = toImg(e);
+    if (mode === 'view' && drag) { view = rect(drag, p); drag = null; mode = 'point'; }
+    else if (mode === 'aux' && drag) { const r = rect(drag, p); drag = null; mode = 'point'; if (r[2] >= 8 && r[3] >= 8) aux[$('#auxn').value.trim()] = r; }
     else if (mode === 'point') pts[$('#lm').value] = p.map(Math.round); draw(); };
   $('#mv').onclick = () => mode = 'view'; $('#mp').onclick = () => mode = 'point'; $('#clr').onclick = () => { delete pts[$('#lm').value]; draw(); };
+  $('#ma').onclick = () => { if (!$('#auxn').value.trim()) { $('#msg').textContent = 'name the close-up first (the element it shows, e.g. red_hub)'; return; } mode = 'aux'; $('#msg').textContent = 'drag a rectangle around the close-up'; };
   $('#save').onclick = async () => { if (!view) { $('#msg').textContent = 'draw the view rectangle first'; return; }
-    const res = await api(`/api/calibration/${ek}`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({view, points: pts})});
+    const res = await api(`/api/calibration/${ek}`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({view, points: pts, aux_views: aux})});
     $('#msg').textContent = res.reprojection_error_m != null ? `saved, fit error ${res.reprojection_error_m.toFixed(2)} m` : 'saved (need ≥4 landmarks)'; $('#prev').src = `/api/calibration/${ek}/preview.jpg?${Date.now()}`; };
 }
 

@@ -255,20 +255,15 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     ctx = games.MatchContext(match=m, field=fm, cal=cal, clock=clock, timeline=tl, tracks=tracks,
                              identity={}, identity_conf={}, launches=launches)
     prog.update("close-ups", 0.0, "reading close-up camera views", force=True)
-    ctx.aux_reads = collect_aux_reads(video, base_cal, tl, {"red": m.red, "blue": m.blue})
+    ctx.aux_reads = collect_aux_reads(video, base_cal, tl, {"red": m.red, "blue": m.blue}, clock,
+                                      budget=400 if gpu else 150)
     if ctx.aux_reads:
         log(f"close-up views: {len(ctx.aux_reads)} team reads")
     if hasattr(plugin, "identity_evidence"):
         plugin.identity_evidence(ctx, evidence)
-    ov = overrides_for(match_key)
-    ov.update(_db_overrides(match_key))
-    for a in ("red", "blue"):
-        keys = [f"{a}{i}" for i in range(3)]
-        mapping, conf = evidence.solve(keys, m.teams(a), ov)
-        ctx.identity.update(mapping)
-        ctx.identity_conf.update(conf)
-        ctx.identity_tl.update(identity_timeline(evidence.timed, keys, m.teams(a), mapping,
-                                                 clock.start_vt, clock.teleop_end_vt + 4, ov))
+    n_aux = solve_identity(ctx, plugin, evidence, match_key)
+    if n_aux:
+        log(f"close-up views: {n_aux} reads used as identity evidence")
     log("identity " + ", ".join(f"{k}={v}" for k, v in ctx.identity.items()) + f" conf {ctx.identity_conf}")
 
     # ---- game analysis -------------------------------------------------------------------
@@ -323,6 +318,28 @@ def _db_overrides(match_key: str) -> dict[str, int]:
         return {}
 
 
+def solve_identity(ctx, plugin, evidence: IdentityEvidence, match_key: str) -> int:
+    """Slot -> team mapping (+ its timeline) from the stored evidence, close-up reads and overrides.
+
+    Close-up evidence is added to a copy, never to `evidence` itself: the stored identity scores
+    stay free of it, so reanalysis after new close-up reads doesn't count old ones twice.
+    Returns the number of close-up reads that became evidence.
+    """
+    ev = evidence.copy()
+    n_aux = plugin.aux_identity_evidence(ctx, ev)
+    ov = overrides_for(match_key)
+    ov.update(_db_overrides(match_key))
+    m, clock = ctx.match, ctx.clock
+    for a in ("red", "blue"):
+        keys = [f"{a}{i}" for i in range(3)]
+        mapping, conf = ev.solve(keys, m.teams(a), ov)
+        ctx.identity.update(mapping)
+        ctx.identity_conf.update(conf)
+        ctx.identity_tl.update(identity_timeline(ev.timed, keys, m.teams(a), mapping,
+                                                 clock.start_vt, clock.teleop_end_vt + 4, ov))
+    return n_aux
+
+
 def reanalyze(match_key: str, tba: TBA | None = None) -> dict:
     """Re-run identity + game analysis from stored observations (no video work)."""
     from .field import Calibration as Cal
@@ -354,15 +371,7 @@ def reanalyze(match_key: str, tba: TBA | None = None) -> dict:
         slot, team = key.split(":")
         evidence.score[(slot, int(team))] = val
     evidence.timed = [tuple(x) for x in old.get("identity_timed", [])]
-    ov = overrides_for(match_key)
-    ov.update(_db_overrides(match_key))
-    for a in ("red", "blue"):
-        keys = [f"{a}{i}" for i in range(3)]
-        mapping, conf = evidence.solve(keys, m.teams(a), ov)
-        ctx.identity.update(mapping)
-        ctx.identity_conf.update(conf)
-        ctx.identity_tl.update(identity_timeline(evidence.timed, keys, m.teams(a), mapping,
-                                                 clock.start_vt, clock.teleop_end_vt + 4, ov))
+    solve_identity(ctx, plugin, evidence, match_key)
     res = plugin.analyze(ctx)
     old["identity_timeline"] = ctx.identity_tl
     old.update(res)
@@ -434,52 +443,46 @@ def identity_pass(match_key: str, video_path: str, every: float = 1.5, budget: i
     return reanalyze(match_key)
 
 
-def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict,
-                      offsets=(4.0, 2.5, 1.0), min_gap: float = 1.5) -> list:
-    """Read bumper numbers in the close-up views (e.g. reef cams) shortly before every score jump.
+def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict, clock=None,
+                      budget: int = 300) -> list:
+    """Read bumper numbers in the close-up views (reef / hub cams): before every score jump and
+    periodically through the match (see closeup.sample_times).
 
     Returns [(t, view_name, team, conf)] for reads matching a team in the match. A close-up of the
-    scoring element shows who is scoring even when the wide shot has them hidden behind it.
+    scoring element shows who is there even when the wide shot has them hidden behind it.
     """
-    from . import ocr
+    from .vision.closeup import read_view, sample_times
 
     views = base_cal.aux_views or {}
-    if not views or timeline is None:
+    if not views:
         return []
     sx = video.width / base_cal.frame_size[0]
     sy = video.height / base_cal.frame_size[1]
-    all_teams = {str(t): t for a in ("red", "blue") for t in teams[a]}
-    out, done = [], set()
-    for alliance in ("red", "blue"):
-        for t, d in timeline.deltas(alliance):
-            for name, rect in views.items():
-                if not name.startswith(alliance):
-                    continue
-                for off in offsets:
-                    tt = round(t - off, 1)
-                    bucket = (round(tt / min_gap), name)  # at most one read per view per min_gap s
-                    if bucket in done:
-                        continue
-                    done.add(bucket)
-                    frame = video.frame_at(tt)
-                    if frame is None:
-                        continue
-                    x, y, w, h = [int(v) for v in (rect[0] * sx, rect[1] * sy, rect[2] * sx, rect[3] * sy)]
-                    for _, txt, conf in ocr.reader().readtext(frame[y: y + h, x: x + w], allowlist="0123456789"):
-                        if txt in all_teams and conf > 0.3:
-                            out.append((tt, name, all_teams[txt], round(float(conf), 2)))
+    all_teams = list(teams["red"]) + list(teams["blue"])
+    out, frame, frame_t = [], None, None
+    for tt, name in sample_times(views, timeline, clock, budget=budget):
+        if tt != frame_t:  # samples are sorted: views read at the same time share one decode
+            frame, frame_t = video.frame_at(tt), tt
+        if frame is None:
+            continue
+        x, y, w, h = [int(v) for v in (views[name][0] * sx, views[name][1] * sy,
+                                       views[name][2] * sx, views[name][3] * sy)]
+        for team, conf in read_view(frame[y: y + h, x: x + w], all_teams).items():
+            out.append((tt, name, team, round(conf, 2)))
     return out
 
 
-def aux_pass(match_key: str, video_path: str) -> dict:
+def aux_pass(match_key: str, video_path: str, budget: int = 300) -> dict:
     """Collect close-up-view reads for an already processed match, then reanalyze."""
-    from .overlay import ScoreSample, ScoreTimeline
+    from .overlay import MatchClock, ScoreSample, ScoreTimeline
 
     old = json.loads((RESULTS_DIR / f"{match_key}.json").read_text())
     base = Calibration.load(old["event_key"])
+    clock = MatchClock(**old["clock"])
     tl_d = old["timeline"]
     samples = [ScoreSample(t, tm, b, r) for t, tm, b, r in zip(tl_d["t"], tl_d["timer"], tl_d["blue"], tl_d["red"])]
-    tl = ScoreTimeline(samples=samples, clock=None, blue=np.array(tl_d["blue"], float), red=np.array(tl_d["red"], float))
-    old["aux_reads"] = collect_aux_reads(Video(video_path), base, tl, {"red": old["red"], "blue": old["blue"]})
+    tl = ScoreTimeline(samples=samples, clock=clock, blue=np.array(tl_d["blue"], float), red=np.array(tl_d["red"], float))
+    old["aux_reads"] = collect_aux_reads(Video(video_path), base, tl, {"red": old["red"], "blue": old["blue"]},
+                                         clock, budget)
     (RESULTS_DIR / f"{match_key}.json").write_text(json.dumps(old, default=_json_default))
     return reanalyze(match_key)

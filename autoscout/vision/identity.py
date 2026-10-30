@@ -3,7 +3,9 @@
 Evidence sources (combined as log-likelihoods over the 3! slot->team permutations per alliance):
   1. Bumper-number OCR on robot crops, matched against the alliance's 3 known team numbers.
   2. Official per-station results (e.g. which station climbed) vs. each slot's behaviour.
-  3. Manual overrides (dashboard / event config) - always win.
+  3. Bumper numbers read in broadcast close-up views (hub / reef cams) vs. which slot was at
+     that element (games/base.py: aux_identity_evidence).
+  4. Manual overrides (dashboard / event config) - always win.
 """
 from __future__ import annotations
 
@@ -62,6 +64,12 @@ class IdentityEvidence:
         self.notes: list[str] = []
         self.timed: list[tuple[float, str, int, float]] = []  # (t, slot, team, value) from OCR
         self.t: float | None = None  # time of the observation being added
+
+    def copy(self) -> "IdentityEvidence":
+        c = IdentityEvidence()
+        c.score.update(self.score)
+        c.notes, c.timed = list(self.notes), list(self.timed)
+        return c
 
     def add(self, slot_key: str, team: int, value: float, why: str = ""):
         self.score[(slot_key, team)] += value

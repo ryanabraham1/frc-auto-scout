@@ -62,7 +62,21 @@ Useful commands:
 | `autoscout run-match 2026txhou_qm11 --debug-video` | one match, and writes an annotated video to `data/results/` |
 | `autoscout reanalyze 2026txhou` | recompute stats from saved observations (seconds; after identity fixes or logic changes) |
 | `autoscout report 2026txhou` | validation summary vs. official results |
+| `autoscout aux 2026cc_qm4 <video>` | re-read the close-up views of a processed match, then reanalyze |
 | `autoscout train-robots` | (re)train the robot detector on `data/datasets/robots` |
+
+## Close-up views (hub / reef cams)
+
+Many broadcasts show picture-in-picture close-ups of the scoring elements. On the **Calibrate** page, type the
+element a close-up shows (for example `red_hub` or `blue_reef`), click **Draw close-up**, drag a rectangle around it,
+then click **Save**. Leave out sponsor banners and score graphics where you can. Bumper numbers in close-ups are
+big enough to read reliably. They are read before every score jump and every 3 s through the match, and they are
+used in two ways:
+
+- **Identity (any season).** If a team is read in the close-up of an element, that team's alliance slot nearest
+  the element at that moment gets evidence for that team. The evidence is scaled by how clearly that slot is the
+  nearest one.
+- **2025 scoring.** A team seen in the reef cam just before a score jump counts as being at the reef.
 
 ## Robot detector: the one thing to build per season
 
