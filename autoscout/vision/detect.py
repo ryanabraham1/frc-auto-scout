@@ -155,10 +155,25 @@ class StaticSuppressor:
         return [d for d in dets if self.counts.get(self._key(d), 0) < lim]
 
 
+def ensure_spyglass() -> Path | None:
+    """Download FRC Team 578's Spy Glass bumper model (Hugging Face, GPL) on first use."""
+    p = Path(DEFAULT_WEIGHTS[3])
+    if p.exists():
+        return p
+    try:
+        from huggingface_hub import hf_hub_download
+
+        return Path(hf_hub_download("fairportrobotics/spy-glass", "model11n.pt", local_dir=str(p.parent)))
+    except Exception as e:  # offline: fall back to our own model only
+        print("Spy Glass download skipped:", e)
+        return None
+
+
 def default_detector(weights: str | Path | None = None, conf: float = 0.3):
     """Our fine-tuned model ensembled with Spy Glass when both are available."""
     if weights:
         return RobotDetector(weights, conf=conf)
+    ensure_spyglass()
     own = [p for p in DEFAULT_WEIGHTS[:3] if Path(p).exists()]
     spy = DEFAULT_WEIGHTS[3]
     if own and Path(spy).exists():
