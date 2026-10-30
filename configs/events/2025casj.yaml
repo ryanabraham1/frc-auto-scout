@@ -1,0 +1,9 @@
+event_key: 2025casj
+year: 2025
+view: [0, 200, 1920, 430]
+frame_size: [1920, 1080]
+points:
+  blue_reef_center: [555, 450]
+  red_reef_center: [1365, 455]
+  center_line_yW: [962, 335]
+  center_line_y0: [958, 628]

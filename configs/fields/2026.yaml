@@ -1,0 +1,37 @@
+# REBUILT (2026). Coordinates in meters, WPILib convention:
+# x = 0 at the BLUE alliance wall, x = length at the RED wall.
+# y = 0 on the side of the BLUE OUTPOST (blue's right-hand corner as seen from the blue driver stations).
+name: REBUILT
+year: 2026
+length: 16.541
+width: 8.069
+auto_len: 20
+teleop_len: 140
+landmarks:   # named points usable for calibration (floor level)
+  corner_blue_y0: [0.0, 0.0]
+  corner_blue_yW: [0.0, 8.069]
+  corner_red_y0: [16.541, 0.0]
+  corner_red_yW: [16.541, 8.069]
+  center_line_y0: [8.270, 0.0]
+  center_line_yW: [8.270, 8.069]
+  blue_start_line_y0: [4.028, 0.0]
+  blue_start_line_yW: [4.028, 8.069]
+  red_start_line_y0: [12.513, 0.0]
+  red_start_line_yW: [12.513, 8.069]
+  blue_hub_center: [4.625, 4.035]
+  red_hub_center: [11.916, 4.035]
+zones:       # axis-aligned rectangles [x0, y0, x1, y1]
+  blue_alliance: [0.0, 0.0, 4.028, 8.069]
+  red_alliance: [12.513, 0.0, 16.541, 8.069]
+  neutral: [4.028, 0.0, 12.513, 8.069]
+elements:
+  blue_hub: {center: [4.625, 4.035], size: [1.194, 1.194], height: 1.83}
+  red_hub: {center: [11.916, 4.035], size: [1.194, 1.194], height: 1.83}
+  blue_tower: {center: [0.55, 3.9], size: [1.15, 1.0]}
+  red_tower: {center: [15.99, 4.17], size: [1.15, 1.0]}
+  blue_outpost: {center: [0.3, 0.66], size: [0.6, 1.8]}
+  red_outpost: {center: [16.24, 7.41], size: [0.6, 1.8]}
+  blue_depot: {center: [0.35, 5.96], size: [0.69, 1.07]}
+  red_depot: {center: [16.19, 2.11], size: [0.69, 1.07]}
+game_pieces:
+  fuel: {color_hsv: [[18, 90, 110], [38, 255, 255]], diameter: 0.150}

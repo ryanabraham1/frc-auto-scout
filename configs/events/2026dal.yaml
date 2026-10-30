@@ -1,0 +1,9 @@
+event_key: 2026dal
+year: 2026
+view: [0, 175, 1920, 525]
+frame_size: [1920, 1080]
+points:
+  center_line_yW: [952, 268]
+  center_line_y0: [968, 700]
+  blue_hub_center: [485, 405]
+  red_hub_center: [1455, 400]

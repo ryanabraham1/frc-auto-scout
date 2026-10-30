@@ -1,0 +1,32 @@
+# Seed boxes for SAM2 propagation (full-frame 1920x1080 pixels).
+- video: data/videos1080/Y1PRaXCfcgI.mp4
+  event: 2026dal
+  t: 60
+  duration: 40
+  fps: 2
+  robots:
+    - [blue, 100, 305, 255, 390]
+    - [blue, 440, 505, 640, 640]
+    - [blue, 180, 560, 335, 695]
+    - [red, 900, 455, 1080, 595]
+    - [red, 1130, 540, 1300, 680]
+    - [red, 0, 425, 165, 518]
+- video: data/videos1080/RIss73HbSxs.mp4
+  event: 2025casj
+  t: 60
+  duration: 40
+  fps: 2
+  robots:
+    - [blue, 330, 330, 420, 420]
+    - [blue, 725, 330, 812, 414]
+    - [red, 1255, 540, 1340, 598]
+    - [red, 1458, 455, 1552, 508]
+    - [red, 1775, 505, 1920, 615]
+- video: data/videos1080/OTOfavQlQXc.mp4
+  event: 2026txhou
+  t: 40
+  duration: 40
+  fps: 2
+  robots:
+    - [blue, 388, 465, 468, 578]
+    - [blue, 485, 465, 557, 522]

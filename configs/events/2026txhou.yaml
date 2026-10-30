@@ -1,0 +1,49 @@
+event_key: 2026txhou
+year: 2026
+view:
+- 0
+- 250
+- 1920
+- 470
+frame_size:
+- 1920
+- 1080
+points:
+  corner_blue_yW:
+  - 470.0
+  - 407.0
+  corner_red_yW:
+  - 1420.0
+  - 407.0
+  center_line_yW:
+  - 937.0
+  - 405.0
+  corner_blue_y0:
+  - 45.0
+  - 678.0
+  corner_red_y0:
+  - 1875.0
+  - 678.0
+  center_line_y0:
+  - 958.0
+  - 678.0
+reference: null
+overlay:
+  timer:
+  - 833
+  - 154
+  - 257
+  - 98
+  blue_score:
+  - 636
+  - 158
+  - 183
+  - 87
+  red_score:
+  - 1102
+  - 159
+  - 183
+  - 87
+  frame_size:
+  - 1920
+  - 1080

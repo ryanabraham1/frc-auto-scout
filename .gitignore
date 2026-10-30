@@ -1,0 +1,12 @@
+.secrets/
+.env
+data/
+*.mp4
+*.webm
+*.pt
+*.engine
+*.onnx
+__pycache__/
+*.egg-info/
+.venv/
+runs/

@@ -1,0 +1,9 @@
+event_key: 2026cosp
+year: 2026
+view: [0, 250, 1920, 450]
+frame_size: [1920, 1080]
+points:
+  center_line_yW: [968, 345]
+  center_line_y0: [975, 600]
+  blue_hub_center: [520, 455]
+  red_hub_center: [1405, 445]

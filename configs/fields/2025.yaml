@@ -1,0 +1,40 @@
+# REEFSCAPE (2025). Coordinates in meters, WPILib convention:
+# x = 0 at the BLUE alliance wall; y = 0 on the side of the BLUE PROCESSOR.
+name: REEFSCAPE
+year: 2025
+length: 17.548
+width: 8.052
+auto_len: 15
+teleop_len: 135
+landmarks:
+  corner_blue_y0: [0.0, 0.0]
+  corner_blue_yW: [0.0, 8.052]
+  corner_red_y0: [17.548, 0.0]
+  corner_red_yW: [17.548, 8.052]
+  center_line_y0: [8.774, 0.0]
+  center_line_yW: [8.774, 8.052]
+  blue_start_line_y0: [7.56, 0.0]
+  blue_start_line_yW: [7.56, 8.052]
+  red_start_line_y0: [9.99, 0.0]
+  red_start_line_yW: [9.99, 8.052]
+  blue_reef_center: [4.489, 4.026]
+  red_reef_center: [13.059, 4.026]
+zones:
+  blue_side: [0.0, 0.0, 8.774, 8.052]
+  red_side: [8.774, 0.0, 17.548, 8.052]
+elements:
+  blue_reef: {center: [4.489, 4.026], radius: 0.83}
+  red_reef: {center: [13.059, 4.026], radius: 0.83}
+  barge: {center: [8.774, 4.026], size: [0.6, 8.052]}
+  # Robots score algae into the NET from their own side of the barge (blue scores from x < 8.77).
+  blue_net_zone: {center: [7.75, 4.026], size: [1.5, 8.052]}
+  red_net_zone: {center: [9.8, 4.026], size: [1.5, 8.052]}
+  blue_processor: {center: [6.0, 0.35], size: [1.6, 1.0]}
+  red_processor: {center: [11.55, 7.70], size: [1.6, 1.0]}
+  blue_coral_station_y0: {center: [0.85, 0.65], size: [1.6, 1.4]}
+  blue_coral_station_yW: {center: [0.85, 7.40], size: [1.6, 1.4]}
+  red_coral_station_y0: {center: [16.7, 0.65], size: [1.6, 1.4]}
+  red_coral_station_yW: {center: [16.7, 7.40], size: [1.6, 1.4]}
+game_pieces:
+  algae: {color_hsv: [[78, 60, 80], [100, 255, 255]], diameter: 0.41}
+  coral: {color_hsv: [[0, 0, 190], [180, 40, 255]], length: 0.30}
