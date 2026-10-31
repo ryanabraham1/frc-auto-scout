@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "dashboard",
-      "runtimeExecutable": ".venv/bin/autoscout",
+      "runtimeExecutable": ".venv/Scripts/autoscout.exe",
       "runtimeArgs": ["serve", "--port", "8000"],
       "port": 8000
     }

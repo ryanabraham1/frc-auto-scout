@@ -48,6 +48,8 @@ APP_MARGIN = 0.05  # similarity margin over the next team that counts as a confi
 APP_WEIGHT = 4.0  # cost scale of appearance evidence for a long tracklet
 NOT_ROBOT = 0  # manual label: the tracklet is not a robot (a person, a cart...)
 NEAR = 0.8  # m: two robots this close can be confused, so their tracklets are cut
+LINK_GAP = 0.3  # s: longest miss a tracklet continues across
+LINK_SPEED = 4.0  # m/s for the online link gate (MAX_SPEED stays the bound for offline joins)
 HIDE_NEAR = 1.0  # m from a tall element's edge: a robot that vanishes this close is behind it
 HIDE_HEIGHT = 1.2  # m: elements at least this tall can hide a robot from the wide shot
 HIDE_MIN_GAP = 0.6  # s: shorter gaps are detector misses, not occlusion
@@ -60,6 +62,7 @@ class Tracklet:
     id: int
     obs: list = field(default_factory=list)  # (t, x, y, box, alliance)
     reads: dict = field(default_factory=dict)  # team -> bumper evidence
+    read_log: list = field(default_factory=list)  # (t, team, evidence) of each read, for splitting
     vel: np.ndarray = field(default_factory=lambda: np.zeros(2))
     last_read: float = -9.0
     team: int | None = None
@@ -130,7 +133,11 @@ class RobotTracker:
         foot = self.cal.to_field([d.foot for d in dets]) if dets else np.zeros((0, 2))
         keep = [i for i in range(len(dets)) if self.fm.in_field(foot[i], 0.6)]
         dets, foot = [dets[i] for i in keep], foot[keep] if keep else np.zeros((0, 2))
-        live = [tr for tr in self.active if t - tr.t1 <= 0.6]
+        # A tracklet only continues across a short miss: after longer gaps (a robot lost in a pile
+        # of pieces or behind a HUB) the nearest detection is too often another robot, and one
+        # such hop labels both robots' time with whichever bumper was read. The offline labelling
+        # joins the pieces with motion and bumper evidence instead.
+        live = [tr for tr in self.active if t - tr.t1 <= LINK_GAP]
         for tr in self.active:
             if tr not in live:
                 self.done.append(tr)
@@ -139,9 +146,12 @@ class RobotTracker:
             cost = np.full((len(live), len(dets)), 1e6)
             for i, tr in enumerate(live):
                 p = tr.predicted(t)
-                gate = 0.5 + MAX_SPEED * (t - tr.t1)
+                gate = 0.4 + LINK_SPEED * (t - tr.t1)
+                bw = tr.obs[-1][3][2] - tr.obs[-1][3][0]
                 for j, d in enumerate(dets):
                     dist = float(np.linalg.norm(foot[j] - p))
+                    if not 0.6 < d.w / max(bw, 1.0) < 1.7:
+                        continue  # a robot's box doesn't change size abruptly between frames
                     if dist <= gate:
                         cost[i, j] = dist + (0.4 if d.alliance and tr.alliance_frac(d.alliance) < 0.3 else 0.0)
             ri, ci = linear_sum_assignment(cost)
@@ -178,6 +188,7 @@ class RobotTracker:
         for tr, got in zip(due, read_team_numbers_many(frame, [tr.obs[-1][3] for tr in due], self.all_teams)):
             for team, v in got.items():
                 tr.reads[team] = tr.reads.get(team, 0.0) + v
+                tr.read_log.append((t, team, v))
         for tr in due:
             o = tr.obs[-1]
             tr.last_read = t
@@ -449,9 +460,49 @@ class RobotTracker:
 
         bank: per-event appearance examples {team: features}; manual: {tracklet id: team or NOT_ROBOT}.
         """
+        self.split_conflicts()
         if dist_to_element is not None:
             self.add_closeup_reads(aux_reads, dist_to_element)
         self.relabel(bank, manual)
+
+    def split_conflicts(self, min_read: float = 1.0) -> None:
+        """Cut tracklets whose bumper reads name two teams at different times: the tracklet jumped
+        from one robot to another (an occlusion, a crossing). It is cut midway between the last
+        confident read of the first team and the first of the next, repeatedly."""
+        n = 0
+        out = []
+        todo = list(self.done + self.active)
+        while todo:
+            tr = todo.pop()
+            conf = [(t, team) for t, team, v in sorted(tr.read_log) if v >= min_read]
+            cut = None
+            for (ta, a), (tb, b) in zip(conf, conf[1:]):
+                if a != b:
+                    cut = 0.5 * (ta + tb)
+                    break
+            if cut is None or not (tr.t0 < cut < tr.t1):
+                out.append(tr)
+                continue
+            nt = Tracklet(self._next)
+            self._next += 1
+            nt.obs = [o for o in tr.obs if o[0] >= cut]
+            tr.obs = [o for o in tr.obs if o[0] < cut]
+            if not tr.obs or not nt.obs:
+                tr.obs = sorted(tr.obs + nt.obs)
+                out.append(tr)
+                continue
+            log = tr.read_log
+            tr.read_log = [r for r in log if r[0] < cut]
+            nt.read_log = [r for r in log if r[0] >= cut]
+            for x in (tr, nt):
+                x.reads = {}
+                for _t, team, v in x.read_log:
+                    x.reads[team] = x.reads.get(team, 0.0) + v
+                x.emb = None  # the appearance was a mix of two robots
+            n += 1
+            todo += [tr, nt]
+        self.done, self.active = out, []
+        self.stats["read_splits"] = n
 
     def relabel(self, bank=None, manual=None) -> None:
         for tr in self.done + self.active:

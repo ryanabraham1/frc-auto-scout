@@ -84,3 +84,16 @@ def test_link_cost_cache_matches_raw():
     b = Tracklet(1, obs=[(t, 1.0 + t, 2.0, (0, 0, 1, 1), "red") for t in np.arange(2.5, 4, 0.1)])
     tr._uc, tr._lc = {}, {}
     assert tr._link(a, b) == RobotTracker._link_raw(a, b)
+
+
+def test_tracklet_with_two_teams_read_is_split():
+    tr = RobotTracker(houston_cal(), FieldModel.load(2026), {"red": [1, 2, 3], "blue": [4, 5, 6]})
+    t = Tracklet(0, obs=[(k / 10, 10.0, 2.0 + k / 10, (0, 0, 50, 50), "red") for k in range(100)])
+    t.read_log = [(1.0, 1, 1.5), (2.0, 1, 1.5), (7.0, 2, 1.5)]
+    t.reads = {1: 3.0, 2: 1.5}
+    tr.done = [t]
+    tr._next = 1
+    tr.split_conflicts()
+    parts = sorted(tr.done, key=lambda x: x.t0)
+    assert len(parts) == 2 and parts[0].t1 < 4.5 <= parts[1].t0  # midway between the reads at 2 s and 7 s
+    assert parts[0].reads == {1: 3.0} and parts[1].reads == {2: 1.5}
