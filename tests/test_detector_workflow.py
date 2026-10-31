@@ -99,7 +99,7 @@ def test_promotion_preserves_existing_model_on_regression(tmp_path, monkeypatch)
     candidate = tmp_path / "candidate.pt"
     candidate.write_bytes(b"candidate")
     monkeypatch.setattr(detect, "find_weights", lambda: baseline)
-    monkeypatch.setattr(detect, "RobotDetector", lambda path, **kw: path)
+    monkeypatch.setattr(detect, "default_detector", lambda path, **kw: path)
     monkeypatch.setattr(detect, "PersonVeto", lambda: None)
     monkeypatch.setattr(benchmark, "evaluate_model", lambda path, *args:
                         dict(f1=.8, precision=.8, recall=.8) if path == candidate
@@ -165,3 +165,19 @@ def test_training_lock_rejects_duplicate_process(tmp_path, monkeypatch):
     with FileLock(tmp_path / "detector-training.lock"):
         with pytest.raises(RuntimeError, match="already running"):
             training.train()
+
+
+def test_cross_scale_consensus_and_weak_tracking_evidence():
+    # Moderate isolated box is rejected at detection threshold, retained only as weak tracking evidence.
+    a = Det(0, 0, 20, 20, .4, "red")
+    assert detect.merge_scales([[a], []], .3) == []
+    weak = detect.merge_scales([[a], []], .1)
+    assert len(weak) == 1 and weak[0].conf < .3 and a.conf == .4
+    b = Det(1, 1, 21, 21, .22, "red")
+    supported = detect.merge_scales([[a], [b]], .3)
+    assert len(supported) == 1 and supported[0].conf == .4
+    # Another alliance and boxes from the same scale cannot corroborate a robot.
+    assert detect.merge_scales([[a, b], []], .3) == []
+    assert detect.merge_scales([[a], [Det(1, 1, 21, 21, .4, "blue")]], .3) == []
+    confident = Det(0, 0, 20, 20, .7, "red")
+    assert detect.merge_scales([[confident], []], .3) == [confident]

@@ -298,7 +298,7 @@ async function viewOverview() {
     <div class="card"><div class="card-head"><h2>Recently processed</h2><a href="#/videos" class="small">All videos →</a></div><div class="table-wrap"><table><thead><tr><th>Match</th><th>Score</th><th>Took</th><th>Finished</th><th></th></tr></thead><tbody id="recent"></tbody></table></div></div></div>
     <div class="card-head" style="margin:8px 0 12px"><h2>Attribution accuracy</h2><span class="small muted">Per-team averages vs OPR from official FMS counts. The scouter must beat an equal three-way split (no video) to add information.</span></div>
     <div class="grid" id="acc" style="grid-template-columns:repeat(auto-fill,minmax(380px,1fr))"><div class="card"><div class="skel"></div></div></div>
-    <div class="card" style="margin-top:16px"><div class="card-head"><h2>Robot detector benchmark</h2><span class="small muted">Hand-marked robots in held-out broadcast frames (scripts/det_eval.py)</span></div><div class="table-wrap"><table><thead><tr><th>Model</th><th>Recall</th><th>Precision</th><th>Robots</th></tr></thead><tbody id="bench"></tbody></table></div></div>`;
+    <div class="card" style="margin-top:16px"><div class="card-head"><h2>Robot detector benchmark</h2><span class="small muted">One-to-one, alliance-correct matches · detector accuracy on 20 marked frames; not per-team scoring accuracy</span></div><div class="table-wrap"><table><thead><tr><th>Model / settings</th><th>Recall</th><th>Precision</th><th>F1</th><th>Robots</th></tr></thead><tbody id="bench"></tbody></table></div></div>`;
   const tick = async () => {
     if (location.hash.replace(/^#\/?/, '') !== '') return;
     const d = await api('/api/runs');
@@ -318,8 +318,8 @@ async function viewOverview() {
   };
   const d = await tick();
   every(3000, tick);
-  api('/api/detector-benchmark').then(b => { $('#bench').innerHTML = b.length ? b.map(x => `<tr><td>${esc(x.model)}</td><td><div class="row" style="justify-content:flex-end"><div class="progress" style="width:90px"><span style="width:${x.recall * 100}%"></span></div><span class="num">${(x.recall * 100).toFixed(0)}%</span></div></td>
-    <td><div class="row" style="justify-content:flex-end"><div class="progress good" style="width:90px"><span style="width:${x.precision * 100}%"></span></div><span class="num">${(x.precision * 100).toFixed(0)}%</span></div></td><td class="num">${x.robots}</td></tr>`).join('') : `<tr><td colspan="4" class="empty">No benchmark yet.</td></tr>`; });
+  api('/api/detector-benchmark').then(b => { $('#bench').innerHTML = b.length ? b.map(x => `<tr><td>${esc(x.model)}<div class="small muted">${esc((x.scales?.length ? x.scales.join(' + ') : x.imgsz) || 'legacy')} px · confidence ${x.conf ?? '–'}</div></td><td><div class="row" style="justify-content:flex-end"><div class="progress" style="width:90px"><span style="width:${x.recall * 100}%"></span></div><span class="num">${(x.recall * 100).toFixed(0)}%</span></div></td>
+    <td><div class="row" style="justify-content:flex-end"><div class="progress good" style="width:90px"><span style="width:${x.precision * 100}%"></span></div><span class="num">${(x.precision * 100).toFixed(0)}%</span></div></td><td class="num">${x.f1 == null ? '–' : (x.f1 * 100).toFixed(1) + '%'}</td><td class="num">${x.robots}</td></tr>`).join('') : `<tr><td colspan="5" class="empty">No benchmark yet.</td></tr>`; });
   const evs = (d?.events || []).filter(e => e.processed >= 4).map(e => e.event_key);
   if (!evs.length) { $('#acc').innerHTML = `<div class="card empty">Process a few matches of an event to see accuracy.</div>`; return; }
   $('#acc').innerHTML = evs.map(e => `<div class="card" id="acc-${e}"><div class="card-head"><h2>${e}</h2></div><div class="skel"></div><div class="skel" style="margin-top:10px;width:60%"></div></div>`).join('');

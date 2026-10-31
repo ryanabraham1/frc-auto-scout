@@ -56,7 +56,8 @@ def evaluate_model(detector, directory, veto):
     return dict(tp=tp, fp=fp, fn=fn, precision=tp / max(tp + fp, 1),
                 recall=tp / max(tp + fn, 1), f1=2 * tp / max(2 * tp + fp + fn, 1),
                 frames=len(points), robots=tp + fn, per_frame=per_frame,
-                scoring="one-to-one-alliance-v2", dataset_sha256=hashlib.sha256(raw).hexdigest())
+                scoring="one-to-one-alliance-v2", dataset_sha256=hashlib.sha256(raw).hexdigest(),
+                imgsz=getattr(detector, "imgsz", None), scales=list(getattr(detector, "sizes", [])))
 
 
 def improves(candidate, baseline):

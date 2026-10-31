@@ -29,6 +29,7 @@
 2–3 CPU cores. To process several matches in parallel, run `autoscout run-event` in 2–3 terminals with different
 `--levels` or events.
 
-The default CUDA detector input is now 1600 pixels, which improved the existing held-out detector benchmark.
-Set `$env:AUTOSCOUT_IMGSZ="1280"` in PowerShell to favour throughput. Training and concurrent match jobs compete
+The CUDA detector now checks the same model at 1280 and 1600 pixels, which improved the existing point benchmark.
+Set `$env:AUTOSCOUT_MULTISCALE="0"` for single-scale detection, or `$env:AUTOSCOUT_IMGSZ="1280"` to favour throughput.
+The historical throughput estimates above predate this two-scale default. Training and concurrent match jobs compete
 for the same GPU; the dashboard displays training progress, and duplicate training runs are blocked across processes.

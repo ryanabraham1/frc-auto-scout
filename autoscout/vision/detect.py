@@ -7,7 +7,7 @@ segmentation, which is fast enough to run on every frame for trajectory tracking
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from functools import lru_cache
 
@@ -92,12 +92,13 @@ class RobotDetector:
                 self.cls_alliance[k] = ""
         self.half = self.device == "cuda"
 
-    def __call__(self, images: list[np.ndarray] | np.ndarray, conf: float | None = None) -> list[list[Det]]:
+    def __call__(self, images: list[np.ndarray] | np.ndarray, conf: float | None = None,
+                 imgsz: int | None = None) -> list[list[Det]]:
         single = isinstance(images, np.ndarray)
         batch = [images] if single else images
         if not batch:
             return []
-        res = self.model.predict(batch, conf=self.conf if conf is None else conf, imgsz=self.imgsz, verbose=False,
+        res = self.model.predict(batch, conf=self.conf if conf is None else conf, imgsz=imgsz or self.imgsz, verbose=False,
                                  classes=list(self.cls_alliance), device=self.device, **precision_args(self.half))
         out = []
         for r in res:
@@ -106,6 +107,57 @@ class RobotDetector:
                 dets.append(Det(x0, y0, x1, y1, c, self.cls_alliance.get(int(k), "")))
             out.append(nms_merge(dets))
         return out[0] if single else out
+
+
+def merge_scales(predictions: list[list[Det]], threshold: float = 0.3) -> list[Det]:
+    """Accept confident boxes, or moderate boxes supported at another image scale.
+
+    Unsupported moderate detections remain weak when a tracker requested weak
+    evidence: they may extend an existing robot but cannot start a new track.
+    """
+    out = []
+    for i, own in enumerate(predictions):
+        others = [d for j, group in enumerate(predictions) if j != i for d in group]
+        for d in own:
+            if d.conf < threshold:
+                continue
+            supported = d.conf >= .5 or any(
+                other.conf >= .2 and other.alliance == d.alliance and iou(d, other) >= .3
+                for other in others)
+            if d.conf >= .3 and not supported:
+                if threshold >= .3:
+                    continue
+                d = replace(d, conf=.29)
+            out.append(d)
+    return nms_merge(out, thr=.4)
+
+
+class MultiScaleDetector:
+    """Reuse one model at two scales to recover small/occluded robots on CUDA."""
+    def __init__(self, detector: RobotDetector, sizes=(1280, 1600)):
+        self.detector = detector
+        self.weights = detector.weights
+        self.sizes = tuple(dict.fromkeys(sizes))
+        self.imgsz = max(self.sizes)
+        self.conf = detector.conf
+        self.device = detector.device
+
+    def __call__(self, images, conf: float | None = None):
+        if not isinstance(images, np.ndarray):
+            return [self(image, conf=conf) for image in images]
+        threshold = self.conf if conf is None else conf
+        predictions = [self.detector(images, conf=min(threshold, .2), imgsz=size) for size in self.sizes]
+        return merge_scales(predictions, threshold)
+
+
+def _robot_detector(weights, conf, imgsz=None, multiscale=None):
+    detector = RobotDetector(weights, conf=conf, imgsz=imgsz)
+    if multiscale is None:
+        import os
+        multiscale = os.environ.get("AUTOSCOUT_MULTISCALE", "1") != "0"
+    if multiscale and detector.device == "cuda" and detector.weights.suffix == ".pt" and detector.imgsz > 1280:
+        return MultiScaleDetector(detector, sizes=(1280, detector.imgsz))
+    return detector
 
 
 class EnsembleDetector:
@@ -223,19 +275,20 @@ def ensure_spyglass() -> Path | None:
         return None
 
 
-def default_detector(weights: str | Path | None = None, conf: float = 0.3, ensemble: bool = False):
+def default_detector(weights: str | Path | None = None, conf: float = 0.3, ensemble: bool = False,
+                     imgsz: int | None = None, multiscale: bool | None = None):
     """Our fine-tuned model; Spy Glass only when there is no model of our own.
 
     Ensembling Spy Glass was measured on hand-marked broadcast frames (scripts/det_eval.py): +3
     points of recall for -11 points of precision, and every false box becomes a junk tracklet that
     the identity step has to explain away, so it is off unless asked for."""
     if weights:
-        return RobotDetector(weights, conf=conf)
+        return _robot_detector(weights, conf, imgsz, multiscale)
     own = [p for p in available_weights() if p in DEFAULT_WEIGHTS[:3]]
     if own and not ensemble:
         for p in own:
             try:
-                return RobotDetector(p, conf=conf)
+                return _robot_detector(p, conf, imgsz, multiscale)
             except Exception:
                 if p.suffix != ".engine":
                     raise

@@ -75,7 +75,9 @@ The detector used is the first of these that exists:
 4. `data/models/spyglass/model11n.pt`, FRC Team 578's "Spy Glass" bumper model, used only when there is no model of our own
 
 On CUDA, portable models use 1600-pixel inputs by default; CPU/MPS use 1280. Override with
-`AUTOSCOUT_IMGSZ=1280` when throughput matters. Stale TensorRT engines are skipped, and CPU deployments
+`AUTOSCOUT_IMGSZ=1280` when throughput matters. The CUDA default checks the same model at 1280 and 1600,
+requiring moderate-confidence boxes to agree across scales; high-confidence boxes stand alone. This reuses
+one model's weights. Set `AUTOSCOUT_MULTISCALE=0` for single-scale inference. Stale TensorRT engines are skipped, and CPU deployments
 use portable weights. People (referees, field staff, people at the rail) are removed with a COCO person detector.
 Spy Glass is no longer ensembled by default. On hand-marked frames it added 3 points of recall but cost 11 points
 of precision (see below).
@@ -92,7 +94,9 @@ The benchmark now matches robots and predictions **one to one**, with matching a
 both precision and recall. Duplicate boxes and wrong-alliance predictions count as false positives. Older
 many-to-many precision scores are archived in `data/det_eval/results_legacy.json` and should not be compared.
 On the existing 20 frames (84 robots, five events), the shipped weights score **76.2% recall / 80.0% precision**
-at 1280 and **77.4% / 84.4%** at 1600 on this RTX 3060. This small benchmark measures detection, not end-to-end
+at 1280, **77.4% / 84.4%** at 1600, and **79.8% / 87.0%** with the CUDA two-scale default on this RTX 3060.
+These settings were compared on this benchmark; confirmation on additional matches is still needed.
+This small benchmark measures detection, not end-to-end
 team attribution or scoring accuracy. Per-frame errors, F1, input size and timing are saved with each result.
 
 To label frames by hand, use the dashboard's **Label robots** page:
@@ -113,7 +117,8 @@ For a short fine-tune using only corrected frames:
 autoscout train-robots --hand-only --freeze 10 --epochs 30 --batch 4 --imgsz 1600
 ```
 
-Candidates and evaluation reports stay in `data/models/experiments/<run>/`. Training replaces deployed weights
+Candidates and evaluation reports stay in `data/models/experiments/<run>/`. Candidates are compared using the
+same inference settings as deployment. Training replaces deployed weights
 only when held-out F1 improves without reducing precision or recall. Previous deployed weights are backed up,
 and an obsolete TensorRT engine is retired. Without a benchmark, the candidate is saved for review.
 

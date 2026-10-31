@@ -110,7 +110,7 @@ def split(val_frac: float = 0.15, seed: int = 0, repeat: int = 6, hand_only: boo
 def promote(candidate: Path) -> dict:
     """Benchmark a candidate against the deployed weights before replacing them."""
     from ..vision.benchmark import evaluate_model, improves
-    from ..vision.detect import RobotDetector, PersonVeto, find_weights
+    from ..vision.detect import default_detector, PersonVeto, find_weights
 
     directory = config.DATA_DIR / "det_eval"
     report = {"candidate": str(candidate), "promoted": False}
@@ -122,10 +122,10 @@ def promote(candidate: Path) -> dict:
     if baseline and baseline.suffix == ".engine":
         baseline = baseline.with_suffix(".pt")
     veto = PersonVeto()
-    report["candidate_score"] = evaluate_model(RobotDetector(candidate, conf=0.3), directory, veto)
+    report["candidate_score"] = evaluate_model(default_detector(candidate, conf=0.3), directory, veto)
     if baseline and baseline.exists():
         report["baseline"] = str(baseline)
-        report["baseline_score"] = evaluate_model(RobotDetector(baseline, conf=0.3), directory, veto)
+        report["baseline_score"] = evaluate_model(default_detector(baseline, conf=0.3), directory, veto)
         if not improves(report["candidate_score"], report["baseline_score"]):
             report["reason"] = "No gain without precision/recall regression; deployed weights retained."
             return report

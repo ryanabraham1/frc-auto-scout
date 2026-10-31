@@ -1,8 +1,8 @@
 """Robot-detector evaluation against hand-marked robot points.
 
 Marking a point on every robot is much quicker than drawing boxes, and enough to score a detector:
-  recall    = marked robots covered by a detection box of the right alliance,
-  precision = detection boxes that contain a marked robot (any alliance).
+Each box and marked robot can match at most once, and alliance must agree.
+Recall measures matched robots / labelled robots; precision measures matches / predictions.
 
   python scripts/det_eval.py extract MATCH T1,T2,...   # saves wide-shot crops + gridded previews
   python scripts/det_eval.py eval [weights ...]        # scores detectors (default: the pipeline's)
@@ -51,14 +51,12 @@ def extract(match_key: str, times: list[float]):
         print(stem, crop.shape)
 
 
-def evaluate(weights: list[str], conf=0.3, imgsz=1280):
+def evaluate(weights: list[str], conf=0.3, imgsz=None):
     from autoscout.vision.detect import PersonVeto, RobotDetector, alliance_from_pixels, default_detector
     from autoscout.vision.benchmark import score_points
 
     pts = json.loads((DIR / "points.json").read_text())
-    dets = {"pipeline default": default_detector()} if not weights else {}
-    for detector in dets.values():
-        detector.conf, detector.imgsz = conf, imgsz
+    dets = {"pipeline default": default_detector(conf=conf, imgsz=imgsz)} if not weights else {}
     for wt in weights:
         dets[wt] = RobotDetector(wt, conf=conf, imgsz=imgsz)
     veto = PersonVeto()
@@ -89,7 +87,8 @@ def evaluate(weights: list[str], conf=0.3, imgsz=1280):
         summary.append({"model": str(name), "recall": hit / max(tot, 1), "precision": tp / max(nd, 1),
                         "f1": f1, "tp": tp, "fp": nd - tp, "fn": tot - tp,
                         "robots": tot, "frames": len(pts), "scoring": "one-to-one-alliance-v2",
-                        "conf": conf, "imgsz": imgsz, "seconds": seconds, "per_frame": frames,
+                        "conf": conf, "imgsz": det.imgsz, "scales": list(getattr(det, "sizes", [])),
+                        "seconds": seconds, "per_frame": frames,
                         "dataset_sha256": hashlib.sha256((DIR / "points.json").read_bytes()).hexdigest()})
     # merged into data/det_eval/results.json (shown on the dashboard's Runs page)
     out = DIR / "results.json"
@@ -100,7 +99,7 @@ def evaluate(weights: list[str], conf=0.3, imgsz=1280):
         if not legacy.exists():
             legacy.write_text(json.dumps(old, indent=1))
         old = []
-    key = lambda r: (r["model"], r.get("conf"), r.get("imgsz"))
+    key = lambda r: (r["model"], r.get("conf"), r.get("imgsz"), tuple(r.get("scales", [])))
     merged = {key(r): r for r in old}
     merged.update({key(r): r for r in summary})
     temp = out.with_suffix(".tmp")
@@ -117,6 +116,6 @@ if __name__ == "__main__":
         ap.add_argument("command", choices=["eval"])
         ap.add_argument("weights", nargs="*")
         ap.add_argument("--conf", type=float, default=0.3)
-        ap.add_argument("--imgsz", type=int, default=1280)
+        ap.add_argument("--imgsz", type=int, default=None)
         args = ap.parse_args()
         evaluate(args.weights, conf=args.conf, imgsz=args.imgsz)

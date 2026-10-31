@@ -336,6 +336,9 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "identity_timeline": ctx.identity_tl,
         "calibration": {"view": list(cal.view), "points": {k: list(map(float, v)) for k, v in cal.points.items()}},
         "detector": str(det.weights.name),
+        "detector_settings": {"weights": str(det.weights), "imgsz": getattr(det, "imgsz", None),
+                              "scales": list(getattr(det, "sizes", [])), "device": config.device(),
+                              "weak_conf": WEAK_CONF, "robot_hz": robot_hz},
         "processing_s": round(time.time() - t_start, 1),
         **res,
     }
