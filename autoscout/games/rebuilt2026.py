@@ -27,6 +27,9 @@ TELEOP_BOUNDS = [  # (period, clock_hi, clock_lo) in TELEOP remaining seconds
 TOWER_PTS_AUTO = {"Level1": 15}
 TOWER_PTS_END = {"Level1": 10, "Level2": 20, "Level3": 30}
 COLUMN_WEIGHT = 0.3  # release blobs per detected shot (a ball is seen leaving its shooter for ~3 blob frames)
+FEED_MIN_DEPTH = 0.5  # m past the zone line: closer launches are shots taken from the line
+FEED_SPEED = 1.0  # m/s of image-horizontal speed toward the own zone at release
+FEED_ACCURACY = 0.8  # share of own-zone shots that score, for converting release blobs to balls
 RELEASE_SPEED = 3.0  # m/s upward: launched FUEL leaves a shooter at ~8-12 m/s; crowd and hopper motion is slower
 SHOT_WINDOW = 3.0  # s before a score increase in which the scoring shot was released
 COUNT_LAG = 1.0  # s between release and the hub sensor counting the FUEL
@@ -297,6 +300,27 @@ class Rebuilt2026(GamePlugin):
             }
             scored.pop("HP", None)
 
+        # Feeds from release evidence: release blobs seen while a robot was in the NEUTRAL or the
+        # opponent's zone, converted to balls with this match's own-zone ratio of officially counted
+        # FUEL to release blobs (scored FUEL is a share of shots, hence the accuracy allowance).
+        ctimes, csum = columns if columns else (None, {})
+        own_blobs = sum(float(c[-1]) for c in csum.values() if len(c))
+        off_fuel = sum(alliance_summary[a]["official_fuel"] for a in ("red", "blue"))
+        balls_per_blob = float(np.clip(off_fuel / FEED_ACCURACY / own_blobs, 0.05, 1.0)) if own_blobs > 50 else 0.0
+        feed_blobs = getattr(self, "feed_blobs", {})
+        if balls_per_blob:  # feed events for the timeline / annotated video, one per robot-second
+            for e in events:  # whole tracked flights stay listed, but the release count is the feed tally
+                if e.get("kind") == "feed":
+                    e["kind"] = "feed_flight"
+            buckets = defaultdict(float)
+            for t, team, a, c in getattr(self, "feed_log", []):
+                buckets[(int(t), team, a)] += c
+            for (t, team, a), c in sorted(buckets.items()):
+                n = c * balls_per_blob
+                if n >= 0.5:
+                    events.append({"t": float(t), "kind": "feed", "team": team, "alliance": a, "n": round(n, 2),
+                                   "period": period_of(ctx, t), "by": "release"})
+
         teams_out = {}
         for a in ("red", "blue"):
             hs_tot = alliance_summary[a]
@@ -313,6 +337,8 @@ class Rebuilt2026(GamePlugin):
                 zt = zone_time[team]
                 ztot = sum(zt.values()) or 1.0
                 fed_raw = sum(feeds[team].values())
+                fb = feed_blobs.get(team, {})
+                fed_released = sum(fb.values()) * balls_per_blob
                 teams_out[team] = {
                     "alliance": a, "station": st,
                     "fuel_scored": fuel_auto + fuel_tele,
@@ -325,8 +351,12 @@ class Rebuilt2026(GamePlugin):
                     "fuel_shot_by_period": {p: round(shots[team][p], 1) for p in PERIODS},
                     "inactive_shots": round(inactive[team], 1),
                     "fuel_fed_raw": round(fed_raw, 1),
-                    "fuel_fed": int(round(fed_raw * k)),
-                    "fuel_fed_by_period": {p: round(feeds[team][p] * k, 1) for p in PERIODS},
+                    # whole flights tracked into the own zone miss most long lobs; releases from the
+                    # neutral/opponent zone catch them, so the larger of the two estimates is used
+                    "fuel_fed": int(round(max(fed_raw * k, fed_released))),
+                    "fuel_fed_released": round(fed_released, 1),
+                    "fuel_fed_by_period": {p: round(max(feeds[team][p] * k, fb.get(p, 0.0) * balls_per_blob), 1)
+                                           for p in PERIODS},
                     "feed_from_opp_zone": int(round(feed_opp[team] * k)),
                     "knocked_pieces": round(knocked[team], 1),
                     "auto_tower": at, "endgame_tower": et, "tower_points": tower_pts,
@@ -351,6 +381,8 @@ class Rebuilt2026(GamePlugin):
         and pieces falling into hoppers or the HUB (moving down) never count."""
         from scipy.spatial import cKDTree
 
+        self.feed_blobs = defaultdict(lambda: defaultdict(float))  # team -> period -> release blobs
+        self.feed_log = []  # (t, team, alliance, blobs) for the event list
         B = ctx.blobs.get("fuel")
         if B is None or not len(B) or ctx.blob_view is None:
             return None, {}
@@ -379,17 +411,20 @@ class Rebuilt2026(GamePlugin):
                         continue
                     (x0, y0, x1, y1), _ = rb
                     ppm = ctx.cal.px_per_meter_x(r[:2])
-                    zones.append((slot, x0, y0, x1, y1, ppm, z == "own"))
+                    zones.append((slot, x0, y0, x1, y1, ppm, z == "own", self._home_dir(ctx, slot[:-1], r[:2], rb[0]),
+                                  self._dist_from_own_zone(slot[:-1], r[:2])))
                 if zones:
                     # velocity from the nearest blob one frame back (within a fast ball's travel)
                     vmax = max(z[5] for z in zones) * 25.0 * dt
                     d, j = prev_tree.query(xy, distance_upper_bound=vmax)
                     ok = np.isfinite(d)
+                    vx = np.full(len(xy), 0.0)
                     vy = np.full(len(xy), 0.0)
+                    vx[ok] = (xy[ok, 0] - prev_xy[j[ok], 0]) / dt
                     vy[ok] = (xy[ok, 1] - prev_xy[j[ok], 1]) / dt
                     best = np.full(len(xy), -1)
                     best_d = np.full(len(xy), np.inf)
-                    for zi, (slot, x0, y0, x1, y1, ppm, _own) in enumerate(zones):
+                    for zi, (slot, x0, y0, x1, y1, ppm, *_z) in enumerate(zones):
                         w, h = x1 - x0, max(y1 - y0, 0.5 * (x1 - x0))
                         cx = 0.5 * (x0 + x1)
                         inside = ((np.abs(xy[:, 0] - cx) < 0.7 * w) & (xy[:, 1] < y0 + 0.15 * h)
@@ -397,11 +432,34 @@ class Rebuilt2026(GamePlugin):
                         dd = np.hypot((xy[:, 0] - cx) / w, (xy[:, 1] - y0) / h)
                         take = inside & (dd < best_d)
                         best[take], best_d[take] = zi, dd[take]
-                    for zi, (slot, *_r, own) in enumerate(zones):
+                    for zi, (slot, *_r, ppm, own, home, away) in enumerate(zones):
+                        mine = best == zi
                         if own:  # FUEL only scores when shot from the ALLIANCE ZONE
-                            counts[slot][k] = np.count_nonzero(best == zi)
+                            counts[slot][k] = np.count_nonzero(mine)
+                        elif home and away >= FEED_MIN_DEPTH:
+                            # a FEED: launched from well inside the NEUTRAL / opponent zone and heading
+                            # back toward the robot's own ALLIANCE ZONE (where it has to land)
+                            c = np.count_nonzero(mine & (vx * home > FEED_SPEED * ppm))
+                            if c:
+                                team = ctx.team_at(slot, times[k])
+                                self.feed_blobs[team][period_of(ctx, times[k]) or "teleop"] += c
+                                self.feed_log.append((float(times[k]), team, slot[:-1], c))
             prev_tree, prev_t, prev_xy = tree, times[k], xy
         return times, {slot: np.cumsum(c) for slot, c in counts.items()}
+
+    def _home_dir(self, ctx: MatchContext, alliance: str, p, box) -> float:
+        """+1 / -1: the image-x direction (at this robot) that leads toward its ALLIANCE ZONE."""
+        foot = ((box[0] + box[2]) / 2, box[3])
+        f = ctx.cal.to_field([foot, (foot[0] + 20.0, foot[1])])
+        dfx = f[1][0] - f[0][0]
+        if not np.isfinite(dfx) or abs(dfx) < 1e-6:
+            return 0.0
+        return float(np.sign(dfx)) * (1.0 if alliance == "red" else -1.0)
+
+    def _dist_from_own_zone(self, alliance: str, p) -> float:
+        """Metres from the robot to its ALLIANCE ZONE along the field (0 inside it)."""
+        x0, _, x1, _ = self.field.zones[f"{alliance}_alliance"]
+        return float(max(x0 - p[0], 0.0, p[0] - x1))
 
     def live_weights(self, ctx: MatchContext, alliance: str, teams: list[int], shot_log: list, columns=None):
         """Credit every live score increase to whoever was shooting just before it.

@@ -97,3 +97,18 @@ def test_tracklet_with_two_teams_read_is_split():
     parts = sorted(tr.done, key=lambda x: x.t0)
     assert len(parts) == 2 and parts[0].t1 < 4.5 <= parts[1].t0  # midway between the reads at 2 s and 7 s
     assert parts[0].reads == {1: 3.0} and parts[1].reads == {2: 1.5}
+
+
+def test_feed_needs_depth_and_direction_toward_own_zone():
+    plugin = Rebuilt2026()
+    # red's zone is at high field x: 2 m past the red zone line in the neutral zone is deep enough
+    x_line = plugin.field.zones["red_alliance"][0]
+    assert plugin._dist_from_own_zone("red", (x_line - 2.0, 4.0)) == 2.0
+    assert plugin._dist_from_own_zone("red", (x_line + 1.0, 4.0)) == 0.0
+    cal = houston_cal()
+    box = (900, 500, 960, 560)
+    # red's zone is to the right in the Houston view and blue's to the left
+    assert plugin._home_dir(MatchContext(match=None, field=plugin.field, cal=cal, clock=None, timeline=None,
+                                         tracks={}, identity={}, identity_conf={}, launches={}), "red", None, box) == 1.0
+    assert plugin._home_dir(MatchContext(match=None, field=plugin.field, cal=cal, clock=None, timeline=None,
+                                         tracks={}, identity={}, identity_conf={}, launches={}), "blue", None, box) == -1.0
