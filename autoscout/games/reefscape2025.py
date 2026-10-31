@@ -22,8 +22,9 @@ CATS = ["L1", "L2", "L3", "L4", "net", "processor"]
 NON_ROBOT = {"foul_minor": 2, "foul_major": 6, "hp_net": 4}  # jumps no robot action explains
 NEAR = {"reef": 1.1, "net": 1.0, "processor": 1.3}  # meters from element edge
 LOOKBACK = 5.0  # s: scoring is often posted a few seconds after it happens
-SHARE_MODE = "soft"  # "nearest" | "soft": see Reefscape2025._shares
+SHARE_MODE = "hybrid"  # "nearest" | "soft" | "dwell" | "hybrid" (dwell for coral, soft for algae): see _shares
 SOFT_SCALE = 1.0  # m
+DWELL_SLACK = 1.0  # m added to an element's reach when timing how long a robot stayed there
 
 
 def _decompose(points: int, allowed: dict[str, int]) -> list[list[str]]:
@@ -80,6 +81,25 @@ class Reefscape2025(GamePlugin):
                 best["processor"] = min(best["processor"], self.field.dist_to_element(p, f"{alliance}_processor"))
         return best
 
+    def _dwell(self, ctx: MatchContext, slot: str, t0: float, t1: float, alliance: str) -> dict[str, float]:
+        """Seconds a slot spent within reach of each of its alliance's scoring elements in [t0, t1]."""
+        out = {"reef": 0.0, "net": 0.0, "processor": 0.0}
+        tr = ctx.tracks.get(slot, [])
+        prev = None
+        for r in tr:
+            if not t0 <= r[0] <= t1:
+                continue
+            dt = min(r[0] - prev, 0.5) if prev is not None else 0.1
+            prev = r[0]
+            p = (r[1], r[2])
+            if self.field.dist_to_element(p, f"{alliance}_reef") < NEAR["reef"] + DWELL_SLACK:
+                out["reef"] += dt
+            if self.field.dist_to_element(p, f"{alliance}_net_zone") < NEAR["net"] + DWELL_SLACK:
+                out["net"] += dt
+            if self.field.dist_to_element(p, f"{alliance}_processor") < NEAR["processor"] + DWELL_SLACK:
+                out["processor"] += dt
+        return out
+
     def official_counts(self, bd_a: dict) -> dict[str, dict[str, int]]:
         """Official per-category counts for one alliance, split auto/teleop."""
         ar, tr = bd_a["autoReef"], bd_a["teleopReef"]
@@ -111,13 +131,15 @@ class Reefscape2025(GamePlugin):
                     extra = dict(NON_ROBOT)
                     if phase == "auto" or t - ctx.clock.auto_end_vt < 4:
                         extra["leave"] = 3
-                    near = {}
+                    near, dwell = {}, {}
                     for team in teams[a]:
                         slot = ctx.slot_of(team, t)
                         if slot:
                             near[team] = self._elem_dists(ctx, slot, t - LOOKBACK, t, a)
+                            dwell[team] = self._dwell(ctx, slot, t - LOOKBACK, t, a)
                         else:
                             near[team] = {"reef": 9e9, "net": 9e9, "processor": 9e9}
+                            dwell[team] = {"reef": 0.0, "net": 0.0, "processor": 0.0}
                     # The reef close-up camera shows who is actually at the reef (the wide shot often
                     # has them hidden behind it): those teams are at the reef, others are not.
                     # Seen there = at the reef. Not seen proves nothing (bumper may face away from
@@ -131,7 +153,7 @@ class Reefscape2025(GamePlugin):
                         events.append({"t": round(t, 2), "alliance": a, "phase": phase, "points": d, "kind": "unexplained"})
                         continue
                     for team, cat in ev:
-                        for who, share in self._shares(near, team, cat).items():
+                        for who, share in self._shares(near, team, cat, dwell).items():
                             weights[phase][who][cat] += share
                         events.append({"t": round(t, 2), "alliance": a, "phase": phase, "points": vals[cat],
                                        "team": team, "kind": cat})
@@ -237,13 +259,20 @@ class Reefscape2025(GamePlugin):
                                              for a in ("red", "blue")}, moved, 1.0, "leave")
 
     @staticmethod
-    def _shares(near: dict[int, dict[str, float]], team: int, cat: str) -> dict[int, float]:
+    def _shares(near: dict[int, dict[str, float]], team: int, cat: str, dwell=None) -> dict[int, float]:
         """How one explained action is credited. SHARE_MODE "nearest" gives it all to the robot
         nearest the element; "soft" shares it among the robots at the element by closeness,
-        so a position error of a few tenths of a metre doesn't flip the whole action."""
+        so a position error of a few tenths of a metre doesn't flip the whole action; "dwell"
+        shares it by how long each robot stayed at the element before the score posted (scoring
+        a piece takes a stop there; driving past doesn't)."""
         if SHARE_MODE == "nearest":
             return {team: 1.0}
         elem = "reef" if cat.startswith("L") else cat
+        if (SHARE_MODE == "dwell" or (SHARE_MODE == "hybrid" and cat.startswith("L"))) and dwell:
+            w = {t: d[elem] for t, d in dwell.items() if d[elem] > 0}
+            tot = sum(w.values())
+            if tot > 0:
+                return {t: v / tot for t, v in w.items()}
         w = {t: np.exp(-d[elem] / SOFT_SCALE) for t, d in near.items() if d[elem] <= NEAR[elem] + 1.0}
         tot = sum(w.values())
         return {t: v / tot for t, v in w.items()} if tot > 0 else {team: 1.0}

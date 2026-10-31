@@ -62,10 +62,10 @@ VARIANTS_2026 = {
 }
 
 VARIANTS = {
-    "nearest robot gets each action": [(R25, "SHARE_MODE", "nearest")],
-    "soft share 0.5 m": [(R25, "SHARE_MODE", "soft"), (R25, "SOFT_SCALE", 0.5)],
     "soft share 1.0 m": [(R25, "SHARE_MODE", "soft"), (R25, "SOFT_SCALE", 1.0)],
-    "soft share 2.0 m": [(R25, "SHARE_MODE", "soft"), (R25, "SOFT_SCALE", 2.0)],
+    "hybrid, slack 1.0": [(R25, "SHARE_MODE", "hybrid"), (R25, "DWELL_SLACK", 1.0)],
+    "hybrid, slack 1.5": [(R25, "SHARE_MODE", "hybrid"), (R25, "DWELL_SLACK", 1.5)],
+    "hybrid, slack 1.0, lookback 6": [(R25, "SHARE_MODE", "hybrid"), (R25, "DWELL_SLACK", 1.0), (R25, "LOOKBACK", 6.0)],
 }
 
 
