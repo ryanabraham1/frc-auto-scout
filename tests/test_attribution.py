@@ -112,3 +112,17 @@ def test_feed_needs_depth_and_direction_toward_own_zone():
                                          tracks={}, identity={}, identity_conf={}, launches={}), "red", None, box) == 1.0
     assert plugin._home_dir(MatchContext(match=None, field=plugin.field, cal=cal, clock=None, timeline=None,
                                          tracks={}, identity={}, identity_conf={}, launches={}), "blue", None, box) == -1.0
+
+
+def test_weak_detection_extends_a_tracked_robot_but_never_starts_one():
+    from autoscout.vision.detect import Det
+
+    cal = houston_cal()
+    tr = RobotTracker(cal, FieldModel.load(2026), {"red": [1, 2, 3], "blue": [4, 5, 6]})
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    box = (900, 520, 960, 570)
+    tr.update(0.0, frame, [Det(*box, 0.9, "red")])
+    # next frame: the same robot only weakly detected, plus a weak false positive far away
+    tr.update(0.1, frame, [Det(box[0] + 2, box[1], box[2] + 2, box[3], 0.15, "red"),
+                           Det(300, 600, 360, 650, 0.15, "blue")])
+    assert len(tr.active) == 1 and len(tr.active[0].obs) == 2

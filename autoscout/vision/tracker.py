@@ -49,6 +49,12 @@ APP_WEIGHT = 4.0  # cost scale of appearance evidence for a long tracklet
 NOT_ROBOT = 0  # manual label: the tracklet is not a robot (a person, a cart...)
 NEAR = 0.8  # m: two robots this close can be confused, so their tracklets are cut
 LINK_GAP = 0.3  # s: longest miss a tracklet continues across
+# Track-guided detection: the detector runs at a low threshold, and a detection below STRONG_CONF
+# only extends a robot already tracked, where its motion says it should be (half hidden behind a
+# ramp, buried in a pile of pieces). It never starts a new tracklet, so weak false positives
+# elsewhere don't become robots.
+STRONG_CONF = 0.3
+WEAK_CONF = 0.1
 LINK_SPEED = 4.0  # m/s for the online link gate (MAX_SPEED stays the bound for offline joins)
 HIDE_NEAR = 1.0  # m from a tall element's edge: a robot that vanishes this close is behind it
 HIDE_HEIGHT = 1.2  # m: elements at least this tall can hide a robot from the wide shot
@@ -152,15 +158,19 @@ class RobotTracker:
                     dist = float(np.linalg.norm(foot[j] - p))
                     if not 0.6 < d.w / max(bw, 1.0) < 1.7:
                         continue  # a robot's box doesn't change size abruptly between frames
+                    weak = d.conf < STRONG_CONF
+                    if weak and (dist > 0.5 * gate + 0.2 or (d.alliance and tr.alliance_frac(d.alliance) < 0.5)):
+                        continue  # a weak detection only counts right where this robot is expected
                     if dist <= gate:
-                        cost[i, j] = dist + (0.4 if d.alliance and tr.alliance_frac(d.alliance) < 0.3 else 0.0)
+                        cost[i, j] = (dist + (0.4 if d.alliance and tr.alliance_frac(d.alliance) < 0.3 else 0.0)
+                                      + (0.3 if weak else 0.0))
             ri, ci = linear_sum_assignment(cost)
             for i, j in zip(ri, ci):
                 if cost[i, j] < 1e5:
                     self._add(live[i], t, dets[j], foot[j])
                     used.add(j)
         for j in range(len(dets)):
-            if j not in used:
+            if j not in used and dets[j].conf >= STRONG_CONF:  # weak detections never start a robot
                 tr = Tracklet(self._next)
                 self._next += 1
                 self._add(tr, t, dets[j], foot[j])

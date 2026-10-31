@@ -22,7 +22,7 @@ from .vision.detect import PersonVeto, RobotDetector, StaticSuppressor, alliance
 from .vision.identity import IdentityEvidence, identity_timeline
 from .vision.appearance import add_to_bank, load_bank
 from .vision.bumper_ocr import reader
-from .vision.tracker import RobotTracker
+from .vision.tracker import WEAK_CONF, RobotTracker
 from .vision.launches import LaunchExtractor
 from .vision.trajectories import Launch, LaunchDetector
 
@@ -245,7 +245,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         for L in launchers.values():
             L.step(t, lv)
         if (i * launch_step) % robot_every < launch_step:
-            dets = veto(view, det(view))
+            dets = veto(view, det(view, conf=WEAK_CONF))  # weak ones only extend tracked robots
             for d in dets:
                 d.x0 += x; d.x1 += x; d.y0 += y; d.y1 += y
                 if not d.alliance:

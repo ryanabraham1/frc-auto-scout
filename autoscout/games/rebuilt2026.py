@@ -170,10 +170,13 @@ class Rebuilt2026(GamePlugin):
         hp_shots = defaultdict(lambda: defaultdict(float))  # alliance -> period -> pieces
         unattributed = 0.0
         shot_log = []  # (t0, team or "HP", alliance, pieces, made) for time-local attribution
+        hub_zone = self.hub_top_zone(ctx)
         for L in ctx.launches.get("fuel", []):
             period = period_of(ctx, L.t0 + COUNT_LAG)
             if period is None:
                 continue
+            if hub_zone(np.array([L.start[0]]), np.array([L.start[1]]))[0]:
+                continue  # first seen at a HUB's top: FUEL dropping in or bouncing off, not a release
             if getattr(L, "rising", True):
                 # a release must be right at a robot's top: looser matches pick up crowd motion
                 # and the overlay above far-side robots
@@ -394,9 +397,13 @@ class Rebuilt2026(GamePlugin):
         ends = np.r_[starts[1:], len(T)]
         slots = list(ctx.tracks)
         counts = {slot: np.zeros(len(times)) for slot in slots}
+        # FUEL dropping into a HUB, or bouncing back up off its rim, passes right over robots parked
+        # against it: nothing in the HUB-top zone is a release
+        keep = ~self.hub_top_zone(ctx)(X, Y)
         prev_tree, prev_t, prev_xy = None, None, None
         for k in range(len(times)):
-            xy = np.stack([X[starts[k]: ends[k]], Y[starts[k]: ends[k]]], 1)
+            sel = keep[starts[k]: ends[k]]
+            xy = np.stack([X[starts[k]: ends[k]][sel], Y[starts[k]: ends[k]][sel]], 1)
             tree = cKDTree(xy) if len(xy) else None
             if prev_tree is not None and tree is not None and 0 < times[k] - prev_t < 0.1:
                 dt = times[k] - prev_t
@@ -446,6 +453,24 @@ class Rebuilt2026(GamePlugin):
                                 self.feed_log.append((float(times[k]), team, slot[:-1], c))
             prev_tree, prev_t, prev_xy = tree, times[k], xy
         return times, {slot: np.cumsum(c) for slot, c in counts.items()}
+
+    def hub_top_zone(self, ctx: MatchContext):
+        """f(X, Y) -> bool array: image points in the zone around and above either HUB opening
+        (from calibration points '<hub>_top'), where FUEL is landing, not being launched."""
+        tops = []
+        for hub in ("red_hub", "blue_hub"):
+            top = ctx.cal.points.get(f"{hub}_top")
+            if top is not None:
+                e = self.field.elements[hub]
+                r = 0.6 * e["size"][0] * ctx.cal.px_per_meter_x(e["center"])
+                tops.append((float(top[0]), float(top[1]), r))
+
+        def inside(X, Y):
+            m = np.zeros(len(X), bool)
+            for tx, ty, r in tops:
+                m |= (np.abs(X - tx) < 1.6 * r) & (Y < ty + 1.2 * r)
+            return m
+        return inside
 
     def _home_dir(self, ctx: MatchContext, alliance: str, p, box) -> float:
         """+1 / -1: the image-x direction (at this robot) that leads toward its ALLIANCE ZONE."""

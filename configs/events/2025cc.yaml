@@ -22,25 +22,6 @@ points:
   - 945.0
   - 635.0
 reference: configs/events/2025cc_ref.jpg
-overlay:
-  timer:
-  - 904
-  - 114
-  - 113
-  - 43
-  blue_score:
-  - 1208
-  - 107
-  - 57
-  - 27
-  red_score:
-  - 649
-  - 105
-  - 70
-  - 33
-  frame_size:
-  - 1920
-  - 1080
 aux_views:
   red_reef:
   - 0
@@ -52,3 +33,8 @@ aux_views:
   - 655
   - 725
   - 425
+overlay:  # the score bar also shows coral/algae counters ("1/4", "9"): pin the score boxes
+  timer: [920, 116, 86, 38]
+  red_score: [730, 70, 150, 60]
+  blue_score: [1040, 70, 150, 60]
+  frame_size: [1920, 1080]
