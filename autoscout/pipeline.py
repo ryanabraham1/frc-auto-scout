@@ -18,9 +18,10 @@ from .games.base import add_closeup_evidence
 from .field import Calibration, align_to_reference, view_similarity
 from .tba import TBA, MatchInfo
 from .video import Video, download
-from .vision.detect import RobotDetector, StaticSuppressor, alliance_from_pixels, default_detector
+from .vision.detect import PersonVeto, RobotDetector, StaticSuppressor, alliance_from_pixels, default_detector
 from .vision.identity import IdentityEvidence, identity_timeline
 from .vision.appearance import add_to_bank, load_bank
+from .vision.bumper_ocr import reader
 from .vision.tracker import RobotTracker
 from .vision.launches import LaunchExtractor
 from .vision.trajectories import Launch, LaunchDetector
@@ -205,6 +206,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     # ---- frame loop ---------------------------------------------------------------------
     det = detector or default_detector(opts.weights)
     static = StaticSuppressor()
+    veto = PersonVeto()
     gpu = config.has_gpu()
     robot_hz = opts.robot_hz or (10.0 if gpu else 4.0)
     x, y, w, h = cal.view
@@ -216,6 +218,8 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     lag = max(1, int(round(fps / launch_step / 30.0)))
     launchers = {name: LaunchDetector(lo, hi, lview, piece_area_fn=ppm_fn, cal=cal, field_model=fm, lag=lag)
                  for name, (lo, hi) in plugin.launch_pieces.items()}
+    for L in launchers.values():
+        L.online = opts.debug_video
     tracker = RobotTracker(cal, fm, {"red": m.red, "blue": m.blue})
     evidence = IdentityEvidence()
     t0, t1 = clock.start_vt - 0.5, clock.teleop_end_vt + 3.5
@@ -241,7 +245,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         for L in launchers.values():
             L.step(t, lv)
         if (i * launch_step) % robot_every < launch_step:
-            dets = det(view)
+            dets = veto(view, det(view))
             for d in dets:
                 d.x0 += x; d.x1 += x; d.y0 += y; d.y1 += y
                 if not d.alliance:
@@ -358,8 +362,9 @@ def _db_overrides(match_key: str) -> dict[str, int]:
         return {}
 
 
-def reanalyze(match_key: str, tba: TBA | None = None) -> dict:
-    """Re-run identity + game analysis from stored observations (no video work)."""
+def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict:
+    """Re-run identity + game analysis from stored observations (no video work). save=False
+    returns the result without writing it (for comparing analysis variants)."""
     from .field import Calibration as Cal
     from .overlay import MatchClock, ScoreSample, ScoreTimeline
     path = RESULTS_DIR / f"{match_key}.json"
@@ -402,7 +407,8 @@ def reanalyze(match_key: str, tba: TBA | None = None) -> dict:
     old.update(res)
     old.update(identity=ctx.identity, identity_conf=ctx.identity_conf, identity_notes=solved.notes[-30:],
                red_score=m.red_score, blue_score=m.blue_score)
-    path.write_text(json.dumps(old, default=_json_default))
+    if save:
+        path.write_text(json.dumps(old, default=_json_default))
     return old
 
 
@@ -591,6 +597,11 @@ def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict
     for t, frame in video.iter_frames(t0, t1, step=max(1, int(round(video.fps * every)))):
         for name, rect in views.items():
             x, y, w, h = [int(v) for v in (rect[0] * sx, rect[1] * sy, rect[2] * sx, rect[3] * sy)]
+            if not ocr.has_vision():  # constrained PARSeq scoring of the pane's text regions (close-up
+                # bumpers are large: no upscaling needed, which keeps the text detector fast)
+                for team, conf in reader().read_text_regions(frame[y: y + h, x: x + w], list(all_teams.values())):
+                    out.append((round(t, 2), name, team, round(conf, 2)))
+                continue
             pane = cv2.resize(frame[y: y + h, x: x + w], None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
             for txt, conf in ocr.read_lines(pane, words):
                 for d in set(re.findall(r"\d{3,5}", txt)):

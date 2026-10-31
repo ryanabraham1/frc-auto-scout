@@ -13,3 +13,7 @@ runs/
 !models/autoscout-robots.pt
 *.bundle
 demo/
+data_orig/
+demos/
+weights/
+/yolo*.pt

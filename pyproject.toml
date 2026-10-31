@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
   "numpy", "scipy", "opencv-python-headless", "requests", "pyyaml",
   "fastapi", "uvicorn", "yt-dlp[default]", "easyocr", "ultralytics", "lap",
+  "timm", "pytorch_lightning", "certifi",  # PARSeq bumper-number recognizer (torch.hub baudm/parseq)
   "pyobjc-framework-Vision; sys_platform == 'darwin'",  # Apple Vision OCR for bumper numbers
 ]
 

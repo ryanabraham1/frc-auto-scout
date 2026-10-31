@@ -70,16 +70,43 @@ Robot detection is the weakest link. Broadcast robots are small, and referees an
 The detector used is the first of these that exists:
 
 1. `data/models/autoscout-robots.engine`, a TensorRT export made automatically on a CUDA machine
-2. `data/models/autoscout-robots.pt`, our fine-tuned model
-3. `data/models/spyglass/model11n.pt`, FRC Team 578's "Spy Glass" bumper model from Hugging Face, which is the fallback
+2. `data/models/autoscout-robots.pt`, a model you trained (`autoscout train-robots`)
+3. `models/autoscout-robots.pt`, the shipped model
+4. `data/models/spyglass/model11n.pt`, FRC Team 578's "Spy Glass" bumper model, used only when there is no model of our own
 
-To build a good detector, use the dashboard's **Label robots** page:
+People (referees, field staff, people at the rail) are removed from robot detections with a COCO person detector.
+Spy Glass is no longer ensembled by default. On hand-marked frames it added 3 points of recall but cost 11 points
+of precision (see below).
+
+**Measure before you switch models.** `scripts/det_eval.py` scores any weights against hand-marked robot points:
+
+```bash
+python scripts/det_eval.py extract 2026cosp_qm40 45,80,115,150   # wide-shot crops + gridded previews
+# mark every robot as [x, y, "r"|"b"] in data/det_eval/points.json
+python scripts/det_eval.py eval data/models/autoscout-robots.pt models/autoscout-robots.pt
+```
+
+On 20 frames from five events, the shipped model gets 76% recall and 85% precision. A YOLO11s trained on about 1,800
+automatically labelled frames (`scripts/build_robot_dataset.py`) got 74% recall and 83% precision, so it is not used.
+Automatic labels can't beat the model that made them. Beating it needs frames labelled by hand.
+
+To label frames by hand, use the dashboard's **Label robots** page:
 - Click **Suggest**: the current model pre-fills boxes.
 - Fix the boxes. Label *every* visible robot.
 - Click **Save frame**, or **Save & +5 s** to move on.
 
-About 150 frames across a few matches of an event gives a solid model. Then click **Train detector**, or run
-`autoscout train-robots`. On an RTX 3060 that takes about 15 minutes.
+Then click **Train detector**, or run `autoscout train-robots`. Matches in `data/det_eval/points.json` are always
+kept out of training.
+
+## Team identity (bumper numbers)
+
+Every robot fragment is checked against the six team numbers in the match. A scene-text recognizer (PARSeq,
+downloaded once through torch.hub) scores how likely each number is on the robot's bumper, using windows slid along
+the bumper. A read only counts when one team clearly beats both the others and the recognizer's own free read. On
+Windows and Linux this replaced EasyOCR, which rarely read a full bumper number, and is what made 2025 identity
+correct. macOS still uses Apple Vision. Close-up camera panes (reef cams, hub cams) are read the same way.
+
+Check identity by eye with `python scripts/identity_sheet.py MATCH out.jpg`: one row of robot thumbnails per team.
 
 ## Mac (Apple silicon)
 

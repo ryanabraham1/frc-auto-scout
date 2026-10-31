@@ -1,6 +1,7 @@
 """Train / fine-tune the robot detector (YOLO) on data/datasets/robots."""
 from __future__ import annotations
 
+import json
 import random
 import shutil
 from pathlib import Path
@@ -9,8 +10,18 @@ from .. import config
 from .sam_label import CLASSES, DATASET
 
 
+def held_out() -> set[str]:
+    """Matches used by scripts/det_eval.py: never train on them, or the evaluation flatters."""
+    p = config.DATA_DIR / "det_eval" / "points.json"
+    if not p.exists():
+        return set()
+    return {k.rsplit("_", 1)[0] for k in json.loads(p.read_text())}
+
+
 def split(val_frac: float = 0.15, seed: int = 0) -> Path:
-    imgs = sorted((DATASET / "images").glob("*.jpg"))
+    hold = held_out()
+    imgs = [p for p in sorted((DATASET / "images").glob("*.jpg"))
+            if not any(p.stem.startswith(m + "_") for m in hold)]
     # split by source segment so validation frames are not near-duplicates of training frames
     groups: dict[str, list[Path]] = {}
     for p in imgs:
@@ -30,18 +41,19 @@ def split(val_frac: float = 0.15, seed: int = 0) -> Path:
 
 
 def train(base: str | None = None, epochs: int = 60, imgsz: int = 1280, batch: int = 8, device: str | None = None) -> Path:
+    """Fine-tune from COCO-pretrained YOLO11s (a bigger, better-initialised backbone than the
+    Spy Glass nano model) on the pseudo-labelled broadcast crops (see train/pseudo_label.py)."""
     from ultralytics import YOLO
 
     data = split()
-    base = base or str(config.DATA_DIR / "models" / "spyglass" / "model11n.pt")
-    if not Path(base).exists():
-        base = "yolo11s.pt"
+    base = base or "yolo11s.pt"
     model = YOLO(base)
     dev = device or {"cuda": "0", "mps": "mps"}.get(config.device(), "cpu")
     res = model.train(data=str(data), epochs=epochs, imgsz=imgsz, batch=batch, device=dev,
                       project=str(config.DATA_DIR / "runs"), name="robots", exist_ok=True,
                       mosaic=0.5, fliplr=0.5, hsv_h=0.0,  # keep hue: red vs blue matters
-                      patience=20, workers=2, plots=False, verbose=False)
+                      scale=0.4, close_mosaic=10, cos_lr=True,
+                      patience=20, workers=4, plots=False, verbose=False)
     best = Path(res.save_dir) / "weights" / "best.pt"
     out = config.DATA_DIR / "models" / "autoscout-robots.pt"
     out.parent.mkdir(parents=True, exist_ok=True)

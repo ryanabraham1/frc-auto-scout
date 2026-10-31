@@ -131,10 +131,11 @@ class EnsembleDetector:
 
 
 class StaticSuppressor:
-    """Drop detections that sit at the same image spot for most of the match (field elements
-    such as alliance-colored ramps that look like bumpers). Robots never park that long."""
+    """Drop detections that sit at the same image spot for much of the match (field elements
+    such as alliance-colored ramps or a REEF that look like robots). Robots never park on one spot
+    for a quarter of a match (an endgame climb is ~15%)."""
 
-    def __init__(self, cell: int = 24, min_frames: int = 40, frac: float = 0.5):
+    def __init__(self, cell: int = 24, min_frames: int = 40, frac: float = 0.25):
         self.cell = cell
         self.counts: dict[tuple, int] = {}
         self.frames = 0
@@ -155,6 +156,39 @@ class StaticSuppressor:
         return [d for d in dets if self.counts.get(self._key(d), 0) < lim]
 
 
+class PersonVeto:
+    """Drop 'robots' that are people (referees, field staff, people at the rail).
+
+    A COCO-pretrained YOLO finds people; a robot detection that *is* a person overlaps one almost
+    entirely, while a robot partly hidden behind a referee only shares a slice of its box.
+    """
+
+    def __init__(self, weights: str = "yolo11s.pt", conf: float = 0.35, imgsz: int = 1280):
+        from ultralytics import YOLO
+
+        self.model = YOLO(weights)
+        self.conf, self.imgsz = conf, imgsz
+        self.device = config.device()
+
+    def people(self, image: np.ndarray) -> list[Det]:
+        r = self.model.predict(image, conf=self.conf, classes=[0], imgsz=self.imgsz, verbose=False,
+                               device=self.device, half=self.device == "cuda")[0]
+        return [Det(*b, 0.0, "") for b in r.boxes.xyxy.tolist()]
+
+    def __call__(self, image: np.ndarray, dets: list[Det]) -> list[Det]:
+        if not dets:
+            return dets
+        ppl = self.people(image)
+        return [d for d in dets if not any(is_person_box(d, p) for p in ppl)]
+
+
+def is_person_box(d: Det, p: Det) -> bool:
+    ix = max(0.0, min(d.x1, p.x1) - max(d.x0, p.x0))
+    iy = max(0.0, min(d.y1, p.y1) - max(d.y0, p.y0))
+    inter = ix * iy
+    return iou(d, p) > 0.5 or (inter > 0.7 * d.w * d.h and d.w < 1.3 * p.w)
+
+
 def ensure_spyglass() -> Path | None:
     """Download FRC Team 578's Spy Glass bumper model (Hugging Face, GPL) on first use."""
     p = Path(DEFAULT_WEIGHTS[3])
@@ -169,12 +203,18 @@ def ensure_spyglass() -> Path | None:
         return None
 
 
-def default_detector(weights: str | Path | None = None, conf: float = 0.3):
-    """Our fine-tuned model ensembled with Spy Glass when both are available."""
+def default_detector(weights: str | Path | None = None, conf: float = 0.3, ensemble: bool = False):
+    """Our fine-tuned model; Spy Glass only when there is no model of our own.
+
+    Ensembling Spy Glass was measured on hand-marked broadcast frames (scripts/det_eval.py): +3
+    points of recall for -11 points of precision, and every false box becomes a junk tracklet that
+    the identity step has to explain away, so it is off unless asked for."""
     if weights:
         return RobotDetector(weights, conf=conf)
-    ensure_spyglass()
     own = [p for p in DEFAULT_WEIGHTS[:3] if Path(p).exists()]
+    if own and not ensemble:
+        return RobotDetector(own[0], conf=conf)
+    ensure_spyglass()
     spy = DEFAULT_WEIGHTS[3]
     if own and Path(spy).exists():
         return EnsembleDetector([RobotDetector(own[0], conf=conf), RobotDetector(spy, conf=conf)])

@@ -16,6 +16,7 @@ The output keeps the old shape: one track per station slot ("red0" = red's first
 """
 from __future__ import annotations
 
+import bisect
 import itertools
 from dataclasses import dataclass, field
 
@@ -97,10 +98,10 @@ class Tracklet:
 
     def end_vel(self) -> np.ndarray:
         """Velocity over the last ~1 s (m/s)."""
-        return self._vel([o for o in self.obs if o[0] >= self.t1 - 1.0])
+        return self._vel([o for o in self.obs[-40:] if o[0] >= self.t1 - 1.0])
 
     def start_vel(self) -> np.ndarray:
-        return self._vel([o for o in self.obs if o[0] <= self.t0 + 1.0])
+        return self._vel([o for o in self.obs[:40] if o[0] <= self.t0 + 1.0])
 
     def alliance_frac(self, a: str) -> float:
         votes = [o[4] for o in self.obs if o[4]]
@@ -123,7 +124,7 @@ class RobotTracker:
 
     # ---- stage 1: tracklets ----------------------------------------------------------------
     def update(self, t: float, frame: np.ndarray, dets: list[Det]) -> None:
-        from .identity import read_team_numbers
+        from .identity import read_team_numbers_many
 
         self.times.append(t)
         foot = self.cal.to_field([d.foot for d in dets]) if dets else np.zeros((0, 2))
@@ -171,22 +172,24 @@ class RobotTracker:
                 self.active.append(nt)
             else:
                 self.active.append(tr)
-        # bumper reads
-        for tr in self.active:
+        # bumper reads (batched: every robot due for a read in this frame at once)
+        due = [tr for tr in self.active if tr.obs[-1][0] == t and t - tr.last_read >= READ_EVERY
+               and tr.obs[-1][3][2] - tr.obs[-1][3][0] >= 24]
+        for tr, got in zip(due, read_team_numbers_many(frame, [tr.obs[-1][3] for tr in due], self.all_teams)):
+            for team, v in got.items():
+                tr.reads[team] = tr.reads.get(team, 0.0) + v
+        for tr in due:
             o = tr.obs[-1]
-            if o[0] == t and t - tr.last_read >= READ_EVERY and o[3][2] - o[3][0] >= 24:
-                tr.last_read = t
-                for team, v in read_team_numbers(frame, o[3], self.all_teams).items():
-                    tr.reads[team] = tr.reads.get(team, 0.0) + v
-                x0, y0, x1, y1 = [int(v) for v in o[3]]
-                crop = frame[max(0, y0): y1, max(0, x0): x1]
-                if crop.size:
-                    tr.crops.append(cv2.resize(crop, (APP_SIZE, APP_SIZE)))
-                    if (x1 - x0) * (y1 - y0) > tr.thumb_area:
-                        m = int(0.25 * (x1 - x0))
-                        th = frame[max(0, y0 - m): y1 + m, max(0, x0 - m): x1 + m]
-                        tr.thumb = cv2.resize(th, (max(1, int(th.shape[1] * 160 / th.shape[0])), 160))
-                        tr.thumb_area = (x1 - x0) * (y1 - y0)
+            tr.last_read = t
+            x0, y0, x1, y1 = [int(v) for v in o[3]]
+            crop = frame[max(0, y0): y1, max(0, x0): x1]
+            if crop.size:
+                tr.crops.append(cv2.resize(crop, (APP_SIZE, APP_SIZE)))
+                if (x1 - x0) * (y1 - y0) > tr.thumb_area:
+                    m = int(0.25 * (x1 - x0))
+                    th = frame[max(0, y0 - m): y1 + m, max(0, x0 - m): x1 + m]
+                    tr.thumb = cv2.resize(th, (max(1, int(th.shape[1] * 160 / th.shape[0])), 160))
+                    tr.thumb_area = (x1 - x0) * (y1 - y0)
 
     def _add(self, tr: Tracklet, t, d: Det, p):
         if tr.obs:
@@ -236,6 +239,20 @@ class RobotTracker:
         self.stats["closeup_reads_used"] = n
 
     def _unary(self, tr: Tracklet, team: int | None) -> float:
+        key = (tr.id, team)
+        c = self._uc.get(key)
+        if c is None:
+            c = self._uc[key] = self._unary_raw(tr, team)
+        return c
+
+    def _link(self, a: Tracklet, b: Tracklet) -> float:
+        key = (a.id, b.id)
+        c = self._lc.get(key)
+        if c is None:
+            c = self._lc[key] = self._link_raw(a, b)
+        return c
+
+    def _unary_raw(self, tr: Tracklet, team: int | None) -> float:
         n = len(tr.obs)
         if tr.manual is not None:  # a person said who this is
             return 0.0 if team == (None if tr.manual == NOT_ROBOT else tr.manual) else 1000.0
@@ -249,7 +266,7 @@ class RobotTracker:
         return c
 
     @staticmethod
-    def _link(a: Tracklet, b: Tracklet) -> float:
+    def _link_raw(a: Tracklet, b: Tracklet) -> float:
         """Cost of b being the same robot as a, later: both are extrapolated with their own velocity
         toward the middle of the gap (so two robots crossing are not swapped), and the mismatch is
         compared with how much a robot can change course in that time."""
@@ -279,6 +296,7 @@ class RobotTracker:
         return all(o is tr or not _overlap(o, tr) for o in chain)
 
     def label(self, iters: int = 6) -> None:
+        self._uc, self._lc = {}, {}  # unary / link cost caches (tracklets don't change while labelling)
         trs = sorted([t for t in self.done + self.active if len(t.obs) >= 2], key=lambda t: t.t0)
         chains: dict[int, list[Tracklet]] = {team: [] for team in self.all_teams}
         last: dict[int, Tracklet | None] = {team: None for team in self.all_teams}
@@ -401,9 +419,8 @@ class RobotTracker:
                 ts = sorted({x.t0 for x in A + B}) + [float("inf")]
                 # swap the stretch [T1, T2): T2 = inf is a swap of the whole future
                 for i, T1 in enumerate(ts[:-1]):
-                    for T2 in ts[i + 1:]:
-                        if T2 - T1 > max_span and T2 != float("inf"):
-                            continue
+                    j = bisect.bisect_right(ts, T1 + max_span, i + 1)
+                    for T2 in ts[i + 1: j] + ([ts[-1]] if j < len(ts) else []):
                         na = [x for x in A if not T1 <= x.t0 < T2] + [x for x in B if T1 <= x.t0 < T2]
                         nb = [x for x in B if not T1 <= x.t0 < T2] + [x for x in A if T1 <= x.t0 < T2]
                         na.sort(key=lambda x: x.t0)
@@ -446,7 +463,7 @@ class RobotTracker:
             for i, team in enumerate(self.teams[a]):
                 s = self.slots[f"{a}{i}"]
                 obs = sorted(o for tr in self.chains.get(team, []) for o in tr.obs)
-                s.track = _fill(obs, self.times)
+                s.track = _fill(obs, self.times, self._hidden_at if self.fm is not None else None)
                 if obs:
                     s.last_t = obs[-1][0]
 

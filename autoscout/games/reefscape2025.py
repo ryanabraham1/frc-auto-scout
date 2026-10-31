@@ -22,6 +22,8 @@ CATS = ["L1", "L2", "L3", "L4", "net", "processor"]
 NON_ROBOT = {"foul_minor": 2, "foul_major": 6, "hp_net": 4}  # jumps no robot action explains
 NEAR = {"reef": 1.1, "net": 1.0, "processor": 1.3}  # meters from element edge
 LOOKBACK = 5.0  # s: scoring is often posted a few seconds after it happens
+SHARE_MODE = "soft"  # "nearest" | "soft": see Reefscape2025._shares
+SOFT_SCALE = 0.5  # m
 
 
 def _decompose(points: int, allowed: dict[str, int]) -> list[list[str]]:
@@ -125,7 +127,8 @@ class Reefscape2025(GamePlugin):
                         events.append({"t": round(t, 2), "alliance": a, "phase": phase, "points": d, "kind": "unexplained"})
                         continue
                     for team, cat in ev:
-                        weights[phase][team][cat] += 1
+                        for who, share in self._shares(near, team, cat).items():
+                            weights[phase][who][cat] += share
                         events.append({"t": round(t, 2), "alliance": a, "phase": phase, "points": vals[cat],
                                        "team": team, "kind": cat})
         # Algae launches near the barge are direct evidence of NET shots.
@@ -228,6 +231,18 @@ class Reefscape2025(GamePlugin):
                 moved[slot] = float(np.linalg.norm(P[-1] - P[0])) > 0.6
         add_station_evidence(ctx, evidence, {a: [bd[a].get(f"autoLineRobot{i}") == "Yes" for i in (1, 2, 3)]
                                              for a in ("red", "blue")}, moved, 1.0, "leave")
+
+    @staticmethod
+    def _shares(near: dict[int, dict[str, float]], team: int, cat: str) -> dict[int, float]:
+        """How one explained action is credited. SHARE_MODE "nearest" gives it all to the robot
+        nearest the element; "soft" shares it among the robots at the element by closeness,
+        so a position error of a few tenths of a metre doesn't flip the whole action."""
+        if SHARE_MODE == "nearest":
+            return {team: 1.0}
+        elem = "reef" if cat.startswith("L") else cat
+        w = {t: np.exp(-d[elem] / SOFT_SCALE) for t, d in near.items() if d[elem] <= NEAR[elem] + 1.0}
+        tot = sum(w.values())
+        return {t: v / tot for t, v in w.items()} if tot > 0 else {team: 1.0}
 
     @staticmethod
     def _explain(points: int, vals: dict[str, int], near: dict[int, dict[str, float]], extra: dict[str, int] | None = None):

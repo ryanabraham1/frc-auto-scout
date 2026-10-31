@@ -26,7 +26,8 @@ TELEOP_BOUNDS = [  # (period, clock_hi, clock_lo) in TELEOP remaining seconds
 ]
 TOWER_PTS_AUTO = {"Level1": 15}
 TOWER_PTS_END = {"Level1": 10, "Level2": 20, "Level3": 30}
-COLUMN_WEIGHT = 0.05  # launch-column blobs per detected shot (a volley fills a column with ~20 per ball-second)
+COLUMN_WEIGHT = 0.3  # release blobs per detected shot (a ball is seen leaving its shooter for ~3 blob frames)
+RELEASE_SPEED = 3.0  # m/s upward: launched FUEL leaves a shooter at ~8-12 m/s; crowd and hopper motion is slower
 SHOT_WINDOW = 3.0  # s before a score increase in which the scoring shot was released
 COUNT_LAG = 1.0  # s between release and the hub sensor counting the FUEL
 
@@ -171,7 +172,9 @@ class Rebuilt2026(GamePlugin):
             if period is None:
                 continue
             if getattr(L, "rising", True):
-                slot, _ = self.attribute_launch(ctx, L)
+                # a release must be right at a robot's top: looser matches pick up crowd motion
+                # and the overlay above far-side robots
+                slot, _ = self.attribute_launch(ctx, L, max_d=0.6)
             elif L.target and L.target.endswith("_hub"):
                 # descent-only (ascent hidden, typical inside a volley) but dropping into a HUB:
                 # trace the arc back to the shooter of that HUB's alliance
@@ -336,41 +339,68 @@ class Rebuilt2026(GamePlugin):
                 "auto_winner": auto_winner, "count_source": source}
 
     def column_activity(self, ctx: MatchContext):
-        """Moving FUEL in the air right above each robot, per blob frame: (times, {slot: counts}).
+        """FUEL leaving each robot's shooter, per blob frame: (times, {slot: cumulative counts}).
 
         Inside a dense volley single balls can't be followed (identical pieces a few cm apart get
-        linked to each other), but the launch column above the shooter fills with moving FUEL
-        whether or not any one ball is tracked, so it says who is firing."""
+        linked to each other), but every ball of a volley leaves its shooter fast and upward.
+        Moving-FUEL blobs are linked to their nearest blob in the previous blob frame to get a
+        velocity; a blob counts as a release when it is in the zone just above a robot (from its
+        top to ~1.6 robot heights up), moving up at launch speed (> RELEASE_SPEED m/s). Each such
+        blob goes to the one robot whose release zone it is nearest, so a ball shot over a
+        teammate is not credited twice, and the crowd above far-side robots (slow, not launched)
+        and pieces falling into hoppers or the HUB (moving down) never count."""
+        from scipy.spatial import cKDTree
+
         B = ctx.blobs.get("fuel")
         if B is None or not len(B) or ctx.blob_view is None:
             return None, {}
+        order = np.argsort(B[:, 0], kind="stable")
+        B = B[order]
         T = B[:, 0]
         X, Y = B[:, 1] + ctx.blob_view[0], B[:, 2] + ctx.blob_view[1]
-        # FUEL dropping into either HUB passes over robots parked beside it: never count it
-        away = np.ones(len(T), bool)
-        for hub in ("red_hub", "blue_hub"):
-            top = ctx.cal.points.get(f"{hub}_top")
-            if top is not None:
-                r = 0.6 * self.field.elements[hub]["size"][0] * ctx.cal.px_per_meter_x(self.field.elements[hub]["center"])
-                away &= ~((np.abs(X - top[0]) < 2.0 * r) & (Y < top[1] + r))
         times, starts = np.unique(T, return_index=True)
         ends = np.r_[starts[1:], len(T)]
-        counts = {slot: np.zeros(len(times)) for slot in ctx.tracks}
-        for k in range(0, len(times), 2):  # every other blob frame is plenty
-            sel = away[starts[k]: ends[k]]
-            x, y = X[starts[k]: ends[k]][sel], Y[starts[k]: ends[k]][sel]
-            for slot in ctx.tracks:
-                r = ctx.robot_at(slot, times[k])
-                if r is None or self.zone_for(slot[:-1], r[:2]) != "own":
-                    continue  # FUEL only scores when shot from the ALLIANCE ZONE; a defender at the
-                    # opponent's HUB has the opponent's stream overhead
-                rb = self.robot_box(ctx, slot, times[k])
-                if rb is None:
-                    continue
-                (x0, y0, x1, y1), _ = rb
-                w, h = x1 - x0, y1 - y0
-                counts[slot][k] = np.count_nonzero((x > x0 - 0.25 * w) & (x < x1 + 0.25 * w)
-                                                   & (y < y0 - 0.1 * h) & (y > y0 - 2.5 * h))
+        slots = list(ctx.tracks)
+        counts = {slot: np.zeros(len(times)) for slot in slots}
+        prev_tree, prev_t, prev_xy = None, None, None
+        for k in range(len(times)):
+            xy = np.stack([X[starts[k]: ends[k]], Y[starts[k]: ends[k]]], 1)
+            tree = cKDTree(xy) if len(xy) else None
+            if prev_tree is not None and tree is not None and 0 < times[k] - prev_t < 0.1:
+                dt = times[k] - prev_t
+                zones = []
+                for slot in slots:
+                    r = ctx.robot_at(slot, times[k])
+                    z = self.zone_for(slot[:-1], r[:2]) if r is not None else "off"
+                    if z == "off":
+                        continue
+                    rb = self.robot_box(ctx, slot, times[k])
+                    if rb is None:
+                        continue
+                    (x0, y0, x1, y1), _ = rb
+                    ppm = ctx.cal.px_per_meter_x(r[:2])
+                    zones.append((slot, x0, y0, x1, y1, ppm, z == "own"))
+                if zones:
+                    # velocity from the nearest blob one frame back (within a fast ball's travel)
+                    vmax = max(z[5] for z in zones) * 25.0 * dt
+                    d, j = prev_tree.query(xy, distance_upper_bound=vmax)
+                    ok = np.isfinite(d)
+                    vy = np.full(len(xy), 0.0)
+                    vy[ok] = (xy[ok, 1] - prev_xy[j[ok], 1]) / dt
+                    best = np.full(len(xy), -1)
+                    best_d = np.full(len(xy), np.inf)
+                    for zi, (slot, x0, y0, x1, y1, ppm, _own) in enumerate(zones):
+                        w, h = x1 - x0, max(y1 - y0, 0.5 * (x1 - x0))
+                        cx = 0.5 * (x0 + x1)
+                        inside = ((np.abs(xy[:, 0] - cx) < 0.7 * w) & (xy[:, 1] < y0 + 0.15 * h)
+                                  & (xy[:, 1] > y0 - 1.6 * h) & (vy < -RELEASE_SPEED * ppm))
+                        dd = np.hypot((xy[:, 0] - cx) / w, (xy[:, 1] - y0) / h)
+                        take = inside & (dd < best_d)
+                        best[take], best_d[take] = zi, dd[take]
+                    for zi, (slot, *_r, own) in enumerate(zones):
+                        if own:  # FUEL only scores when shot from the ALLIANCE ZONE
+                            counts[slot][k] = np.count_nonzero(best == zi)
+            prev_tree, prev_t, prev_xy = tree, times[k], xy
         return times, {slot: np.cumsum(c) for slot, c in counts.items()}
 
     def live_weights(self, ctx: MatchContext, alliance: str, teams: list[int], shot_log: list, columns=None):
@@ -415,6 +445,7 @@ class Rebuilt2026(GamePlugin):
                         c = csum[slot][i1] - (csum[slot][i0 - 1] if i0 > 0 else 0.0)
                         if c > 0:
                             w[team] += COLUMN_WEIGHT * c
+            src = "seen" if w else "position"
             if not w:
                 for team in teams:
                     slot = ctx.slot_of(team, t)
@@ -427,7 +458,7 @@ class Rebuilt2026(GamePlugin):
                 out[who][per] += d * v / tot
                 if who != "HP":
                     credit.append({"t": round(t, 2), "kind": "scored", "team": who, "alliance": alliance,
-                                   "period": per, "n": round(d * v / tot, 2)})
+                                   "period": per, "n": round(d * v / tot, 2), "by": src})
         return out, credit
 
     def identity_evidence(self, ctx: MatchContext, evidence) -> None:

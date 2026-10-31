@@ -73,11 +73,26 @@ def bumper_color(frame, box) -> str | None:
     return "red" if red > 2 * blue else "blue" if blue > 2 * red else None
 
 
+def read_team_numbers_many(frame, boxes: list, all_teams: list[int]) -> list[dict[int, float]]:
+    """read_team_numbers for several robots in one frame (one batched recognizer call)."""
+    if not boxes:
+        return []
+    if ocr.has_vision():
+        return [read_team_numbers(frame, b, all_teams) for b in boxes]
+    from .bumper_ocr import reader
+
+    return [{t: PARSEQ_WEIGHT * v for t, v in r.items()}
+            for r in reader().read_many([(frame, b) for b in boxes], all_teams)]
+
+
+PARSEQ_WEIGHT = 1.5  # a confident constrained read counts like a confident Apple Vision read
+
+
 def read_team_numbers(frame, box, all_teams: list[int]) -> dict[int, float]:
     """Team numbers read on a robot's bumper -> evidence weight.
 
-    Apple Vision (macOS) rarely invents digits, so only exact team numbers count. The EasyOCR
-    fallback is noisier: a partial read counts only if it names exactly one team.
+    Apple Vision (macOS) rarely invents digits, so only exact team numbers count. Elsewhere the
+    match's team numbers are scored against the bumper with PARSeq (see bumper_ocr).
     """
     import cv2
 
@@ -85,12 +100,7 @@ def read_team_numbers(frame, box, all_teams: list[int]) -> dict[int, float]:
     h, w = y1 - y0, x1 - x0
     out: dict[int, float] = {}
     if not ocr.has_vision():
-        for txt, conf in read_bumper(frame, box):
-            d = re.sub(r"\D", "", txt)
-            hits = [t for t in all_teams if len(d) >= 3 and d in str(t)]
-            if len(hits) == 1:
-                out[hits[0]] = out.get(hits[0], 0.0) + (0.4 + 0.8 * len(d) / len(str(hits[0]))) * max(conf, 0.2)
-        return out
+        return read_team_numbers_many(frame, [box], all_teams)[0]
     crop = frame[max(0, y0 + int(0.35 * h)): y1 + int(0.12 * h), max(0, x0 - int(0.12 * w)): x1 + int(0.12 * w)]
     if crop.shape[0] < 8 or crop.shape[1] < 16:
         return out

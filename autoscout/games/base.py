@@ -119,7 +119,7 @@ class GamePlugin:
         return (foot[0] - w / 2, foot[1] - 0.8 * w, foot[0] + w / 2, foot[1]), False
 
     @staticmethod
-    def attribute_launch(ctx: MatchContext, launch, alliances=("red", "blue")):
+    def attribute_launch(ctx: MatchContext, launch, alliances=("red", "blue"), max_d: float = 1.0):
         """Find the robot slot that released a launch (nearest robot box to the release point).
 
         Returns (slot_key | None, distance). The release point is the first airborne sighting,
@@ -142,7 +142,7 @@ class GamePlugin:
             d = float(np.hypot(dx, dy)) / max(w, 20) + (0.0 if observed else 0.25)
             if d < best_d:
                 best, best_d = slot, d
-        return (best, best_d) if best_d < 1.0 else (None, best_d)
+        return (best, best_d) if best_d < max_d else (None, best_d)
 
     @staticmethod
     def trace_back(ctx: MatchContext, launch, alliances=("red", "blue"), max_back: float = 1.6):

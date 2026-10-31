@@ -89,6 +89,9 @@ class LaunchDetector:
         # to appear as a whole new blob, but sampling every frame makes linking unambiguous.
         self.lag = max(1, lag)
         self.history: list = []
+        # live ball tracks are only drawn in the debug video (launches come from the offline
+        # LaunchExtractor over self.blobs), and linking every frame costs more than finding blobs
+        self.online = True
 
     def step(self, t: float, frame_view: np.ndarray) -> None:
         m = cv2.inRange(cv2.cvtColor(frame_view, cv2.COLOR_BGR2HSV), self.lo, self.hi)
@@ -107,8 +110,8 @@ class LaunchDetector:
         keep = [i for i in range(1, n) if st[i, 4] >= self.min_area]
         for i in keep:
             self.blobs.append((t, c[i][0], c[i][1], st[i, 4], st[i, 2], st[i, 3]))
-        dets = [(c[i][0], c[i][1], st[i, 4]) for i in keep]
-        self._associate(t, dets)
+        if self.online:
+            self._associate(t, [(c[i][0], c[i][1], st[i, 4]) for i in keep])
 
     def _associate(self, t, dets):
         live = self.tracks
