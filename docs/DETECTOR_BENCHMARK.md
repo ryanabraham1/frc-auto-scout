@@ -23,6 +23,10 @@ from 15/18 to 14/18. There are only four benchmark frames per event. Settings we
 same benchmark, so these gains need confirmation on additional independently marked matches. They are
 detector measurements, not measurements of per-team attribution accuracy.
 
+A warmed two-scale detection plus person-filter pass on the 1920×450 Pikes Peak crop took a median
+91.8 ms over ten calls while other match jobs were active. This is a single-frame timing check, not
+the processing time for an entire match; video decoding, piece tracking and OCR also take time.
+
 A 30-epoch fine-tune on corrected frames (22 training frames weighted six times, six validation frames,
 with whole matches separated and all benchmark matches excluded) was also tested. Its two-scale result
 was 69 true positives / 15 false positives: 82.1% recall, 82.1% precision, 82.1% F1. It was retained as an
@@ -40,3 +44,12 @@ Reproduce locally:
 `data/det_eval/results.json` contains per-frame counts, confidence thresholds, scales and the annotation
 file's SHA-256. Legacy results are archived separately. `AUTOSCOUT_MULTISCALE=0` selects single-scale
 inference; `AUTOSCOUT_IMGSZ=1280` also reduces the CUDA input size. CPU/MPS keep single-scale inference.
+
+## Complete-match smoke check
+
+Processed the local 1920×1080, 60 fps video for `2026cosp_qm40` with the new CUDA default at 10 Hz robot
+detection. It finished in 388.5 seconds while other match jobs were running on the same PC. The result
+records its weight path, scales, device and sampling rate. All six teams had bumper-OCR anchors; six
+team rows were saved in SQLite and the dashboard match endpoint returned HTTP 200. Team fuel totals
+reconciled to the official counts: red 151 and blue 249, with zero human-player fuel in the result.
+Reconciliation confirms accounting consistency; it does not independently prove the per-team shares.

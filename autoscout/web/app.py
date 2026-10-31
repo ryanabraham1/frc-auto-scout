@@ -386,8 +386,9 @@ def save_labels(body: dict):
         for r in body["robots"]:
             if (len(r) != 5 or r[0] not in ("red", "blue")
                     or not all(math.isfinite(float(n)) for n in r[1:])
-                    or not (x <= r[1] < r[3] <= x + w and y <= r[2] < r[4] <= y + h)):
-                raise ValueError("Box must enclose a robot inside the calibrated field view")
+                    or not (x <= r[1] < r[3] <= x + w and y <= r[2] < r[4] <= y + h)
+                    or r[3] - r[1] < 6 or r[4] - r[2] < 6):
+                raise ValueError("Box must be at least 6 pixels wide/high inside the calibrated field view")
     except (KeyError, TypeError, ValueError) as e:
         raise HTTPException(400, f"Invalid frame labels: {e}") from e
     boxes = [(r[0], r[1] - x, r[2] - y, r[3] - x, r[4] - y) for r in body["robots"]]
