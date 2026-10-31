@@ -1,0 +1,54 @@
+event_key: 2025cc
+year: 2025
+view:
+- 0
+- 180
+- 1920
+- 470
+frame_size:
+- 1920
+- 1080
+points:
+  red_reef_center:
+  - 597.0
+  - 460.0
+  blue_reef_center:
+  - 1290.0
+  - 462.0
+  center_line_y0:
+  - 942.0
+  - 335.0
+  center_line_yW:
+  - 945.0
+  - 635.0
+reference: configs/events/2025cc_ref.jpg
+overlay:
+  timer:
+  - 904
+  - 114
+  - 113
+  - 43
+  blue_score:
+  - 1208
+  - 107
+  - 57
+  - 27
+  red_score:
+  - 649
+  - 105
+  - 70
+  - 33
+  frame_size:
+  - 1920
+  - 1080
+aux_views:
+  red_reef:
+  - 0
+  - 655
+  - 720
+  - 425
+  blue_reef:
+  - 1195
+  - 655
+  - 725
+  - 425

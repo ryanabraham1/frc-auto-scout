@@ -37,8 +37,15 @@ def download(youtube_id: str, out_dir: Path | None = None, height: int = 720) ->
         cmd += ["--cookies", str(cookies)]
     cmd.append(f"https://www.youtube.com/watch?v={youtube_id}")
     last_err = ""
-    for attempt in range(3):
-        res = subprocess.run(cmd, capture_output=True, text=True)
+    # When YouTube answers the default client with "confirm you're not a bot" (it does after many
+    # downloads from one address), other player clients usually still work: web_embedded serves
+    # 1080p H.264, mweb/android_vr are further fallbacks.
+    clients = [None, "web_embedded", "mweb", "android_vr"]
+    for attempt in range(len(clients)):
+        args = list(cmd)
+        if clients[attempt]:
+            args[-1:-1] = ["--extractor-args", f"youtube:player_client={clients[attempt]}"]
+        res = subprocess.run(args, capture_output=True, text=True)
         for ext in ("mp4", "mkv", "webm"):
             p = out_dir / f"{youtube_id}.{ext}"
             if p.exists() and p.stat().st_size > 0:

@@ -11,9 +11,9 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, "scripts")
-from attribution_check import METRICS  # noqa: E402
-from opr import opr  # noqa: E402
+from autoscout.evaluation import METRICS as _M  # noqa: E402
+METRICS = {y: [(k, f, None) for k, _l, f in v] for y, v in _M.items()}
+from autoscout.evaluation import opr  # noqa: E402
 
 from autoscout import pipeline  # noqa: E402
 from autoscout.games import reefscape2025 as R25  # noqa: E402

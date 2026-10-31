@@ -29,7 +29,7 @@ def con():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return (STATIC / "index.html").read_text()
+    return (STATIC / "index.html").read_text(encoding="utf-8")
 
 
 @app.get("/api/events")
@@ -88,7 +88,8 @@ def match(match_key: str):
 
 
 def _annotated_video(match_key: str):
-    for kind, p in (("demo", config.ROOT / "demo" / f"{match_key}.mp4"),
+    for kind, p in (("demo", config.ROOT / "demos" / f"{match_key}_annotated.mp4"),
+                    ("demo", config.ROOT / "demo" / f"{match_key}.mp4"),
                     ("debug", config.DATA_DIR / "results" / f"{match_key}_debug.mp4")):
         if p.exists():
             return kind, p
@@ -198,7 +199,7 @@ def progress():
 @app.get("/api/run/{event_key}/log")
 def run_log(event_key: str):
     p = config.DATA_DIR / f"run_{event_key}.log"
-    return Response(p.read_text()[-6000:] if p.exists() else "", media_type="text/plain")
+    return Response(p.read_text(encoding="utf-8", errors="replace")[-6000:] if p.exists() else "", media_type="text/plain")
 
 
 # ---- calibration -------------------------------------------------------------------------
@@ -429,3 +430,140 @@ def dashboard_export(event_key: str):
 @app.get("/api/jobs")
 def dashboard_jobs():
     return [{"key": key, **_job_status(key)} for key in JOBS]
+
+
+# ---- runs overview, annotated videos, accuracy ----------------------------------------------
+DEMOS = config.ROOT / "demos"
+_ACC_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _results():
+    from ..pipeline import RESULTS_DIR
+
+    return RESULTS_DIR
+
+
+@app.get("/api/runs")
+def runs():
+    """Everything the Runs page shows that changes while matches process."""
+    from ..progress import all_progress
+
+    per_event: dict[str, dict] = {}
+    recent = []
+    for p in _results().glob("*_*.json"):
+        if p.stem.count("_") != 1 or p.stem.endswith("_tracklets"):
+            continue
+        ev = p.stem.split("_")[0]
+        e = per_event.setdefault(ev, {"event_key": ev, "processed": 0, "last": 0.0, "secs": []})
+        e["processed"] += 1
+        mt = p.stat().st_mtime
+        e["last"] = max(e["last"], mt)
+        recent.append((mt, p))
+    out_recent = []
+    for mt, p in sorted(recent, reverse=True)[:12]:
+        r = _summary(p, mt)
+        if r is None:
+            continue
+        e = per_event[p.stem.split("_")[0]]
+        if r.get("processing_s"):
+            e["secs"].append(r["processing_s"])
+        out_recent.append({"match_key": p.stem, "label": r.get("label"), "finished": mt,
+                           "processing_s": r.get("processing_s"), "red_score": r.get("red_score"),
+                           "blue_score": r.get("blue_score"), "video": _annotated_name(p.stem)})
+    for e in per_event.values():
+        e["avg_s"] = round(sum(e["secs"]) / len(e["secs"])) if e["secs"] else None
+        del e["secs"]
+    jobs = [{"key": k, **_job_status(k)} for k in JOBS]
+    return {"progress": all_progress(), "jobs": jobs, "recent": out_recent,
+            "events": sorted(per_event.values(), key=lambda e: -e["last"])}
+
+
+_SUMMARIES: dict[str, tuple[float, dict]] = {}
+
+
+def _summary(p: Path, mtime: float) -> dict | None:
+    """The few fields of a (multi-MB) result file the Runs page needs, parsed once per change."""
+    hit = _SUMMARIES.get(str(p))
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        r = json.loads(p.read_text())
+    except Exception:  # being written right now
+        return None
+    keep = {k: r.get(k) for k in ("label", "processing_s", "red_score", "blue_score", "red", "blue", "year")}
+    _SUMMARIES[str(p)] = (mtime, keep)
+    return keep
+
+
+def _annotated_name(match_key: str):
+    p = DEMOS / f"{match_key}_annotated.mp4"
+    return p.name if p.exists() else None
+
+
+@app.get("/api/annotated")
+def annotated_list():
+    out = []
+    for p in sorted(DEMOS.glob("*_annotated.mp4"), key=lambda p: -p.stat().st_mtime) if DEMOS.exists() else []:
+        mk = p.name[: -len("_annotated.mp4")]
+        info = {}
+        rp = _results() / f"{mk}.json"
+        r = _summary(rp, rp.stat().st_mtime) if rp.exists() else None
+        if r:
+            info = {k: r.get(k) for k in ("label", "red", "blue", "red_score", "blue_score", "year")}
+        out.append({"name": p.name, "match_key": mk, "event_key": mk.split("_")[0],
+                    "size_mb": round(p.stat().st_size / 1e6, 1), "updated": p.stat().st_mtime, **info})
+    return out
+
+
+@app.get("/api/annotated/{name}")
+def annotated_file(name: str):
+    if not re.fullmatch(r"[\w-]+_annotated\.mp4", name) or not (DEMOS / name).exists():
+        raise HTTPException(404, "no such video")
+    return FileResponse(DEMOS / name, media_type="video/mp4")
+
+
+@app.post("/api/annotate/{match_key}")
+def annotate(match_key: str):
+    """Render the annotated video of a processed match in the background."""
+    if not re.fullmatch(r"20\d\d[a-z0-9]+_(qm|sf|f)\d+(m\d+)?", match_key):
+        raise HTTPException(400, "bad match key")
+    rp = _results() / f"{match_key}.json"
+    if not rp.exists():
+        raise HTTPException(404, "process the match first")
+    from ..video import VIDEO_DIR
+
+    vid = json.loads(rp.read_text()).get("video")
+    src = next((p for p in VIDEO_DIR.glob(f"{vid}.*")), None)
+    if src is None:
+        raise HTTPException(404, "match video is not downloaded")
+    key = f"render:{match_key}"
+    if _job_status(key) and _job_status(key)["running"]:
+        return {"started": False, "reason": "already rendering"}
+    DEMOS.mkdir(exist_ok=True)
+    log = open(config.DATA_DIR / f"render_{match_key}.log", "w")
+    JOBS[key] = subprocess.Popen([sys.executable, "scripts/render_demo.py", match_key, str(src),
+                                  str(DEMOS / f"{match_key}_annotated.mp4")], stdout=log, stderr=subprocess.STDOUT,
+                                 cwd=config.ROOT)
+    return {"started": True}
+
+
+@app.get("/api/accuracy/{event_key}")
+def accuracy(event_key: str):
+    """Per-team attribution vs OPR for an event (cached until a result changes)."""
+    from ..evaluation import attribution_accuracy, load_results
+
+    _event_key(event_key)
+    files = [p for p in _results().glob(f"{event_key}_qm*.json") if p.stem.count("_") == 1]
+    stamp = max((p.stat().st_mtime for p in files), default=0.0)
+    hit = _ACC_CACHE.get(event_key)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    res = attribution_accuracy(event_key, load_results(event_key, _results()))
+    _ACC_CACHE[event_key] = (stamp, res)
+    return res
+
+
+@app.get("/api/detector-benchmark")
+def detector_benchmark():
+    p = config.DATA_DIR / "det_eval" / "results.json"
+    return json.loads(p.read_text()) if p.exists() else []

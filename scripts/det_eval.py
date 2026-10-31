@@ -56,6 +56,7 @@ def evaluate(weights: list[str]):
     for wt in weights:
         dets[wt] = RobotDetector(wt, conf=0.3)
     veto = PersonVeto()
+    summary = []
     for name, det in dets.items():
         hit = tot = tp = nd = 0
         per = []
@@ -72,6 +73,13 @@ def evaluate(weights: list[str]):
             per.append(f"{stem}:{h}/{len(P)}")
         print(f"{name:40s} recall {hit}/{tot} = {hit / max(tot, 1):.0%}   precision {tp}/{nd} = {tp / max(nd, 1):.0%}")
         print("   ", " ".join(per))
+        summary.append({"model": str(name), "recall": round(hit / max(tot, 1), 3), "precision": round(tp / max(nd, 1), 3),
+                        "robots": tot, "frames": len(pts)})
+    # merged into data/det_eval/results.json (shown on the dashboard's Runs page)
+    out = DIR / "results.json"
+    old = {r["model"]: r for r in (json.loads(out.read_text()) if out.exists() else [])}
+    old.update({r["model"]: r for r in summary})
+    out.write_text(json.dumps(list(old.values()), indent=1))
 
 
 if __name__ == "__main__":
