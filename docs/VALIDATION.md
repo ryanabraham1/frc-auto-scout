@@ -1,5 +1,11 @@
 # Validation status (development build)
 
+This is the historical initial-pipeline report. The detector and identity implementations have changed since
+these runs. For current detector results and the evaluation protocol, see the README's robot-detector section
+and `data/det_eval/results.json`. Detector precision now requires one-to-one, alliance-correct matches; the old
+many-to-many precision numbers are not comparable. Official alliance totals remain a reconciliation constraint,
+not an independent measurement of per-team accuracy.
+
 Tested on 4 real broadcast matches with very different camera setups. All processing was done on a 4-core CPU
 with no GPU.
 

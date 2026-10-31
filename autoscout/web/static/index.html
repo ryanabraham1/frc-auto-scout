@@ -487,15 +487,16 @@ async function viewCalibrate(ek) {
 }
 
 async function viewLabel() {
-  const [vids, ds] = await Promise.all([api('/api/videos'), api('/api/dataset')]);
+  const [vids, ds] = await Promise.all([api('/api/label/videos'), api('/api/dataset')]);
   if (!vids.length) { app.innerHTML = head('Label robots') + '<div class="card empty">No local match videos yet. Process a match to download its video, then return here.</div>'; return; }
   const boxes = [];
-  app.innerHTML = head('Label robots', `<b>Suggest</b> pre-fills boxes from the current detector. Box <b>every</b> robot (pick the alliance first), click a box to delete it, then save. Unlabelled robots teach the model they are background. Dataset: <b>${ds.images}</b> labelled frames.`) + `
-  <div class="card row"><select id="vid">${vids.map(v => `<option>${v}</option>`).join('')}</select><input id="ev" placeholder="Event key" style="width:120px">
+  app.innerHTML = head('Label robots', `<b>Suggest</b> pre-fills boxes from the current detector. Box <b>every</b> robot (pick the alliance first), click a box to delete it, then save. Unlabelled robots teach the model they are background. Dataset: <b>${ds.hand_images}</b> corrected + <b>${ds.pseudo_images}</b> automatic frames. Training keeps whole matches separate for validation and deploys only a measured improvement.`) + `
+  <div class="card row"><select id="vid" aria-label="Match video">${vids.map(v => `<option value="${esc(v.video)}">${esc(v.label)}</option>`).join('')}</select><input id="ev" placeholder="Event key" aria-label="Event key" style="width:120px">
    <label class="row small" style="gap:6px">Time <input id="t" type="number" value="60" step="0.5" style="width:84px"></label><button id="load">Load frame</button>
    <div class="seg" id="al"><button class="on" data-a="red" style="color:var(--red)">Red</button><button data-a="blue" style="color:var(--blue)">Blue</button></div>
    <button id="sug">Suggest</button><button id="undo">Undo box</button><span class="spacer"></span>
    <button class="primary" id="save">Save frame</button><button id="next">Save &amp; +5 s</button><button id="prop" title="SAM2 tracking; drifts after a few seconds">Propagate 5 s</button><button id="train">Train detector</button></div>
+  <div class="small muted" id="trainstatus" role="status"></div>
   <div class="small muted" id="msg" style="margin:-6px 0 10px"></div>
   <div class="card" style="padding:0;overflow:hidden"><div class="canvaswrap"><img id="img"><canvas id="cv"></canvas></div></div>`;
   let alliance = 'red';
@@ -503,8 +504,15 @@ async function viewLabel() {
   const img = $('#img'), cv = $('#cv'), ctx = cv.getContext('2d');
   const draw = () => { cv.width = img.naturalWidth; cv.height = img.naturalHeight; ctx.lineWidth = 3;
     boxes.forEach(([a, x0, y0, x1, y1]) => { ctx.strokeStyle = a === 'red' ? '#ff3b3b' : '#3b8bff'; ctx.strokeRect(x0, y0, x1 - x0, y1 - y0); }); };
-  img.onload = draw;
-  const load = () => { img.src = `/api/frame.jpg?video=${encodeURIComponent($('#vid').value)}&t=${$('#t').value}`; boxes.length = 0; draw(); };
+  let loaded = null;
+  const selection = () => JSON.stringify({video: $('#vid').value, event: $('#ev').value, t: +$('#t').value});
+  const frameButtons = enabled => ['save', 'next', 'prop', 'sug'].forEach(id => $('#' + id).disabled = !enabled);
+  img.onload = () => { loaded = selection(); frameButtons(true); draw(); };
+  img.onerror = () => { loaded = null; frameButtons(false); $('#msg').textContent = 'Could not load this frame. Check the video and time.'; };
+  const load = () => { loaded = null; frameButtons(false); img.src = `/api/frame.jpg?video=${encodeURIComponent($('#vid').value)}&t=${$('#t').value}`; boxes.length = 0; draw(); };
+  $('#ev').value = vids[0].event;
+  ['t', 'ev'].forEach(id => $('#' + id).onchange = load);
+  $('#vid').onchange = () => { $('#ev').value = vids.find(v => v.video === $('#vid').value)?.event || ''; load(); };
   $('#load').onclick = load;
   const toImg = e => { const b = cv.getBoundingClientRect(); return [(e.clientX - b.left) * cv.width / b.width, (e.clientY - b.top) * cv.height / b.height]; };
   let s = null; cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); s = toImg(e); };
@@ -512,13 +520,23 @@ async function viewLabel() {
     if (Math.abs(p[0] - s[0]) <= 6) { const i = boxes.findIndex(b => p[0] >= b[1] && p[0] <= b[3] && p[1] >= b[2] && p[1] <= b[4]); if (i >= 0) boxes.splice(i, 1); s = null; draw(); return; }
     boxes.push([alliance, Math.min(s[0], p[0]), Math.min(s[1], p[1]), Math.max(s[0], p[0]), Math.max(s[1], p[1])].map((v, i) => i ? Math.round(v) : v)); s = null; draw(); };
   $('#undo').onclick = () => { boxes.pop(); draw(); };
-  const body = () => JSON.stringify({video: $('#vid').value, event: $('#ev').value, t: +$('#t').value, robots: boxes, duration: 5, fps: 4});
+  const body = () => { if (!loaded || loaded !== selection()) throw new Error('Load the selected frame before saving.');
+    return JSON.stringify({...JSON.parse(loaded), robots: boxes, duration: 5, fps: 4}); };
   $('#prop').onclick = async () => { await api('/api/label/seeds', {method: 'POST', headers: H, body: body()}); $('#msg').textContent = 'Propagating in the background…'; };
-  $('#sug').onclick = async () => { const b = await api(`/api/label/suggest?video=${encodeURIComponent($('#vid').value)}&t=${$('#t').value}&event=${$('#ev').value}`); boxes.length = 0; boxes.push(...b); draw(); };
+  $('#sug').onclick = async () => { const requested = loaded; body(); $('#sug').disabled = true;
+    try { const b = await api(`/api/label/suggest?video=${encodeURIComponent($('#vid').value)}&t=${$('#t').value}&event=${$('#ev').value}`);
+      if (requested !== loaded) return; boxes.length = 0; boxes.push(...b); draw(); }
+    finally { $('#sug').disabled = !loaded; } };
   const save = async () => { const r = await api('/api/label/save', {method: 'POST', headers: H, body: body()}); $('#msg').textContent = `Saved ${r.stem}`; };
   $('#save').onclick = save;
   $('#next').onclick = async () => { await save(); $('#t').value = (+$('#t').value + 5).toFixed(1); load(); };
-  $('#train').onclick = async () => { await api('/api/train', {method: 'POST'}); $('#msg').textContent = 'Training started (see data/train.log).'; };
+  const trainingState = d => { const job = d.train_job || {}; $('#train').disabled = !!job.running;
+    $('#trainstatus').textContent = job.running ? `Training detector${job.epoch ? ` · epoch ${job.epoch}` : ''}… You can continue labeling.` :
+      job.evaluation ? job.evaluation.reason : 'Ready to train. Candidates are tested before deployment.'; };
+  trainingState(ds);
+  $('#train').onclick = async () => { $('#train').disabled = true; await api('/api/train', {method: 'POST'});
+    $('#trainstatus').textContent = 'Training started. Progress will appear here.'; };
+  timer = setInterval(async () => { try { trainingState(await api('/api/dataset')); } catch {} }, 3000);
   load();
 }
 

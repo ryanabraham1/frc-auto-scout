@@ -27,6 +27,7 @@ from .vision.launches import LaunchExtractor
 from .vision.trajectories import Launch, LaunchDetector
 
 RESULTS_DIR = config.DATA_DIR / "results"
+PRE_MATCH_S = 4.0  # s tracked before AUTO starts
 TRACKER_EVIDENCE = 8.0  # the tracker labels robots by team, so its station slots are the identity
 
 
@@ -222,7 +223,9 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         L.online = opts.debug_video
     tracker = RobotTracker(cal, fm, {"red": m.red, "blue": m.blue})
     evidence = IdentityEvidence()
-    t0, t1 = clock.start_vt - 0.5, clock.teleop_end_vt + 3.5
+    # from a few seconds before AUTO: robots sit still in their start positions, the easiest moment to
+    # read every bumper, so each robot starts the match with an identity
+    t0, t1 = max(0.0, clock.start_vt - PRE_MATCH_S), clock.teleop_end_vt + 3.5
     writer = None
     if opts.debug_video:
         out = RESULTS_DIR / f"{match_key}_debug.mp4"
@@ -597,10 +600,20 @@ def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict
     for t, frame in video.iter_frames(t0, t1, step=max(1, int(round(video.fps * every)))):
         for name, rect in views.items():
             x, y, w, h = [int(v) for v in (rect[0] * sx, rect[1] * sy, rect[2] * sx, rect[3] * sy)]
-            if not ocr.has_vision():  # constrained PARSeq scoring of the pane's text regions (close-up
-                # bumpers are large: no upscaling needed, which keeps the text detector fast)
-                for team, conf in reader().read_text_regions(frame[y: y + h, x: x + w], list(all_teams.values())):
-                    out.append((round(t, 2), name, team, round(conf, 2)))
+            if not ocr.has_vision():
+                # robots in the close-up are found with the robot detector and each bumper is scored
+                # against the match's teams (EasyOCR's text finder misses most bumper numbers here)
+                pane = np.ascontiguousarray(frame[y: y + h, x: x + w])
+                if not pane.size:
+                    continue
+                dets = [d for d in _aux_detector()(pane, conf=0.3) if d.w >= 40]
+                tl_all = list(all_teams.values())
+                for d, got in zip(dets, reader().read_many([(pane, (d.x0, d.y0, d.x1, d.y1)) for d in dets], tl_all)):
+                    for team, conf in got.items():
+                        col = "red" if team in teams["red"] else "blue"
+                        if d.alliance and d.alliance != col:
+                            continue  # bumper colour disagrees with the number: a misread
+                        out.append((round(t, 2), name, team, round(conf, 2)))
                 continue
             pane = cv2.resize(frame[y: y + h, x: x + w], None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
             for txt, conf in ocr.read_lines(pane, words):
@@ -608,6 +621,16 @@ def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict
                     if d in all_teams and conf > 0.3:
                         out.append((round(t, 2), name, all_teams[d], round(float(conf), 2)))
     return out
+
+
+_AUX_DET = None
+
+
+def _aux_detector():
+    global _AUX_DET
+    if _AUX_DET is None:
+        _AUX_DET = default_detector()
+    return _AUX_DET
 
 
 def aux_pass(match_key: str, video_path: str) -> dict:

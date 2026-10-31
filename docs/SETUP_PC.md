@@ -13,8 +13,9 @@
    pip install -e .
    python -c "import torch; print(torch.cuda.is_available())"   # must print True
    ```
-3. **Optional, recommended: TensorRT** for about 2–3× faster detection: `pip install tensorrt`. `autoscout train-robots`
-   then exports `autoscout-robots.engine` automatically, and the pipeline prefers it.
+3. **Optional: TensorRT.** Portable PyTorch weights work on this PC without TensorRT. An existing
+   `autoscout-robots.engine` is used only with CUDA and only while it is at least as new as the portable model.
+   Training benchmarks candidates before deployment and retires an old engine when replacing weights.
 4. **Secrets.** Create `.secrets/.env`:
    ```
    TBA_API_KEY=your_key
@@ -27,3 +28,7 @@
 **Throughput.** Robot detection at 10 Hz on 1080p uses about 20% of the 3060, and decoding plus launch tracking uses
 2–3 CPU cores. To process several matches in parallel, run `autoscout run-event` in 2–3 terminals with different
 `--levels` or events.
+
+The default CUDA detector input is now 1600 pixels, which improved the existing held-out detector benchmark.
+Set `$env:AUTOSCOUT_IMGSZ="1280"` in PowerShell to favour throughput. Training and concurrent match jobs compete
+for the same GPU; the dashboard displays training progress, and duplicate training runs are blocked across processes.

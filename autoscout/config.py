@@ -76,3 +76,11 @@ def device() -> str:
 
 def has_gpu() -> bool:
     return device() in ("cuda", "mps")
+
+
+def detector_imgsz() -> int:
+    """1600 improved robot precision/recall on this PC's broadcast benchmark."""
+    size = int(os.environ.get("AUTOSCOUT_IMGSZ", "1600" if device() == "cuda" else "1280"))
+    if size < 320 or size % 32:
+        raise ValueError("AUTOSCOUT_IMGSZ must be a multiple of 32, at least 320")
+    return size

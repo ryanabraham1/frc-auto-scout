@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from functools import lru_cache
 
 import cv2
 import numpy as np
@@ -52,14 +53,24 @@ DEFAULT_WEIGHTS = [
 
 
 def find_weights() -> Path | None:
-    for p in DEFAULT_WEIGHTS:
-        if Path(p).exists():
-            return Path(p)
+    for p in available_weights():
+        return p
     return None
 
 
+def available_weights():
+    """TensorRT is CUDA-only and must not shadow newer portable weights."""
+    for p in map(Path, DEFAULT_WEIGHTS):
+        if p.suffix == ".engine":
+            portable = p.with_suffix(".pt")
+            if config.device() != "cuda" or (portable.exists() and portable.stat().st_mtime > p.stat().st_mtime):
+                continue
+        if Path(p).exists():
+            yield p
+
+
 class RobotDetector:
-    def __init__(self, weights: str | Path | None = None, conf: float = 0.25, imgsz: int = 1280):
+    def __init__(self, weights: str | Path | None = None, conf: float = 0.25, imgsz: int | None = None):
         from ultralytics import YOLO
 
         weights = Path(weights) if weights else find_weights()
@@ -68,7 +79,7 @@ class RobotDetector:
         self.weights = weights
         self.model = YOLO(str(weights))
         self.conf = conf
-        self.imgsz = imgsz
+        self.imgsz = imgsz or (1280 if weights.suffix == ".engine" else config.detector_imgsz())
         self.device = config.device()
         names = {int(k): v.lower() for k, v in self.model.names.items()}
         self.cls_alliance = {}
@@ -84,8 +95,10 @@ class RobotDetector:
     def __call__(self, images: list[np.ndarray] | np.ndarray, conf: float | None = None) -> list[list[Det]]:
         single = isinstance(images, np.ndarray)
         batch = [images] if single else images
-        res = self.model.predict(batch, conf=conf or self.conf, imgsz=self.imgsz, verbose=False,
-                                 classes=list(self.cls_alliance), device=self.device, half=self.half)
+        if not batch:
+            return []
+        res = self.model.predict(batch, conf=self.conf if conf is None else conf, imgsz=self.imgsz, verbose=False,
+                                 classes=list(self.cls_alliance), device=self.device, **precision_args(self.half))
         out = []
         for r in res:
             dets = []
@@ -172,7 +185,7 @@ class PersonVeto:
 
     def people(self, image: np.ndarray) -> list[Det]:
         r = self.model.predict(image, conf=self.conf, classes=[0], imgsz=self.imgsz, verbose=False,
-                               device=self.device, half=self.device == "cuda")[0]
+                               device=self.device, **precision_args(self.device == "cuda"))[0]
         return [Det(*b, 0.0, "") for b in r.boxes.xyxy.tolist()]
 
     def __call__(self, image: np.ndarray, dets: list[Det]) -> list[Det]:
@@ -180,6 +193,13 @@ class PersonVeto:
             return dets
         ppl = self.people(image)
         return [d for d in dets if not any(is_person_box(d, p) for p in ppl)]
+
+
+@lru_cache(maxsize=2)
+def precision_args(half: bool) -> dict:
+    """Support installed and older Ultralytics without a warning on every video frame."""
+    from ultralytics.cfg import DEFAULT_CFG_DICT
+    return {"quantize": 16 if half else 32} if "quantize" in DEFAULT_CFG_DICT else {"half": half}
 
 
 def is_person_box(d: Det, p: Det) -> bool:
@@ -211,9 +231,16 @@ def default_detector(weights: str | Path | None = None, conf: float = 0.3, ensem
     the identity step has to explain away, so it is off unless asked for."""
     if weights:
         return RobotDetector(weights, conf=conf)
-    own = [p for p in DEFAULT_WEIGHTS[:3] if Path(p).exists()]
+    own = [p for p in available_weights() if p in DEFAULT_WEIGHTS[:3]]
     if own and not ensemble:
-        return RobotDetector(own[0], conf=conf)
+        for p in own:
+            try:
+                return RobotDetector(p, conf=conf)
+            except Exception:
+                if p.suffix != ".engine":
+                    raise
+                import warnings
+                warnings.warn(f"TensorRT model {p} could not load; trying portable weights.", RuntimeWarning)
     ensure_spyglass()
     spy = DEFAULT_WEIGHTS[3]
     if own and Path(spy).exists():

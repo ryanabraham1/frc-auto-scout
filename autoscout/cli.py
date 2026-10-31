@@ -165,7 +165,8 @@ def cmd_label_seeds(a):
 def cmd_train(a):
     from .train.train_robots import train
 
-    print("weights:", train(base=a.base, epochs=a.epochs, imgsz=a.imgsz, batch=a.batch))
+    print("weights:", train(base=a.base, epochs=a.epochs, imgsz=a.imgsz, batch=a.batch,
+                            hand_only=a.hand_only, freeze=a.freeze, lr0=a.lr0))
 
 
 def cmd_report(a):
@@ -215,6 +216,9 @@ def main(argv=None):
     s.set_defaults(f=cmd_serve)
     s = sub.add_parser("label-seeds"); s.add_argument("seed_file"); s.set_defaults(f=cmd_label_seeds)
     s = sub.add_parser("train-robots"); s.add_argument("--base"); s.add_argument("--epochs", type=int, default=60)
+    s.add_argument("--hand-only", action="store_true", help="fine-tune using corrected frames only")
+    s.add_argument("--freeze", type=int, default=0, help="number of backbone layers to freeze")
+    s.add_argument("--lr0", type=float, default=0.0003)
     s.add_argument("--imgsz", type=int, default=1280); s.add_argument("--batch", type=int, default=8); s.set_defaults(f=cmd_train)
     s = sub.add_parser("report"); s.add_argument("event_key"); s.set_defaults(f=cmd_report)
     s = sub.add_parser("export"); s.add_argument("event_key"); s.add_argument("--out", default="scouting.csv")

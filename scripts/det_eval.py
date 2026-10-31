@@ -9,8 +9,11 @@ Marking a point on every robot is much quicker than drawing boxes, and enough to
 
 Points live in data/det_eval/points.json as {stem: [[x, y, "r"|"b"], ...]} in crop pixels.
 """
+import argparse
+import hashlib
 import json
 import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -48,42 +51,72 @@ def extract(match_key: str, times: list[float]):
         print(stem, crop.shape)
 
 
-def evaluate(weights: list[str]):
+def evaluate(weights: list[str], conf=0.3, imgsz=1280):
     from autoscout.vision.detect import PersonVeto, RobotDetector, alliance_from_pixels, default_detector
+    from autoscout.vision.benchmark import score_points
 
     pts = json.loads((DIR / "points.json").read_text())
     dets = {"pipeline default": default_detector()} if not weights else {}
+    for detector in dets.values():
+        detector.conf, detector.imgsz = conf, imgsz
     for wt in weights:
-        dets[wt] = RobotDetector(wt, conf=0.3)
+        dets[wt] = RobotDetector(wt, conf=conf, imgsz=imgsz)
     veto = PersonVeto()
     summary = []
     for name, det in dets.items():
         hit = tot = tp = nd = 0
         per = []
+        frames = []
+        started = time.perf_counter()
         for stem, P in pts.items():
             img = cv2.imread(str(DIR / f"{stem}.jpg"))
+            if img is None:
+                raise FileNotFoundError(DIR / f"{stem}.jpg")
             ds = veto(img, det(img))
             for d in ds:
                 if not d.alliance:
                     d.alliance, _ = alliance_from_pixels(img, d)
-            inside = lambda d, p: d.x0 - 4 <= p[0] <= d.x1 + 4 and d.y0 - 4 <= p[1] <= d.y1 + 4  # noqa: E731
-            h = sum(any(inside(d, p) and d.alliance[:1] == p[2] for d in ds) for p in P)
-            t = sum(any(inside(d, p) for p in P) for d in ds)
+            score = score_points(ds, P)
+            h = t = score["tp"]
             hit, tot, tp, nd = hit + h, tot + len(P), tp + t, nd + len(ds)
             per.append(f"{stem}:{h}/{len(P)}")
+            frames.append(dict(frame=stem, **score))
+        seconds = time.perf_counter() - started
         print(f"{name:40s} recall {hit}/{tot} = {hit / max(tot, 1):.0%}   precision {tp}/{nd} = {tp / max(nd, 1):.0%}")
         print("   ", " ".join(per))
-        summary.append({"model": str(name), "recall": round(hit / max(tot, 1), 3), "precision": round(tp / max(nd, 1), 3),
-                        "robots": tot, "frames": len(pts)})
+        f1 = 2 * tp / max(tot + nd, 1)
+        print(f"    F1 {f1:.3f}; {seconds:.1f}s for {len(pts)} frames")
+        summary.append({"model": str(name), "recall": hit / max(tot, 1), "precision": tp / max(nd, 1),
+                        "f1": f1, "tp": tp, "fp": nd - tp, "fn": tot - tp,
+                        "robots": tot, "frames": len(pts), "scoring": "one-to-one-alliance-v2",
+                        "conf": conf, "imgsz": imgsz, "seconds": seconds, "per_frame": frames,
+                        "dataset_sha256": hashlib.sha256((DIR / "points.json").read_bytes()).hexdigest()})
     # merged into data/det_eval/results.json (shown on the dashboard's Runs page)
     out = DIR / "results.json"
-    old = {r["model"]: r for r in (json.loads(out.read_text()) if out.exists() else [])}
-    old.update({r["model"]: r for r in summary})
-    out.write_text(json.dumps(list(old.values()), indent=1))
+    old = json.loads(out.read_text()) if out.exists() else []
+    # Old scores used many-to-many matching and are not comparable.
+    if any(r.get("scoring") != "one-to-one-alliance-v2" for r in old):
+        legacy = DIR / "results_legacy.json"
+        if not legacy.exists():
+            legacy.write_text(json.dumps(old, indent=1))
+        old = []
+    key = lambda r: (r["model"], r.get("conf"), r.get("imgsz"))
+    merged = {key(r): r for r in old}
+    merged.update({key(r): r for r in summary})
+    temp = out.with_suffix(".tmp")
+    temp.write_text(json.dumps(list(merged.values()), indent=1))
+    temp.replace(out)
+    return summary
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "extract":
+    if len(sys.argv) > 1 and sys.argv[1] == "extract":
         extract(sys.argv[2], [float(t) for t in sys.argv[3].split(",")])
     else:
-        evaluate(sys.argv[2:])
+        ap = argparse.ArgumentParser(description=__doc__)
+        ap.add_argument("command", choices=["eval"])
+        ap.add_argument("weights", nargs="*")
+        ap.add_argument("--conf", type=float, default=0.3)
+        ap.add_argument("--imgsz", type=int, default=1280)
+        args = ap.parse_args()
+        evaluate(args.weights, conf=args.conf, imgsz=args.imgsz)

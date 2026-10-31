@@ -29,11 +29,13 @@ DATASET = config.DATA_DIR / "datasets" / "robots"
 CLASSES = ["red_robot", "blue_robot"]
 
 
-def write_label(img: np.ndarray, boxes: list[tuple[str, float, float, float, float]], stem: str) -> None:
-    (DATASET / "images").mkdir(parents=True, exist_ok=True)
-    (DATASET / "labels").mkdir(parents=True, exist_ok=True)
+def write_label(img: np.ndarray, boxes: list[tuple[str, float, float, float, float]], stem: str,
+                dataset: Path | None = None) -> None:
+    dataset = DATASET if dataset is None else Path(dataset)
+    (dataset / "images").mkdir(parents=True, exist_ok=True)
+    (dataset / "labels").mkdir(parents=True, exist_ok=True)
     H, W = img.shape[:2]
-    cv2.imwrite(str(DATASET / "images" / f"{stem}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    cv2.imwrite(str(dataset / "images" / f"{stem}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 92])
     lines = []
     for a, x0, y0, x1, y1 in boxes:
         x0, x1 = max(0, x0), min(W, x1)
@@ -42,7 +44,7 @@ def write_label(img: np.ndarray, boxes: list[tuple[str, float, float, float, flo
             continue
         lines.append(f"{CLASSES.index(a + '_robot')} {(x0 + x1) / 2 / W:.6f} {(y0 + y1) / 2 / H:.6f} "
                      f"{(x1 - x0) / W:.6f} {(y1 - y0) / H:.6f}")
-    (DATASET / "labels" / f"{stem}.txt").write_text("\n".join(lines))
+    (dataset / "labels" / f"{stem}.txt").write_text("\n".join(lines))
 
 
 def propagate(seg: dict, model: str = "sam2.1_t.pt") -> int:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import csv
 import io
+import math
 import re
 import subprocess
 import sys
@@ -272,18 +273,59 @@ def videos():
     return out
 
 
+@app.get("/api/label/videos")
+def label_videos():
+    from ..train.train_robots import source_aliases
+
+    aliases = source_aliases()
+    out = []
+    for video in videos():
+        stem = Path(video).stem
+        match = aliases.get(stem, "")
+        event = match.split("_")[0] if re.match(r"20\d{2}[a-z0-9]+_", match) else ""
+        quality = "1080p" if "videos1080" in Path(video).parts else "local"
+        out.append(dict(video=video, event=event, match=match,
+                        label=f"{match or stem} ({quality})"))
+    return sorted(out, key=lambda v: (v["match"] or "~", v["video"]))
+
+
 @app.get("/api/frame.jpg")
 def frame(video: str, t: float):
+    _, im, _ = _label_frame(video, t)
+    ok, buf = cv2.imencode(".jpg", im)
+    return Response(buf.tobytes(), media_type="image/jpeg")
+
+
+def _label_frame(video: str, t: float, event: str = ""):
     from ..video import Video
 
     p = (config.ROOT / video).resolve()
-    if config.DATA_DIR.resolve() not in p.parents:
-        raise HTTPException(400, "video must be under data/")
-    im = Video(p).frame_at(t)
+    if config.DATA_DIR.resolve() not in p.parents or not p.is_file():
+        raise HTTPException(400, "Choose an existing video under data/")
+    if not math.isfinite(t) or t < 0:
+        raise HTTPException(400, "Frame time must be a finite, nonnegative number")
+    v = Video(p)
+    try:
+        if t >= v.duration:
+            raise HTTPException(400, "Frame time is past the end of the video")
+        im = v.frame_at(t)
+    finally:
+        v.cap.release()
     if im is None:
-        raise HTTPException(404)
-    ok, buf = cv2.imencode(".jpg", im)
-    return Response(buf.tobytes(), media_type="image/jpeg")
+        raise HTTPException(404, "Could not decode this frame")
+    if event:
+        _event_key(event)
+        cal = Calibration.load(event)
+        if cal is None:
+            raise HTTPException(400, "Calibrate this event first")
+        cal = cal.scaled((im.shape[1], im.shape[0]))
+        rect = tuple(int(n) for n in cal.view)
+    else:
+        rect = (0, 0, im.shape[1], im.shape[0])
+    x, y, w, h = rect
+    if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > im.shape[1] or y + h > im.shape[0]:
+        raise HTTPException(400, "Calibration crop is outside this video")
+    return p, im, rect
 
 
 @app.post("/api/label/seeds")
@@ -309,13 +351,9 @@ def add_seeds(body: dict, background: BackgroundTasks):
 @app.get("/api/label/suggest")
 def suggest(video: str, t: float, event: str = ""):
     """Detector boxes for a frame (full-frame pixels) to pre-fill the labeling canvas."""
-    from ..video import Video
-    from ..vision.detect import RobotDetector, alliance_from_pixels
+    from ..vision.detect import alliance_from_pixels
 
-    p = (config.ROOT / video).resolve()
-    im = Video(p).frame_at(t)
-    cal = Calibration.load(event) if event else None
-    x, y, w, h = cal.view if cal else (0, 0, im.shape[1], im.shape[0])
+    _, im, (x, y, w, h) = _label_frame(video, t, event)
     det = _detector()
     out = []
     for d in det(im[y: y + h, x: x + w], conf=0.3):
@@ -332,8 +370,9 @@ def _detector():
     from ..vision.detect import default_detector, find_weights
 
     w = find_weights()
-    if _DET.get("w") != w:
-        _DET.update(w=w, det=default_detector())
+    fingerprint = (w, w.stat().st_mtime_ns, w.stat().st_size) if w else None
+    if "det" not in _DET or _DET.get("w") != fingerprint:
+        _DET.update(w=fingerprint, det=default_detector())
     return _DET["det"]
 
 
@@ -341,22 +380,27 @@ def _detector():
 def save_labels(body: dict):
     """Save hand-corrected boxes for one frame directly as a training example."""
     from ..train.sam_label import write_label
-    from ..video import Video
-
-    p = (config.ROOT / body["video"]).resolve()
-    im = Video(p).frame_at(float(body["t"]))
-    cal = Calibration.load(body.get("event", "")) if body.get("event") else None
-    x, y, w, h = cal.view if cal else (0, 0, im.shape[1], im.shape[0])
+    try:
+        t = float(body["t"])
+        p, im, (x, y, w, h) = _label_frame(body["video"], t, body.get("event", ""))
+        for r in body["robots"]:
+            if (len(r) != 5 or r[0] not in ("red", "blue")
+                    or not all(math.isfinite(float(n)) for n in r[1:])
+                    or not (x <= r[1] < r[3] <= x + w and y <= r[2] < r[4] <= y + h)):
+                raise ValueError("Box must enclose a robot inside the calibrated field view")
+    except (KeyError, TypeError, ValueError) as e:
+        raise HTTPException(400, f"Invalid frame labels: {e}") from e
     boxes = [(r[0], r[1] - x, r[2] - y, r[3] - x, r[4] - y) for r in body["robots"]]
     stem = f"{p.stem}_u{float(body['t']):.1f}".replace(".", "_")
-    write_label(im[y: y + h, x: x + w], boxes, stem)
+    write_label(im[y: y + h, x: x + w], boxes, stem, dataset=config.DATA_DIR / "datasets" / "hand")
     return {"ok": True, "stem": stem}
 
 
 @app.post("/api/train")
 def train():
-    if _job_status("train") and _job_status("train")["running"]:
+    if (_job_status("train") and _job_status("train")["running"]) or _training_status()["running"]:
         raise HTTPException(409, "Detector training is already running")
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     log = open(config.DATA_DIR / "train.log", "w")
     JOBS["train"] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", "train-robots"],
                                      stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
@@ -368,7 +412,42 @@ def dataset():
     from ..train.sam_label import DATASET
 
     n = len(list((DATASET / "images").glob("*.jpg"))) if (DATASET / "images").exists() else 0
-    return {"images": n, "label_job": _job_status("label"), "train_job": _job_status("train")}
+    hand = len(list((config.DATA_DIR / "datasets" / "hand" / "images").glob("*.jpg")))
+    return {"images": n + hand, "hand_images": hand, "pseudo_images": n,
+            "label_job": _job_status("label"), "train_job": _training_status()}
+
+
+def _training_status():
+    """CLI training remains visible after a dashboard restart."""
+    from filelock import FileLock, Timeout
+
+    running = False
+    if config.DATA_DIR.exists():
+        try:
+            with FileLock(config.DATA_DIR / "detector-training.lock", timeout=0):
+                pass
+        except Timeout:
+            running = True
+    job = _job_status("train")
+    running = running or bool(job and job["running"])
+    out = {"running": running}
+    candidates = sorted((config.DATA_DIR / "runs").glob("robots_*/results.csv"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
+    if candidates:
+        try:
+            rows = list(csv.DictReader(io.StringIO(candidates[0].read_text())))
+            if rows:
+                out.update(epoch=int(rows[-1]["epoch"]), run=candidates[0].parent.name)
+        except (OSError, ValueError, KeyError):
+            pass
+    reports = sorted((config.DATA_DIR / "models" / "experiments").glob("*/evaluation.json"),
+                     key=lambda p: p.stat().st_mtime, reverse=True)
+    if reports:
+        try:
+            out["evaluation"] = json.loads(reports[0].read_text())
+        except (OSError, ValueError):
+            pass
+    return out
 
 
 # Dashboard workflow endpoints reuse the same commands as the CLI.
