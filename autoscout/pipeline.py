@@ -204,8 +204,8 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     own_ref = mid if mid is not None else ref
 
     # ---- frame loop ---------------------------------------------------------------------
-    det = detector or default_detector(opts.weights)
-    static = StaticSuppressor()
+    det = detector or default_detector(opts.weights, ensemble=plugin.detector_ensemble)
+    static = StaticSuppressor(frac=plugin.static_frac)
     veto = PersonVeto()
     gpu = config.has_gpu()
     robot_hz = opts.robot_hz or (10.0 if gpu else 4.0)

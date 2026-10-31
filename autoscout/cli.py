@@ -33,7 +33,9 @@ def cmd_run_event(a):
     done = {r["match_key"] for r in con.execute("SELECT match_key FROM matches WHERE status='done'")}
     todo = [m for m in ms if a.force or m.key not in done][: a.limit or None]
     print(f"{a.event_key}: {len(ms)} matches with video, {len(todo)} to process")
-    det = default_detector(a.weights)
+    from . import games
+
+    det = default_detector(a.weights, ensemble=games.get(int(a.event_key[:4])).detector_ensemble)
     for m in todo:
         try:
             r = process_match(m.key, Options(weights=a.weights), tba=tba, detector=det)

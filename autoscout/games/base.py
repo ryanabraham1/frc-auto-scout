@@ -90,6 +90,9 @@ class MatchContext:
 
 class GamePlugin:
     year: int = 0
+    # robot detection settings, measured per season on hand-marked frames and event OPR checks
+    detector_ensemble: bool = False  # also run Spy Glass (more recall, less precision)
+    static_frac: float = 0.25  # share of frames on one spot after which a detection is a field element
     launch_pieces: dict[str, tuple] = {}  # name -> (hsv_lo, hsv_hi)
     metric_defs: list[dict] = []  # [{"key", "label", "group", "fmt"}]
 

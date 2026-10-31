@@ -23,7 +23,7 @@ NON_ROBOT = {"foul_minor": 2, "foul_major": 6, "hp_net": 4}  # jumps no robot ac
 NEAR = {"reef": 1.1, "net": 1.0, "processor": 1.3}  # meters from element edge
 LOOKBACK = 5.0  # s: scoring is often posted a few seconds after it happens
 SHARE_MODE = "soft"  # "nearest" | "soft": see Reefscape2025._shares
-SOFT_SCALE = 0.5  # m
+SOFT_SCALE = 1.0  # m
 
 
 def _decompose(points: int, allowed: dict[str, int]) -> list[list[str]]:
@@ -48,6 +48,10 @@ def _decompose(points: int, allowed: dict[str, int]) -> list[list[str]]:
 
 class Reefscape2025(GamePlugin):
     year = 2025
+    # Robots spend long stretches at a REEF face, often half hidden: recall matters more than in 2026
+    # (Silicon Valley, 11 matches: coral vs OPR r=0.80 with these, 0.67 with the 2026 settings)
+    detector_ensemble = True
+    static_frac = 0.5
     launch_pieces = {"algae": ((78, 60, 80), (100, 255, 255))}
     metric_defs = [
         {"key": "coral_total", "label": "Coral", "group": "Coral"},
