@@ -3,7 +3,7 @@ import numpy as np
 
 from autoscout import games
 from autoscout.field import FieldModel
-from autoscout.games.base import MatchContext
+from autoscout.games.base import GamePlugin, MatchContext
 from autoscout.games.rebuilt2026 import Rebuilt2026
 from autoscout.train.pseudo_label import _T, robot_tracks
 from autoscout.vision.detect import Det, is_person_box
@@ -152,3 +152,78 @@ def test_unread_robot_is_named_by_how_its_read_teammates_look_in_the_match():
     tr.relabel()
     assert tr.done[2].team == 2 and tr.done[3].team == 1
     assert tr.done[2].mapp[2] > 0 > tr.done[2].mapp[1]
+
+
+def test_missing_box_moves_with_robot_and_is_not_a_detection():
+    cal = houston_cal()
+    p0, p1 = (8., 3.), (10., 3.)
+    foot = cal.to_image([p0])[0]
+    box = (foot[0]-30, foot[1]-50, foot[0]+30, foot[1])
+    rows = [(0., *p0, True, box), (.5, *p1, False, None)]
+    ctx = MatchContext(None, None, cal, None, None, {"red0": rows}, {}, {}, {})
+    moved, observed = GamePlugin.robot_box(ctx, "red0", .5)
+    expected = cal.to_image([p1])[0]
+    assert np.allclose([(moved[0]+moved[2])/2, moved[3]], expected)
+    assert not observed
+    assert moved[0] > box[0] + 50
+    # The original actual detection stays exact.
+    assert GamePlugin.robot_box(ctx, "red0", 0.) == (box, True)
+
+
+def _live_ctx():
+    from types import SimpleNamespace
+    # The production path requires a live (frequent) score timeline.
+    ctx = MatchContext(None, FieldModel.load(2026), houston_cal(),
+                       SimpleNamespace(auto_end_vt=20., teleop_end_vt=160., phase=lambda t: ("auto", 20.-t)),
+                       SimpleNamespace(deltas=lambda alliance: [(10., 1)] * 15),
+                       {"red0": [], "red1": []}, {"red0": 1, "red1": 2}, {}, {})
+    return ctx
+
+
+def test_release_credit_uses_identity_at_release_not_score_post():
+    ctx = _live_ctx()
+    ctx.identity_tl = {"red0": [(0, 9, 1), (9, 20, 2)],
+                       "red1": [(0, 9, 2), (9, 20, 1)]}
+    times = np.array([7., 8., 9., 10.])
+    cols = (times, {"red0": np.array([0., 5., 5., 5.]), "red1": np.zeros(4)})
+    weights, _ = Rebuilt2026().live_weights(ctx, "red", [1, 2], [], cols)
+    assert weights[1]["auto"] == 15
+    assert sum(weights[2].values()) == 0
+
+
+def test_extended_volley_does_not_count_short_window_twice():
+    ctx = _live_ctx()
+    times = np.array([3., 6., 8., 10.])
+    cols = (times, {"red0": np.array([0., 0., 1., 1.]),
+                    "red1": np.array([0., 1., 1., 1.])})
+    weights, _ = Rebuilt2026().live_weights(ctx, "red", [1, 2], [], cols)
+    assert weights[1]["auto"] == weights[2]["auto"] == 7.5
+
+
+def test_overlapping_release_regions_do_not_favor_first_slot():
+    from types import SimpleNamespace
+    cal = houston_cal()
+    # A first-slot robot's large allowed shooter region overlaps the actual shooter.
+    boxes = {"red0": (100., 500., 160., 550.), "red1": (140., 500., 200., 550.)}
+    tracks = {}
+    for slot, box in boxes.items():
+        p = cal.to_field([((box[0]+box[2])/2, box[3])])[0]
+        tracks[slot] = [(1., *p, True, box)]
+    ctx = MatchContext(None, None, cal, None, None, tracks, {}, {}, {})
+    launch = SimpleNamespace(t0=1., start=(155., 495.))
+    # Both release rectangles contain the point; the shooter is closer to its center.
+    assert GamePlugin.attribute_launch(ctx, launch)[0] == "red1"
+
+
+def test_official_fuel_without_robot_evidence_is_reported_unattributed():
+    from types import SimpleNamespace
+    from autoscout.games.rebuilt2026 import PERIODS
+    teams = {"red": [1, 2, 3], "blue": [4, 5, 6]}
+    counts = {f"{p}Count": (3 if p == "auto" else 0) for p in PERIODS}
+    match = SimpleNamespace(teams=lambda a: teams[a], breakdown={a: {"hubScore": counts} for a in teams})
+    ctx = MatchContext(match, FieldModel.load(2026), houston_cal(), None, None, {}, {}, {}, {})
+    result = Rebuilt2026().analyze(ctx)
+    for a in teams:
+        assert result["alliances"][a]["unattributed_fuel"] == 3
+        assert result["alliances"][a]["unattributed_fuel_by_period"]["auto"] == 3
+        assert sum(result["teams"][t]["fuel_scored"] for t in teams[a]) == 0

@@ -813,10 +813,7 @@ def slot_position_at(track, t, ts: np.ndarray | None = None):
     if abs(ts[i] - t) > 1.0:
         return None
     r = track[i]
-    # Use the most recent observed box within 1 s for image-space association.
-    box = None
-    for k in range(i, max(-1, i - 15), -1):
-        if track[k][3] and t - track[k][0] < 1.0:
-            box = track[k][4]
-            break
-    return r[1], r[2], r[3], box
+    # A previous detection's box is at the previous position. Returning it here used to
+    # make a moving robot's launch region lag behind it for a whole second, and callers
+    # treated that old box as a current detection. Project missing boxes in robot_box.
+    return r[1], r[2], r[3], r[4] if r[3] else None

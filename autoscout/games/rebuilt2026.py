@@ -276,6 +276,7 @@ class Rebuilt2026(GamePlugin):
         for a in ("red", "blue"):
             hs = bd.get(a, {}).get("hubScore", {}) if bd else {}
             tot_raw = tot_off = 0.0
+            unassigned = {}
             for per in PERIODS:
                 official = hs.get(f"{per}Count")
                 if official is None:
@@ -293,6 +294,7 @@ class Rebuilt2026(GamePlugin):
                     weights["HP"] = hp_shots[a][per]
                 fallback = {t: zone_time_period[t][per] for t in teams[a]}
                 split = self.proportional_split(official or 0, weights, fallback)
+                unassigned[per] = max(int(official or 0) - sum(split.values()), 0)
                 for k, v in split.items():
                     scored[k][per] = v
                 tot_raw += sum(shots[t][per] for t in teams[a]) + hp_shots[a][per]
@@ -305,6 +307,8 @@ class Rebuilt2026(GamePlugin):
                 "made_ratio": round(det_made / tot_off, 2) if tot_off else None,
                 "detection_ratio": round(tot_raw / tot_off, 2) if tot_off else None,
                 "hp_fuel_scored": int(sum(scored["HP"][p] for p in PERIODS)) if a else 0,
+                "unattributed_fuel": sum(unassigned.values()),
+                "unattributed_fuel_by_period": unassigned,
                 "auto_winner": auto_winner == a,
                 "unattributed_launches": round(unattributed, 1),
             }
@@ -524,7 +528,8 @@ class Rebuilt2026(GamePlugin):
             for slot, (d, observed) in ds.items():
                 ts = sure.get(slot)
                 fired = bool(ts is not None and len(ts) and np.min(np.abs(ts - t)) < HISTORY_S)
-                d_eff = d + (0.0 if observed else (0.05 if fired else 0.25)) - (HISTORY_BONUS if fired else 0.0)
+                penalty = self._box_penalty(ctx, slot, t, observed)
+                d_eff = d + (min(penalty, 0.05) if fired else penalty) - (HISTORY_BONUS if fired else 0.0)
                 if d_eff < best_d:
                     best, best_d = slot, d_eff
             out[lid] = best if best_d < 0.6 else None
@@ -601,6 +606,19 @@ class Rebuilt2026(GamePlugin):
         if len(deltas) < 15:
             return None, []  # score posted in chunks, not live: no timing to work with
         ends = (ctx.clock.auto_end_vt, ctx.clock.teleop_end_vt)
+        ctimes, slot_sums = columns or (None, {})
+        # A score can post after two slots exchanged identities. Bind every release
+        # to the team in that slot at release time, before querying score windows.
+        team_sums = {}
+        if ctimes is not None:
+            for slot, cumulative in slot_sums.items():
+                if not slot.startswith(alliance):
+                    continue
+                increments = np.diff(np.r_[0.0, cumulative])
+                owners = np.array([ctx.team_at(slot, float(t)) for t in ctimes])
+                for team in teams:
+                    values = np.cumsum(np.where(owners == team, increments, 0.0))
+                    team_sums[team] = team_sums.get(team, 0.0) + values
         out = defaultdict(lambda: defaultdict(float))
         credit = []  # per score increase: who was credited, for the timeline / annotated video
         hub = f"{alliance}_hub"
@@ -615,13 +633,11 @@ class Rebuilt2026(GamePlugin):
             for t0, who, a, n, is_made in shot_log:
                 if a == alliance and lo <= t0 <= hi:
                     w[who] += n * (2.0 if is_made else 1.0)
-            ctimes, csum = columns or (None, {})
             if ctimes is not None:
                 i0, i1 = np.searchsorted(ctimes, lo), np.searchsorted(ctimes, hi) - 1
                 for team in teams:
-                    slot = ctx.slot_of(team, t)
-                    if slot in csum and i1 >= max(i0, 0):
-                        c = csum[slot][i1] - (csum[slot][i0 - 1] if i0 > 0 else 0.0)
+                    if team in team_sums and i1 >= max(i0, 0):
+                        c = team_sums[team][i1] - (team_sums[team][i0 - 1] if i0 > 0 else 0.0)
                         if c > 0:
                             w[team] += COLUMN_WEIGHT * c
             src = "seen" if w else "position"
@@ -630,15 +646,15 @@ class Rebuilt2026(GamePlugin):
                 # started earlier (FUEL queues in the HUB before it is counted), so also count who was firing
                 # over a longer window; a stray blip alone must not take a whole increase
                 lo2 = t - VOLLEY_WINDOW
-                i0, i1 = np.searchsorted(ctimes, lo2), np.searchsorted(ctimes, hi) - 1
+                # Only add the older part: the short window has already counted.
+                i0, i1 = np.searchsorted(ctimes, lo2), np.searchsorted(ctimes, lo) - 1
                 for team in teams:
-                    slot = ctx.slot_of(team, t)
-                    if slot in csum and i1 >= max(i0, 0):
-                        c = csum[slot][i1] - (csum[slot][i0 - 1] if i0 > 0 else 0.0)
+                    if team in team_sums and i1 >= max(i0, 0):
+                        c = team_sums[team][i1] - (team_sums[team][i0 - 1] if i0 > 0 else 0.0)
                         if c > 0:
                             w[team] += COLUMN_WEIGHT * c
                 for t0, who, a, n, is_made in shot_log:
-                    if a == alliance and lo2 <= t0 <= hi:
+                    if a == alliance and lo2 <= t0 < lo:
                         w[who] += n * (2.0 if is_made else 1.0)
                 if w and src == "position":
                     src = "volley"

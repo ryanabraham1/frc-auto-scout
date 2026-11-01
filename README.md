@@ -32,6 +32,12 @@ official count is proportional to what the system saw that robot do in that peri
 exactly: 2026 tower levels, 2025 leave and barge. Feeding has no official count, so feeds are the detected count
 scaled by the alliance's detection ratio.
 
+Short-gap robot association now uses motion-compensated boxes and resolves overlapping launch regions by
+release location. On 14,931 simulated detection dropouts from 93 cached matches, physical robot association
+improved from 91.1% to 97.1%; this is not an end-to-end scoring-accuracy measurement. See
+[the attribution benchmark](docs/ATTRIBUTION_BENCHMARK.md) for validation splits and limitations. In 2026,
+official fuel with no usable robot or fallback evidence is reported separately as `unattributed_fuel`.
+
 **2026 rules encoded.** A launch from the robot's own Alliance Zone is a *shot*, because scoring is only legal from
 there. A launch from the Neutral Zone or the opponent's zone is a *feed*. A launch from off-field at an Outpost is a
 *human player* throw. The Hub schedule follows the rules: both Hubs are active in auto, the transition shift and

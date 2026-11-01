@@ -114,16 +114,62 @@ class GamePlugin:
     # ---- shared helpers ------------------------------------------------------------------
     @staticmethod
     def robot_box(ctx: MatchContext, slot: str, t: float):
-        """Image box of a robot at time t: the last detection (<1 s old) if any, otherwise a box
-        projected from the tracker's (coasting) field position. Returns (box, observed) or None."""
+        """Current detection or a motion-compensated box at the estimated field position.
+
+        A recent detection supplies the robot's shape, never its old image position.
+        Estimated boxes remain marked unobserved for attribution confidence.
+        """
         r = ctx.robot_at(slot, t)
         if r is None:
             return None
         if r[3] is not None:
-            return tuple(r[3]), True
+            return tuple(r[3]), bool(r[2])
         foot = ctx.cal.to_image([(r[0], r[1])])[0]
         w = 0.95 * ctx.cal.px_per_meter_x((r[0], r[1]))
-        return (foot[0] - w / 2, foot[1] - 0.8 * w, foot[0] + w / 2, foot[1]), False
+        h = 0.8 * w
+        # Preserve the measured mechanism height during a short detector dropout.
+        # Search by elapsed time rather than a fixed number of rows (tracks can have
+        # different frame rates, and fused close-up rows have no wide-shot box).
+        tr = ctx.tracks.get(slot, [])
+        ts = ctx._ts[slot]
+        end = int(np.searchsorted(ts, t, side="right"))
+        start = int(np.searchsorted(ts, t - 1.0, side="right"))
+        for j in range(end - 1, start - 1, -1):
+            row = tr[j]
+            if row[3] and row[4] is not None:
+                x0, y0, x1, y1 = row[4]
+                old_scale = ctx.cal.px_per_meter_x(row[1:3])
+                scale = ctx.cal.px_per_meter_x(r[:2]) / max(old_scale, 1e-6)
+                w, h = (x1 - x0) * scale, (y1 - y0) * scale
+                break
+        return (foot[0] - w / 2, foot[1] - h, foot[0] + w / 2, foot[1]), False
+
+    @staticmethod
+    def _release_distance(box, start) -> float:
+        """Distance to a possible release, with a soft preference for the robot's center.
+
+        Extended shooter regions overlap in a crowd. A flat zero throughout that
+        region gave ties to the first slot, independent of the release location.
+        """
+        x0, y0, x1, y1 = box
+        sx, sy = start
+        w, h = x1 - x0, y1 - y0
+        outside = np.hypot(max(x0 - sx, 0, sx - x1),
+                           max(y0 - max(1.5 * h, w) - sy, 0, sy - y1)) / max(w, 20)
+        return float(outside + 0.25 * abs(sx - (x0 + x1) / 2) / max(w, 20)
+                     + 0.1 * abs(sy - y0) / max(h, 20))
+
+    @staticmethod
+    def _box_penalty(ctx: MatchContext, slot: str, t: float, observed: bool) -> float:
+        if observed:
+            return 0.0
+        tr = ctx.tracks.get(slot, [])
+        ts = ctx._ts.get(slot)
+        if ts is not None:
+            lo, hi = np.searchsorted(ts, [t - 1.0, t], side="right")
+            if any(r[3] and r[4] is not None for r in tr[lo:hi]):
+                return 0.05  # short dropout anchored by a measured robot shape
+        return 0.25  # no recent wide-shot detection
 
     @staticmethod
     def launch_distances(ctx: MatchContext, launch, alliances=("red", "blue")) -> dict[str, tuple[float, bool]]:
@@ -136,11 +182,8 @@ class GamePlugin:
             rb = GamePlugin.robot_box(ctx, slot, launch.t0)
             if rb is None:
                 continue
-            (x0, y0, x1, y1), observed = rb
-            w, h = x1 - x0, y1 - y0
-            dx = max(x0 - sx, 0, sx - x1)
-            dy = max((y0 - max(1.5 * h, 1.0 * w)) - sy, 0, sy - y1)
-            out[slot] = (float(np.hypot(dx, dy)) / max(w, 20), bool(observed))
+            box, observed = rb
+            out[slot] = (GamePlugin._release_distance(box, (sx, sy)), bool(observed))
         return out
 
     @staticmethod
@@ -151,20 +194,8 @@ class GamePlugin:
         which sits above/inside the shooter's image box.
         """
         best, best_d = None, 1e9
-        sx, sy = launch.start
-        for slot in ctx.tracks:
-            if slot[:-1] not in alliances:
-                continue
-            rb = GamePlugin.robot_box(ctx, slot, launch.t0)
-            if rb is None:
-                continue
-            (x0, y0, x1, y1), observed = rb
-            w, h = x1 - x0, y1 - y0
-            # distance from the release point to the box, allowing release above the box (shooters
-            # sit on top of the robot; a bumper-only box is short, so also allow ~1 box width)
-            dx = max(x0 - sx, 0, sx - x1)
-            dy = max((y0 - max(1.5 * h, 1.0 * w)) - sy, 0, sy - y1)
-            d = float(np.hypot(dx, dy)) / max(w, 20) + (0.0 if observed else 0.25)
+        for slot, (distance, observed) in GamePlugin.launch_distances(ctx, launch, alliances).items():
+            d = distance + GamePlugin._box_penalty(ctx, slot, launch.t0, observed)
             if d < best_d:
                 best, best_d = slot, d
         return (best, best_d) if best_d < max_d else (None, best_d)
@@ -189,10 +220,9 @@ class GamePlugin:
                 rb = GamePlugin.robot_box(ctx, slot, P[0, 0] + dt)
                 if rb is None:
                     continue
-                (x0, y0, x1, y1), observed = rb
-                w, h = x1 - x0, y1 - y0
-                d = float(np.hypot(max(x0 - sx, 0, sx - x1), max((y0 - max(1.5 * h, w)) - sy, 0, sy - y1)))
-                d = d / max(w, 20) + (0.0 if observed else 0.25)
+                box, observed = rb
+                d = (GamePlugin._release_distance(box, (sx, sy))
+                     + GamePlugin._box_penalty(ctx, slot, P[0, 0] + dt, observed))
                 if d < best_d:
                     best, best_d = slot, d
         return (best, best_d) if best_d < 0.6 else (None, best_d)

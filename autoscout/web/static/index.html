@@ -443,7 +443,7 @@ async function viewMatch(mk) {
           return `<div class="row small" style="margin:6px 0;flex-wrap:nowrap"><span style="width:48px" class="num"><b>${t}</b></span><div class="bar" style="width:${Math.max(4, 100 * m.fuel_scored / tot)}%;max-width:62%">
           ${periods.map((p, i) => `<span title="${p}: ${m.fuel_scored_by_period?.[p] ?? 0}" style="width:${100 * (m.fuel_scored_by_period?.[p] ?? 0) / Math.max(1, m.fuel_scored)}%;background:${PERIOD_COLORS[i]}"></span>`).join('')}</div>
           <span class="muted num">${m.fuel_scored} scored · ${m.fuel_fed} fed</span></div>`; }).join('')}</div>` : ''}
-      ${r.alliances?.[a] ? `<div class="small muted" style="margin-top:10px">${Object.entries(r.alliances[a]).map(([k, v]) => `${esc(k.replaceAll('_', ' '))}: <b>${fmt(v)}</b>`).join(' · ')}</div>` : ''}
+      ${r.alliances?.[a] ? `<div class="small muted" style="margin-top:10px">${Object.entries(r.alliances[a]).filter(([k]) => !k.endsWith('_by_period')).map(([k, v]) => `${esc(k.replaceAll('_', ' '))}: <b>${fmt(v)}</b>`).join(' · ')}</div>` : ''}
     </div>`; };
   const slotRows = ['red', 'blue'].map(a => `<div class="row" style="margin:6px 0">${[0, 1, 2].map(i => { const s = `${a}${i}`;
     const c = r.identity_conf?.[s]; const cc = c >= 0.7 ? 'good' : 'warn';
