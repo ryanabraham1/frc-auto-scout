@@ -29,6 +29,8 @@ from .vision.launches import LaunchExtractor
 from .vision.trajectories import Launch, LaunchDetector
 
 RESULTS_DIR = config.DATA_DIR / "results"
+AUX_CONF = 0.15  # robot detection threshold in close-up views
+FUSE_CLOSEUPS = True  # fill wide-shot tracks with robots seen in calibrated close-up cameras
 PRE_MATCH_S = 4.0  # s tracked before AUTO starts
 TRACKER_EVIDENCE = 8.0  # the tracker labels robots by team, so its station slots are the identity
 
@@ -237,8 +239,10 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     # thread while the frame loop runs (decoding and OCR overlap instead of running back to back)
     reader()  # load the shared bumper reader once, before two threads ask for it
     aux_pool = ThreadPoolExecutor(1)
-    aux_job = aux_pool.submit(collect_aux_reads, Video(video_path), base_cal, tl, {"red": m.red, "blue": m.blue})
-    watcher = element_watcher(cal, fm, plugin, (video.width, video.height))
+    aux_boxes: list = []
+    aux_job = aux_pool.submit(collect_aux_reads, Video(video_path), base_cal, tl, {"red": m.red, "blue": m.blue},
+                              plugin.aux_every, aux_boxes)
+    watcher = element_watcher(cal, fm, plugin, (video.width, video.height), _aux_watch(base_cal, video))
     cut = False
     n_frames = n_cut = 0
     for i, (t, frame) in enumerate(video.iter_frames(t0, t1, step=launch_step)):
@@ -318,6 +322,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     ctx = games.MatchContext(match=m, field=fm, cal=cal, clock=clock, timeline=tl, tracks=tracks,
                              identity={}, identity_conf={}, launches=launches)
     ctx.aux_reads = aux_reads
+    ctx.aux_boxes = aux_boxes
     ctx.blobs, ctx.blob_view = blobs, tuple(lview)
     ctx.element_changes = watcher.changes() if watcher is not None else []
     if ctx.element_changes:
@@ -331,6 +336,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
 
     # ---- game analysis -------------------------------------------------------------------
     prog.update("analysis", 0.5, "attributing scoring to robots", force=True)
+    fused = fuse_closeups(ctx, m.event_key)
     res = plugin.analyze(ctx)
     result = {
         "match_key": match_key, "event_key": m.event_key, "year": m.year, "label": m.label,
@@ -347,6 +353,8 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "identity_scores": {f"{k[0]}:{k[1]}": round(v, 3) for k, v in evidence.score.items()},
         "identity_timed": evidence.timed,
         "aux_reads": ctx.aux_reads,
+        "aux_boxes": ctx.aux_boxes,
+        "fused_sightings": fused,
         "element_changes": ctx.element_changes,
         "identity_timeline": ctx.identity_tl,
         "calibration": {"view": list(cal.view), "points": {k: list(map(float, v)) for k, v in cal.points.items()}},
@@ -411,6 +419,7 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     ctx = games.MatchContext(match=m, field=plugin.field, cal=cal, clock=clock, timeline=tl, tracks=tracks,
                              identity={}, identity_conf={}, launches=launches)
     ctx.aux_reads = [tuple(x) for x in old.get("aux_reads", [])]
+    ctx.aux_boxes = old.get("aux_boxes", [])
     ctx.element_changes = old.get("element_changes", [])
     bp = RESULTS_DIR / f"{match_key}_blobs.npz"
     if bp.exists():
@@ -425,6 +434,7 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     ov = overrides_for(match_key)
     ov.update(_db_overrides(match_key))
     solved = _solve_identity(ctx, evidence, m, clock, ov)
+    old["fused_sightings"] = fuse_closeups(ctx, m.event_key)
     res = plugin.analyze(ctx)
     old["identity_timeline"] = ctx.identity_tl
     old.update(res)
@@ -608,7 +618,8 @@ def identity_pass(match_key: str, video_path: str, every: float = 1.5, budget: i
     return reanalyze(match_key)
 
 
-def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict, every: float = 1.0) -> list:
+def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict, every: float = 1.0,
+                      boxes_out: list | None = None) -> list:
     """Read bumper numbers in the close-up views (e.g. reef/hub cams) every `every` s of the match.
 
     Returns [(t, view_name, team, conf)] for reads matching a team in the match. Close-ups show
@@ -635,9 +646,24 @@ def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict
                 pane = np.ascontiguousarray(frame[y: y + h, x: x + w])
                 if not pane.size:
                     continue
-                dets = [d for d in _aux_detector()(pane, conf=0.3) if d.w >= 40]
+                # close-ups show robots big and from low down, unlike the wide shot the model learned from:
+                # a lower threshold finds them; banners and the far crowd sit in the top of the view
+                dets = [d for d in _aux_detector()(pane, conf=AUX_CONF) if d.w >= 40 and d.y1 > 0.25 * h]
+                for d in dets:
+                    col, frac = alliance_from_pixels(pane, d)
+                    if col and frac >= 0.7:
+                        d.alliance = col  # the bumper colour over the model's guess
                 tl_all = list(all_teams.values())
-                for d, got in zip(dets, reader().read_many([(pane, (d.x0, d.y0, d.x1, d.y1)) for d in dets], tl_all)):
+                reads = reader().read_many([(pane, (d.x0, d.y0, d.x1, d.y1)) for d in dets], tl_all)
+                if boxes_out is not None:
+                    # every robot seen in the close-up (full-frame pixels), with its team when the bumper read
+                    for d, got in zip(dets, reads):
+                        col = d.alliance or alliance_from_pixels(pane, d)[0]
+                        ok = {tm: c for tm, c in got.items() if not col or col == ("red" if tm in teams["red"] else "blue")}
+                        tm = max(ok, key=ok.get) if ok else None
+                        boxes_out.append([round(t, 2), name, round(d.x0 + x), round(d.y0 + y), round(d.x1 + x),
+                                          round(d.y1 + y), col, tm, round(ok[tm], 2) if tm else 0.0])
+                for d, got in zip(dets, reads):
                     for team, conf in got.items():
                         col = "red" if team in teams["red"] else "blue"
                         if d.alliance and d.alliance != col:
@@ -662,8 +688,47 @@ def _aux_detector():
     return _AUX_DET
 
 
-def element_watcher(cal: Calibration, fm, plugin, frame_size) -> ElementWatcher | None:
+CAMS_DIR = Path(config.ROOT) / "configs" / "events"
+
+
+def closeup_calibration(event_key: str) -> dict:
+    """The event's close-up camera homographies (see vision/fusion.py), if calibrated."""
+    p = CAMS_DIR / f"{event_key}_cams.json"
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def fuse_closeups(ctx, event_key: str) -> int:
+    from .vision.fusion import fuse_tracks
+
+    return fuse_tracks(ctx, closeup_calibration(event_key)) if FUSE_CLOSEUPS else 0
+
+
+def calibrate_closeups(event_key: str) -> dict:
+    """Fit every close-up camera of an event from its processed matches and save it."""
+    from .vision.fusion import calibrate_views
+
+    results = [json.loads(p.read_text()) for p in sorted(RESULTS_DIR.glob(f"{event_key}_*.json"))
+               if p.stem.count("_") == 1]
+    views = calibrate_views(results)
+    (CAMS_DIR / f"{event_key}_cams.json").write_text(json.dumps(views, indent=1))
+    return views
+
+
+def _aux_watch(base_cal: Calibration, video: Video) -> dict | None:
+    """The event's close-up element regions, in this video's pixels."""
+    if not base_cal.aux_watch:
+        return None
+    sx, sy = video.width / base_cal.frame_size[0], video.height / base_cal.frame_size[1]
+    return {k: (r[0] * sx, r[1] * sy, r[2] * sx, r[3] * sy) for k, r in base_cal.aux_watch.items()}
+
+
+def element_watcher(cal: Calibration, fm, plugin, frame_size, aux_watch: dict | None = None) -> ElementWatcher | None:
+    """Watch the scoring elements in the wide shot and, where the event marks one in a close-up view
+    (`aux_watch`), in that close-up too (elements named "<view>@cam", e.g. "blue_reef@cam")."""
     regions = {k: r for k in plugin.watch_elements if (r := element_region(cal, fm, k))}
+    for view, (x0, y0, x1, y1) in (aux_watch or {}).items():
+        if view in plugin.watch_elements:
+            regions[f"{view}@cam"] = (int(x0), int(y0), int(x1), int(y1))
     return ElementWatcher(regions, frame_size) if regions else None
 
 
@@ -678,7 +743,8 @@ def element_pass(match_key: str, video_path: str | None = None, save: bool = Tru
     c = old["calibration"]
     cal = Calibration(event_key=old["event_key"], year=old["year"], view=tuple(c["view"]),
                       points={k: tuple(v) for k, v in c["points"].items()})
-    watcher = element_watcher(cal, plugin.field, plugin, (video.width, video.height))
+    base = Calibration.load(old["event_key"])
+    watcher = element_watcher(cal, plugin.field, plugin, (video.width, video.height), _aux_watch(base, video) if base else None)
     if watcher is None:
         return old
     own_ref = video.frame_at(old["clock"]["teleop_end_vt"] - old["clock"]["teleop_len"] + 20)
@@ -696,15 +762,22 @@ def element_pass(match_key: str, video_path: str | None = None, save: bool = Tru
     return reanalyze(match_key, save=save)
 
 
-def aux_pass(match_key: str, video_path: str) -> dict:
-    """Collect close-up-view reads for an already processed match, then reanalyze."""
-    from .overlay import ScoreSample, ScoreTimeline
+def aux_pass(match_key: str, video_path: str | None = None) -> dict:
+    """Collect close-up-view reads (and the robots seen there) for an already processed match, then reanalyze."""
+    from .overlay import MatchClock, ScoreSample, ScoreTimeline
 
     old = json.loads((RESULTS_DIR / f"{match_key}.json").read_text())
+    if video_path is None:
+        video_path = str(next(Path(VIDEO_DIR).glob(f"{old['video']}.*")))
     base = Calibration.load(old["event_key"])
     tl_d = old["timeline"]
     samples = [ScoreSample(t, tm, b, r) for t, tm, b, r in zip(tl_d["t"], tl_d["timer"], tl_d["blue"], tl_d["red"])]
-    tl = ScoreTimeline(samples=samples, clock=None, blue=np.array(tl_d["blue"], float), red=np.array(tl_d["red"], float))
-    old["aux_reads"] = collect_aux_reads(Video(video_path), base, tl, {"red": old["red"], "blue": old["blue"]})
+    # with the match clock, only the match itself is read (not the broadcast before and after it)
+    clock = MatchClock(**old["clock"]) if old.get("clock") else None
+    tl = ScoreTimeline(samples=samples, clock=clock, blue=np.array(tl_d["blue"], float), red=np.array(tl_d["red"], float))
+    boxes: list = []
+    old["aux_reads"] = collect_aux_reads(Video(video_path), base, tl, {"red": old["red"], "blue": old["blue"]},
+                                         games.get(old["year"]).aux_every, boxes)
+    old["aux_boxes"] = boxes
     (RESULTS_DIR / f"{match_key}.json").write_text(json.dumps(old, default=_json_default))
     return reanalyze(match_key)

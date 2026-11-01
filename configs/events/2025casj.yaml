@@ -45,6 +45,10 @@ overlay:
   counters:
     blue_algae: [230, 78, 56, 34]
     red_algae: [1636, 78, 56, 34]
+# the REEF in each close-up (coral appearing there is watched like in the wide shot)
+aux_watch:
+  blue_reef: [360, 690, 710, 1010]
+  red_reef: [1280, 690, 1620, 1030]
 aux_views:
   blue_reef: [0, 645, 960, 370]
   red_reef: [960, 645, 960, 370]

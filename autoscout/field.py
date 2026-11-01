@@ -88,6 +88,7 @@ class Calibration:
     # Extra broadcast views (picture-in-picture close-ups), keyed by the field element they show,
     # e.g. {"blue_reef": [x, y, w, h]}. Used to read which robot is at that element.
     aux_views: dict | None = None
+    aux_watch: dict | None = None  # close-up view -> [x0, y0, x1, y1] (full frame) of the element it shows
     H: np.ndarray = field(default=None, repr=False)
 
     def __post_init__(self):
@@ -169,6 +170,8 @@ class Calibration:
         }
         if self.aux_views:
             d["aux_views"] = {k: [int(v) for v in r] for k, r in self.aux_views.items()}
+        if self.aux_watch:
+            d["aux_watch"] = {k: [int(v) for v in r] for k, r in self.aux_watch.items()}
         p.write_text(yaml.safe_dump(d, sort_keys=False))
         return p
 
@@ -183,6 +186,7 @@ class Calibration:
             points={k: tuple(v) for k, v in d["points"].items()},
             frame_size=tuple(d.get("frame_size", (1920, 1080))),
             reference=d.get("reference"), overlay=d.get("overlay"), aux_views=d.get("aux_views"),
+            aux_watch=d.get("aux_watch"),
         )
 
 

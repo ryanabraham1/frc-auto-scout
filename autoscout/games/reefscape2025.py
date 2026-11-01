@@ -41,6 +41,8 @@ CONF_WEIGHT = True  # weigh each action's credit by how much the video says abou
 CONF_REF = {"reef": 1.5, "net": 1.0, "processor": 1.0}  # evidence (s at the element / closeness) = full confidence
 ALGAE_CREDIT = "near"  # "near": closeness + seen launches | "dwell": time at the element like coral
 LAUNCH_W = 1.0  # added credit for the robot an algae launch is seen leaving just before a NET post
+CAM_PLACE_W = 1.0  # weight of a reef close-up placement next to a wide-shot one
+CAM_PLACE_PX = 40.0  # px: falloff of close-up placement credit with distance from a robot's box
 PLACE_MIX = 0.7  # weight of "whose robot was over the spot where the coral appeared" in coral credit
 PLACE_WINDOW = (-1.0, 4.5)  # s: a post comes this long after the coral was seen placed
 PLACE_LAG = 1.0  # s: typical delay from placement to post
@@ -87,6 +89,7 @@ class Reefscape2025(GamePlugin):
     detector_ensemble = False
     static_frac = 0.5
     launch_pieces = {"algae": ((78, 60, 80), (100, 255, 255))}
+    aux_every = 0.5  # the reef close-ups see robots the wide shot loses behind the REEF: read them often
     watch_elements = ("blue_reef", "red_reef")  # coral placed on the reefs (vision/element_changes.py)
     metric_defs = [
         {"key": "coral_total", "label": "Coral", "group": "Coral"},
@@ -408,15 +411,30 @@ class Reefscape2025(GamePlugin):
         tot = sum(w.values())
         return {tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}
 
-    def _match_placements(self, ctx: MatchContext, a: str, actions: list[dict]) -> None:
-        """Pair decoded coral actions with coral seen placed on the alliance's reef (each placement used
-        once, placed up to PLACE_WINDOW before the post) and fold in who placed it."""
+    def _cam_placement_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict) -> dict[int, float]:
+        """Which robot put a coral seen appearing on the reef in the close-up camera there: the robot box
+        in the same close-up under that spot around that moment, named by its bumper read or by the
+        wide-shot track it was fused with (vision/fusion.py)."""
+        view = pl["elem"].split("@")[0]
+        slots = getattr(ctx, "aux_slot", {})
+        w: dict[int, float] = {}
+        for i, (bt, v, x0, y0, x1, y1, al, team, conf) in enumerate(ctx.aux_boxes):
+            if v != view or abs(bt - pl["t"]) > 1.0 or (al and al != a):
+                continue
+            tm = team if team in teams else (ctx.team_at(slots[i], bt) if i in slots else None)
+            if tm not in teams:
+                continue
+            dx = max(x0 - pl["x"], 0, pl["x"] - x1)
+            w[tm] = w.get(tm, 0.0) + float(np.exp(-dx / CAM_PLACE_PX)) * (1.0 - abs(bt - pl["t"]) / 1.5)
+        tot = sum(w.values())
+        return {tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}
+
+    def _pair(self, actions: list[dict], idx: list[int], pls: list[dict]) -> list[tuple[int, dict]]:
+        """One-to-one pairs (action index, placement) with the placement up to PLACE_WINDOW before the post."""
         from scipy.optimize import linear_sum_assignment
 
-        pls = [p for p in ctx.element_changes if p["elem"] == f"{a}_reef"]
-        idx = [i for i, A in enumerate(actions) if A["piece"] == "coral"]
-        if not pls or not idx or PLACE_MIX <= 0:
-            return
+        if not pls or not idx:
+            return []
         big = 1e6
         cost = np.full((len(idx), len(pls)), big)
         for r, i in enumerate(idx):
@@ -425,17 +443,34 @@ class Reefscape2025(GamePlugin):
                 if PLACE_WINDOW[0] <= lag <= PLACE_WINDOW[1]:
                     cost[r, c] = abs(lag - PLACE_LAG)
         rows, cols = linear_sum_assignment(cost)
+        return [(idx[r], pls[c]) for r, c in zip(rows, cols) if cost[r, c] < big]
+
+    def _match_placements(self, ctx: MatchContext, a: str, actions: list[dict]) -> None:
+        """Pair decoded coral actions with coral seen placed on the alliance's reef, in the wide shot and in
+        the reef close-up (each placement used once), and fold in who placed it: both views' answers are
+        averaged when both saw it."""
+        if PLACE_MIX <= 0:
+            return
+        idx = [i for i, A in enumerate(actions) if A["piece"] == "coral"]
         teams = list(ctx.match.teams(a))
-        for r, c in zip(rows, cols):
-            if cost[r, c] >= big:
-                continue
-            A = actions[idx[r]]
-            pc = self._placement_credit(ctx, a, teams, pls[c])
-            if not pc:
-                continue
-            A["placed"] = pls[c]
+        found: dict[int, list] = {}
+        for i, pl in self._pair(actions, idx, [p for p in ctx.element_changes if p["elem"] == f"{a}_reef"]):
+            pc = self._placement_credit(ctx, a, teams, pl)
+            if pc:
+                found.setdefault(i, []).append((pl, pc, 1.0))
+        if CAM_PLACE_W > 0:
+            for i, pl in self._pair(actions, idx, [p for p in ctx.element_changes if p["elem"] == f"{a}_reef@cam"]):
+                pc = self._cam_placement_credit(ctx, a, teams, pl)
+                if pc:
+                    found.setdefault(i, []).append((pl, pc, CAM_PLACE_W))
+        for i, got in found.items():
+            A = actions[i]
+            wsum = sum(k for _, _, k in got)
+            pc = {tm: sum(k * c.get(tm, 0) for _, c, k in got) / wsum for tm in teams}
+            A["placed"] = got[0][0]
+            A["placed_views"] = [p["elem"] for p, _, _ in got]
             A["conf"] = 1.0
-            A["t_place"] = pls[c]["t"]
+            A["t_place"] = min(p["t"] for p, _, _ in got)
             base = A["p"] or {tm: 1 / 3 for tm in teams}
             A["p"] = {tm: (1 - PLACE_MIX) * base.get(tm, 0) + PLACE_MIX * pc.get(tm, 0) for tm in teams}
 
@@ -573,7 +608,7 @@ class Reefscape2025(GamePlugin):
                            "jump": A["jump"], "team": max(cr, key=cr.get) if cr else None, "kind": A["cat"],
                            "shares": {str(k): round(v, 2) for k, v in cr.items() if v >= 0.01},
                            "likelihood": {str(k): round(v, 2) for k, v in A["p"].items() if v >= 0.01},
-                           **({"placed": A["placed"]} if "placed" in A else {})})
+                           **({"placed": A["placed"], "placed_views": A["placed_views"]} if "placed" in A else {})})
 
     @staticmethod
     def official_tokens(bd_a: dict, counts: dict) -> tuple[dict[str, int], int]:

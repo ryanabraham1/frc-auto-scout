@@ -169,6 +169,13 @@ def cmd_watch_elements(a):
         print("watched", k, len(r.get("element_changes", [])), "placements")
 
 
+def cmd_calibrate_cams(a):
+    from .pipeline import calibrate_closeups
+
+    for view, v in calibrate_closeups(a.event_key).items():
+        print(f"{view}: {v['inliers']}/{v['pairs']} robot sightings agree with the wide shot, median error {v['err_m']} m")
+
+
 def cmd_recollect(a):
     from .pipeline import collect_blobs
 
@@ -188,9 +195,13 @@ def cmd_aux(a):
     from . import db
     from .pipeline import RESULTS_DIR, aux_pass
 
-    r = aux_pass(a.match_key, a.video)
-    db.save_result(db.connect(), r, str(RESULTS_DIR / f"{a.match_key}.json"))
-    print(len(r.get("aux_reads", [])), "close-up reads")
+    con = db.connect()
+    keys = [a.match_key] if "_" in a.match_key else [r["match_key"] for r in con.execute(
+        "SELECT match_key FROM matches WHERE event_key=? AND status='done'", (a.match_key,))]
+    for k in keys:
+        r = aux_pass(k, a.video)
+        db.save_result(con, r, str(RESULTS_DIR / f"{k}.json"))
+        print(k, len(r.get("aux_reads", [])), "close-up reads,", len(r.get("aux_boxes", [])), "robots seen", flush=True)
 
 
 def cmd_calibrate(a):
@@ -278,12 +289,15 @@ def main(argv=None):
     s.add_argument("key"); s.set_defaults(f=cmd_rescore)
     s = sub.add_parser("watch-elements", help="find pieces placed on scoring elements (2025 coral) in saved matches")
     s.add_argument("key"); s.set_defaults(f=cmd_watch_elements)
+    s = sub.add_parser("calibrate-cams", help="fit the close-up cameras from robots seen in them and the wide shot")
+    s.add_argument("event_key"); s.set_defaults(f=cmd_calibrate_cams)
     s = sub.add_parser("recollect", help="re-collect airborne-piece blobs from video (no robot detection)")
     s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_recollect)
     s = sub.add_parser("identify", help="dedicated bumper-OCR identity pass over a processed match")
     s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_identify)
     s = sub.add_parser("aux", help="read close-up camera views (e.g. reef cams) for a processed match")
-    s.add_argument("match_key"); s.add_argument("video"); s.set_defaults(f=cmd_aux)
+    s.add_argument("match_key", help="a match, or an event to redo all its processed matches")
+    s.add_argument("video", nargs="?"); s.set_defaults(f=cmd_aux)
     s = sub.add_parser("calibrate"); s.add_argument("match_key"); s.add_argument("--video")
     s.add_argument("--t", type=float); s.set_defaults(f=cmd_calibrate)
     s = sub.add_parser("serve"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8000)

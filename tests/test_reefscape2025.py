@@ -70,3 +70,55 @@ def test_overlay_counter_deltas():
                        counters={"red_algae": np.array([0, 0, 1, 3])})
     assert tl.counter_deltas("red_algae") == [(1.0, 1), (1.5, 2)]
     assert tl.to_dict()["counters"]["red_algae"] == [0, 0, 1, 3]
+
+
+def _fake_match(H_true, n=60, seed=0):
+    """A wide-shot track of team 1 at random spots and a close-up that sees it through H_true."""
+    import cv2
+
+    rng = np.random.default_rng(seed)
+    Hi = np.linalg.inv(np.asarray(H_true, float))
+    rows, boxes = [], []
+    for i in range(n):
+        t = i * 1.0
+        p = rng.uniform([2, 2], [6, 6])
+        rows.append([t, float(p[0]), float(p[1]), True, [0, 0, 1, 1]])
+        px = cv2.perspectiveTransform(np.array([[p]], float), Hi)[0, 0]
+        boxes.append([t, "blue_reef", px[0] - 30, px[1] - 50, px[0] + 30, px[1], "blue", 1, 0.9])
+    return {"raw_tracks": {"blue0": rows}, "identity": {"blue0": 1}, "identity_timeline": {}, "aux_boxes": boxes}
+
+
+def test_closeup_camera_calibrates_from_robots_seen_in_both_views():
+    from autoscout.vision.fusion import calibrate_views, to_field
+
+    H = [[0.01, 0.0, 1.0], [0.0, 0.012, 0.5], [0.0, 0.0001, 1.0]]
+    r = _fake_match(H)
+    r["aux_boxes"][3][2:6] = [900, 900, 960, 950]  # a misread: far from where the track is
+    v = calibrate_views([r])["blue_reef"]
+    assert v["inliers"] >= 55 and v["err_m"] < 0.05
+    b = r["aux_boxes"][10]
+    x, y = to_field(v["H"], (b[2] + b[4]) / 2, b[5])
+    assert abs(x - r["raw_tracks"]["blue0"][10][1]) < 0.05
+
+
+def test_closeup_sighting_fills_a_gap_in_the_wide_shot_track():
+    from autoscout import games
+    from autoscout.games.base import MatchContext
+    from autoscout.vision.fusion import fuse_tracks
+
+    H = [[0.01, 0.0, 1.0], [0.0, 0.012, 0.5], [0.0, 0.0001, 1.0]]
+    tracks = {"blue0": [(-1.0, 3.0, 3.0, True, [0, 0, 1, 1]), (0.1, 3.0, 3.0, False, None),
+                        (0.2, 3.0, 3.0, False, None), (5.0, 3.0, 3.0, True, [0, 0, 1, 1])]}
+    ctx = MatchContext(match=None, field=games.get(2025).field, cal=None, clock=None, timeline=None,
+                       tracks=tracks, identity={"blue0": 1}, identity_conf={}, launches={})
+    # the close-up reads team 1 at pixel (300, 300) at t=0.15, while the wide shot only coasts
+    ctx.aux_boxes = [[0.15, "blue_reef", 270, 250, 330, 300, "blue", 1, 0.9],
+                     [2.5, "blue_reef", 270, 250, 330, 300, "blue", 1, 0.9]]
+    n = fuse_tracks(ctx, {"blue_reef": {"H": H}})
+    assert n == 2
+    filled = [r for r in ctx.tracks["blue0"] if r[3] and r[4] is None]
+    assert len(filled) == 3  # two coasting rows took the position, and one row was added in the gap
+    assert all(abs(r[1] - 3.0) > 0.1 for r in filled)
+    # a sighting right next to a wide-shot observation leaves the wide shot's position alone
+    ctx.aux_boxes = [[4.9, "blue_reef", 270, 250, 330, 300, "blue", 1, 0.9]]
+    assert fuse_tracks(ctx, {"blue_reef": {"H": H}}) == 0

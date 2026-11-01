@@ -86,6 +86,8 @@ if bp.exists():
     off = z["view"][:2] if "view" in z.files else (0, 0)
     blobs = {k: (z[k][:, 0], z[k][:, 1:3] + off) for k in z.files if k != "view"}
 aux = r.get("aux_reads", [])
+aux_boxes = sorted(r.get("aux_boxes", []), key=lambda b: b[0])
+aux_bt = np.array([b[0] for b in aux_boxes])
 aux_views = {}
 try:
     import yaml
@@ -202,8 +204,9 @@ def sidebar(t):
 
 REEF_PT = {a: r["calibration"]["points"].get(f"{a}_reef_center") for a in ("red", "blue")}
 for e in jumps:
-    if e.get("placed"):
-        e["_target"] = (e["placed"]["x"], e["placed"]["y"])
+    pl = e.get("placed")
+    if pl and "@" not in pl["elem"]:  # a close-up placement is drawn in its own view, not linked to the wide shot
+        e["_target"] = (pl["x"], pl["y"])
     elif str(e.get("kind", "")).startswith("L") and REEF_PT.get(e["alliance"]):
         e["_target"] = tuple(REEF_PT[e["alliance"]])
 
@@ -236,14 +239,24 @@ def draw_2025(img, t):
             m = (bt > t - 0.4) & (bt <= t)
             for (x_, y_), tt in zip(xy[m], bt[m]):
                 cv2.circle(img, (int(x_ * scale), int(y_ * scale)), 2, (255, 255, 0), -1)
-    shown = defaultdict(int)
-    for rt, view, team, conf in aux:
-        if 0 <= t - rt < 1.0 and view in aux_views:
-            ax, ay, aw, ah = aux_views[view]
-            al = "red" if team in teams["red"] else "blue"
-            org = (int((ax + 8) * scale), int((ay + ah - 12) * scale) - 22 * shown[view])
-            shown[view] += 1
-            cv2.putText(img, f"cam read {team} {conf:.0%}", org, FONT, 0.5, RED if al == "red" else BLUE, 2, cv2.LINE_AA)
+    # robots the close-up cameras see (boxes come every 0.5 s: show the latest within 0.6 s), labelled with
+    # the team read on the bumper, or "?" when it couldn't be read
+    if len(aux_bt):
+        i0, i1 = np.searchsorted(aux_bt, [t - 0.6, t + 1e-3])
+        latest = {}
+        for b in aux_boxes[i0:i1]:
+            latest.setdefault(b[1], b[0])
+            latest[b[1]] = max(latest[b[1]], b[0])
+        for bt, view, x0, y0, x1, y1, al, team, conf in aux_boxes[i0:i1]:
+            if bt != latest[view]:
+                continue
+            col = RED if al == "red" else BLUE if al == "blue" else GREY
+            p0, p1 = (int(x0 * scale), int(y0 * scale)), (int(x1 * scale), int(y1 * scale))
+            cv2.rectangle(img, p0, p1, col, 2, cv2.LINE_AA)
+            label = f"{team} {conf:.0%}" if team else "?"
+            (tw, th), _ = cv2.getTextSize(label, FONT, 0.45, 1)
+            cv2.rectangle(img, (p0[0], p0[1] - th - 6), (p0[0] + tw + 6, p0[1]), col, -1)
+            cv2.putText(img, label, (p0[0] + 3, p0[1] - 4), FONT, 0.45, WHITE, 1, cv2.LINE_AA)
     # banner: the last score increase of each alliance and what it was decoded as
     for al, x_ in (("blue", 0.30), ("red", 0.56)):
         last = [e for e in jumps if e["alliance"] == al and 0 <= t - e["t"] < 2.5]
