@@ -1,0 +1,171 @@
+{
+  "match_key": "2025casj_qm10",
+  "reviewer_type": "ai_visual_review",
+  "scope": "Candidate-action scorer identity; not full-match scoring precision or recall",
+  "candidate_actions_reviewed": 25,
+  "label_statuses": {
+    "accepted": 15,
+    "uncertain": 8,
+    "provisional": 2
+  },
+  "coverage": 0.6,
+  "primary": {
+    "accepted": 15,
+    "correct": 5,
+    "accuracy": 0.3333333333333333,
+    "mean_credit_to_reviewed_team": 0.4306666666666666
+  },
+  "alliances": {
+    "red": {
+      "accepted": 5,
+      "correct": 3,
+      "accuracy": 0.6,
+      "mean_credit_to_reviewed_team": 0.736
+    },
+    "blue": {
+      "accepted": 10,
+      "correct": 2,
+      "accuracy": 0.2,
+      "mean_credit_to_reviewed_team": 0.278
+    }
+  },
+  "rows": [
+    {
+      "id": "red@48.05",
+      "alliance": "red",
+      "reviewed_team": 6814,
+      "predicted_team": null,
+      "correct": false,
+      "credit_to_reviewed_team": 0.48,
+      "reason": "tied_top_credit"
+    },
+    {
+      "id": "red@77.08",
+      "alliance": "red",
+      "reviewed_team": 10644,
+      "predicted_team": 10644,
+      "correct": true,
+      "credit_to_reviewed_team": 0.97,
+      "reason": "correct"
+    },
+    {
+      "id": "red@96.1",
+      "alliance": "red",
+      "reviewed_team": 6814,
+      "predicted_team": 6814,
+      "correct": true,
+      "credit_to_reviewed_team": 0.99,
+      "reason": "correct"
+    },
+    {
+      "id": "red@117.12",
+      "alliance": "red",
+      "reviewed_team": 6814,
+      "predicted_team": 6814,
+      "correct": true,
+      "credit_to_reviewed_team": 0.96,
+      "reason": "correct"
+    },
+    {
+      "id": "red@143.64",
+      "alliance": "red",
+      "reviewed_team": 6814,
+      "predicted_team": 649,
+      "correct": false,
+      "credit_to_reviewed_team": 0.28,
+      "reason": "wrong_team"
+    },
+    {
+      "id": "blue@12.51",
+      "alliance": "blue",
+      "reviewed_team": 3045,
+      "predicted_team": 3045,
+      "correct": true,
+      "credit_to_reviewed_team": 0.54,
+      "reason": "correct"
+    },
+    {
+      "id": "blue@35.54",
+      "alliance": "blue",
+      "reviewed_team": 3045,
+      "predicted_team": 1700,
+      "correct": false,
+      "credit_to_reviewed_team": 0.0,
+      "reason": "wrong_team"
+    },
+    {
+      "id": "blue@46.05",
+      "alliance": "blue",
+      "reviewed_team": 3045,
+      "predicted_team": 1700,
+      "correct": false,
+      "credit_to_reviewed_team": 0.02,
+      "reason": "wrong_team"
+    },
+    {
+      "id": "blue@65.06",
+      "alliance": "blue",
+      "reviewed_team": 3045,
+      "predicted_team": 1700,
+      "correct": false,
+      "credit_to_reviewed_team": 0.02,
+      "reason": "wrong_team"
+    },
+    {
+      "id": "blue@70.57",
+      "alliance": "blue",
+      "reviewed_team": 3045,
+      "predicted_team": 1700,
+      "correct": false,
+      "credit_to_reviewed_team": 0.31,
+      "reason": "wrong_team"
+    },
+    {
+      "id": "blue@75.58",
+      "alliance": "blue",
+      "reviewed_team": 3045,
+      "predicted_team": 3045,
+      "correct": true,
+      "credit_to_reviewed_team": 0.68,
+      "reason": "correct"
+    },
+    {
+      "id": "blue@82.08",
+      "alliance": "blue",
+      "reviewed_team": 3045,
+      "predicted_team": 670,
+      "correct": false,
+      "credit_to_reviewed_team": 0.48,
+      "reason": "wrong_team"
+    },
+    {
+      "id": "blue@92.59",
+      "alliance": "blue",
+      "reviewed_team": 670,
+      "predicted_team": 1700,
+      "correct": false,
+      "credit_to_reviewed_team": 0.21,
+      "reason": "wrong_team"
+    },
+    {
+      "id": "blue@143.14",
+      "alliance": "blue",
+      "reviewed_team": 670,
+      "predicted_team": 3045,
+      "correct": false,
+      "credit_to_reviewed_team": 0.15,
+      "reason": "wrong_team"
+    },
+    {
+      "id": "blue@146.15",
+      "alliance": "blue",
+      "reviewed_team": 3045,
+      "predicted_team": 670,
+      "correct": false,
+      "credit_to_reviewed_team": 0.37,
+      "reason": "wrong_team"
+    }
+  ],
+  "labels_sha256": "e4b2dfe6ad9e7980beb85d20c250907943a905afd438c6e10a343f6ff3697ea4",
+  "result_sha256": "e7d44d501c9e776380e59906f082f8fe3f7e9bb541b95cab41f3cbc39441edb2"
+}

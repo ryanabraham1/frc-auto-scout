@@ -1,0 +1,251 @@
+{
+  "match_key": "2025casj_qm10",
+  "source_commit": "3a17553c445a10508322ee885f1de9c28e5e4756",
+  "source_result_sha256": "c52860ffb51f00a62d6f0e6a8f8b1fe50cceee6dc4c7847dddec4cce85cdac28",
+  "replay_scope": "Clean staged main source replayed against cached observations; no new detector inference. Existing match calibration and identity evidence retained.",
+  "events": [
+    {
+      "t": 48.05,
+      "alliance": "red",
+      "kind": "L4",
+      "shares": {
+        "649": 0.04,
+        "6814": 0.48,
+        "10644": 0.48
+      }
+    },
+    {
+      "t": 77.08,
+      "alliance": "red",
+      "kind": "L4",
+      "shares": {
+        "649": 0.02,
+        "10644": 0.97
+      }
+    },
+    {
+      "t": 96.1,
+      "alliance": "red",
+      "kind": "L4",
+      "shares": {
+        "6814": 0.99
+      }
+    },
+    {
+      "t": 117.12,
+      "alliance": "red",
+      "kind": "L4",
+      "shares": {
+        "649": 0.04,
+        "6814": 0.96
+      }
+    },
+    {
+      "t": 143.64,
+      "alliance": "red",
+      "kind": "L4",
+      "shares": {
+        "649": 0.72,
+        "6814": 0.28
+      }
+    },
+    {
+      "t": 12.51,
+      "alliance": "blue",
+      "kind": "L4",
+      "shares": {
+        "670": 0.45,
+        "3045": 0.54
+      }
+    },
+    {
+      "t": 35.54,
+      "alliance": "blue",
+      "kind": "L4",
+      "shares": {
+        "670": 0.2,
+        "1700": 0.79
+      }
+    },
+    {
+      "t": 46.05,
+      "alliance": "blue",
+      "kind": "L3",
+      "shares": {
+        "670": 0.22,
+        "1700": 0.76,
+        "3045": 0.02
+      }
+    },
+    {
+      "t": 65.06,
+      "alliance": "blue",
+      "kind": "L4",
+      "shares": {
+        "670": 0.44,
+        "1700": 0.54,
+        "3045": 0.02
+      }
+    },
+    {
+      "t": 70.57,
+      "alliance": "blue",
+      "kind": "L2",
+      "shares": {
+        "670": 0.32,
+        "1700": 0.37,
+        "3045": 0.31
+      }
+    },
+    {
+      "t": 75.58,
+      "alliance": "blue",
+      "kind": "L2",
+      "shares": {
+        "670": 0.16,
+        "1700": 0.16,
+        "3045": 0.68
+      }
+    },
+    {
+      "t": 82.08,
+      "alliance": "blue",
+      "kind": "L2",
+      "shares": {
+        "670": 0.51,
+        "1700": 0.01,
+        "3045": 0.48
+      }
+    },
+    {
+      "t": 92.59,
+      "alliance": "blue",
+      "kind": "L4",
+      "shares": {
+        "670": 0.21,
+        "1700": 0.78,
+        "3045": 0.01
+      }
+    },
+    {
+      "t": 100.6,
+      "alliance": "blue",
+      "kind": "L1",
+      "shares": {
+        "670": 0.26,
+        "1700": 0.16,
+        "3045": 0.58
+      }
+    },
+    {
+      "t": 108.11,
+      "alliance": "blue",
+      "kind": "L2",
+      "shares": {
+        "670": 0.4,
+        "1700": 0.02,
+        "3045": 0.57
+      }
+    },
+    {
+      "t": 119.12,
+      "alliance": "blue",
+      "kind": "L1",
+      "shares": {
+        "670": 0.11,
+        "1700": 0.47,
+        "3045": 0.43
+      }
+    },
+    {
+      "t": 120.62,
+      "alliance": "blue",
+      "kind": "L4",
+      "shares": {
+        "670": 0.33,
+        "1700": 0.45,
+        "3045": 0.22
+      }
+    },
+    {
+      "t": 122.12,
+      "alliance": "blue",
+      "kind": "L4",
+      "shares": {
+        "670": 0.41,
+        "1700": 0.39,
+        "3045": 0.19
+      }
+    },
+    {
+      "t": 130.63,
+      "alliance": "blue",
+      "kind": "L1",
+      "shares": {
+        "670": 0.4,
+        "1700": 0.54,
+        "3045": 0.06
+      }
+    },
+    {
+      "t": 132.63,
+      "alliance": "blue",
+      "kind": "L1",
+      "shares": {
+        "670": 0.44,
+        "1700": 0.5,
+        "3045": 0.06
+      }
+    },
+    {
+      "t": 143.14,
+      "alliance": "blue",
+      "kind": "L4",
+      "shares": {
+        "670": 0.15,
+        "1700": 0.06,
+        "3045": 0.79
+      }
+    },
+    {
+      "t": 146.15,
+      "alliance": "blue",
+      "kind": "L4",
+      "shares": {
+        "670": 0.51,
+        "1700": 0.12,
+        "3045": 0.37
+      }
+    },
+    {
+      "t": 148.15,
+      "alliance": "blue",
+      "kind": "L1",
+      "shares": {
+        "670": 0.35,
+        "1700": 0.43,
+        "3045": 0.22
+      }
+    },
+    {
+      "t": 154.65,
+      "alliance": "blue",
+      "kind": "L3",
+      "shares": {
+        "670": 0.01,
+        "1700": 0.26,
+        "3045": 0.73
+      }
+    },
+    {
+      "t": 163.16,
+      "alliance": "blue",
+      "kind": "L3",
+      "shares": {
+        "670": 0.03,
+        "1700": 0.4,
+        "3045": 0.56
+      }
+    }
+  ]
+}
