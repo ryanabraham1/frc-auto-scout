@@ -341,6 +341,14 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
 
     # ---- game analysis -------------------------------------------------------------------
     prog.update("analysis", 0.5, "attributing scoring to robots", force=True)
+    if plugin.measure_reach:
+        # how high each robot reaches above its chassis (elevator / arm), from a quick second read of the video
+        from .vision.lift import collect as collect_reach
+
+        prog.update("analysis", 0.3, "measuring robots' reach", force=True)
+        ctx.lift_obs, ctx.aux_reach = collect_reach(
+            Video(video_path), {"clock": clock.to_dict(), "aux_boxes": aux_boxes, **_track_fields(tracks)}, cal.view,
+            _scaled_views(base_cal, video))
     fused = fuse_closeups(ctx, m.event_key)
     res = plugin.analyze(ctx)
     result = {
@@ -360,6 +368,8 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "aux_reads": ctx.aux_reads,
         "aux_boxes": ctx.aux_boxes,
         "fused_sightings": fused,
+        "lift_obs": ctx.lift_obs,
+        "aux_reach": getattr(ctx, "aux_reach", []),
         "fused_rows": getattr(ctx, "fused_rows", []),
         "element_changes": ctx.element_changes,
         "identity_timeline": ctx.identity_tl,
@@ -416,6 +426,16 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     tl = ScoreTimeline(samples=samples, clock=clock, blue=np.array(tl_d["blue"], float), red=np.array(tl_d["red"], float),
                        counters={k: np.array(v, float) for k, v in tl_d.get("counters", {}).items()})
     tracks = {k: [tuple(r) for r in v] for k, v in old["raw_tracks"].items()}
+    base = Cal.load(m.event_key)
+    if (base is not None and tuple(base.view) == tuple(cal.view)
+            and base.points != cal.points):
+        # the event was re-calibrated since this match was processed: re-map its positions from the boxes
+        tracks = remap_tracks(tracks, base)
+        cal = base
+        old["calibration"] = {"view": list(cal.view), "points": {k: list(map(float, v)) for k, v in cal.points.items()}}
+        old.update(_track_fields(tracks))  # saved with the calibration they now match
+    if base is not None and tuple(base.view) == tuple(cal.view):
+        cal.aux_watch = base.aux_watch
     launches = {}
     for k, v in old["launches"].items():
         launches[k] = [Launch(t0=d["t0"], t1=d["t1"], start=tuple(d["start"]), end=tuple(d["end"]),
@@ -427,6 +447,8 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     ctx.aux_reads = [tuple(x) for x in old.get("aux_reads", [])]
     ctx.aux_boxes = old.get("aux_boxes", [])
     ctx.element_changes = old.get("element_changes", [])
+    ctx.lift_obs = old.get("lift_obs", {})
+    ctx.aux_reach = old.get("aux_reach", [])
     bp = RESULTS_DIR / f"{match_key}_blobs.npz"
     if bp.exists():
         z = np.load(bp)
@@ -488,6 +510,31 @@ def save_labels(match_key: str, labels: dict[int, int | None]) -> dict:
             cur[int(k)] = int(v)
     (RESULTS_DIR / f"{match_key}_labels.json").write_text(json.dumps({str(k): v for k, v in cur.items()}))
     return relabel(match_key)
+
+
+def remap_tracks(tracks: dict, cal: Calibration) -> dict:
+    """Field positions of saved tracks under another calibration: observed rows from their boxes' ground
+    points; coasting rows move with the observed row before them (or after, at the start)."""
+    out = {}
+    for k, tr in tracks.items():
+        rows, shift = [], None
+        obs = [i for i, r in enumerate(tr) if r[3] and r[4] is not None]
+        new = {}
+        if obs:
+            feet = [((tr[i][4][0] + tr[i][4][2]) / 2, tr[i][4][3]) for i in obs]
+            for i, p in zip(obs, cal.to_field(feet)):
+                new[i] = (float(p[0]), float(p[1]))
+        first = obs[0] if obs else None
+        for i, r in enumerate(tr):
+            if i in new:
+                shift = (new[i][0] - r[1], new[i][1] - r[2])
+                rows.append((r[0], new[i][0], new[i][1], r[3], r[4]))
+            else:
+                d = shift if shift is not None else ((new[first][0] - tr[first][1], new[first][1] - tr[first][2])
+                                                    if first is not None else (0.0, 0.0))
+                rows.append((r[0], r[1] + d[0], r[2] + d[1], r[3], r[4]))
+        out[k] = rows
+    return out
 
 
 def _track_fields(tracks: dict) -> dict:
@@ -729,9 +776,23 @@ def calibrate_closeups(event_key: str) -> dict:
 
     results = [json.loads(p.read_text()) for p in sorted(RESULTS_DIR.glob(f"{event_key}_*.json"))
                if p.stem.count("_") == 1]
+    base = Calibration.load(event_key)
+    for result in results:
+        saved = result.get("calibration", {})
+        if (base is not None and tuple(saved.get("view", ())) == tuple(base.view)
+                and {k: tuple(v) for k, v in saved.get("points", {}).items()} != base.points):
+            result["raw_tracks"] = remap_tracks(result["raw_tracks"], base)
     views = calibrate_views(results)
     (CAMS_DIR / f"{event_key}_cams.json").write_text(json.dumps(views, indent=1))
     return views
+
+
+def _scaled_views(base_cal: Calibration, video: Video) -> dict | None:
+    """The event's close-up views ({name: [x, y, w, h]}), in this video's pixels."""
+    if not base_cal.aux_views:
+        return None
+    sx, sy = video.width / base_cal.frame_size[0], video.height / base_cal.frame_size[1]
+    return {k: [int(r[0] * sx), int(r[1] * sy), int(r[2] * sx), int(r[3] * sy)] for k, r in base_cal.aux_views.items()}
 
 
 def _aux_watch(base_cal: Calibration, video: Video) -> dict | None:
@@ -780,6 +841,22 @@ def element_pass(match_key: str, video_path: str | None = None, save: bool = Tru
     old["element_changes"] = watcher.changes()
     path.write_text(json.dumps(old, default=_json_default))
     return reanalyze(match_key, save=save)
+
+
+def lift_pass(match_key: str, video_path: str | None = None) -> dict:
+    """Measure how high each tracked robot reaches above its chassis (vision/lift.py), then reanalyze."""
+    from .vision.lift import collect
+
+    path = RESULTS_DIR / f"{match_key}.json"
+    old = json.loads(path.read_text())
+    if video_path is None:
+        video_path = str(next(Path(VIDEO_DIR).glob(f"{old['video']}.*")))
+    video = Video(video_path)
+    base = Calibration.load(old["event_key"])
+    old["lift_obs"], old["aux_reach"] = collect(video, old, old["calibration"]["view"],
+                                                _scaled_views(base, video) if base else None)
+    path.write_text(json.dumps(old, default=_json_default))
+    return reanalyze(match_key)
 
 
 def aux_pass(match_key: str, video_path: str | None = None) -> dict:

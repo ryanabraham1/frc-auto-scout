@@ -29,9 +29,10 @@ ap.add_argument("--width", type=int, default=1400, help="width of the broadcast 
 ap.add_argument("--fps", type=float, default=30)
 ap.add_argument("--start", type=float, default=None, help="seconds into the match to start (preview)")
 ap.add_argument("--duration", type=float, default=None, help="seconds to render (preview)")
+ap.add_argument("--results-dir", type=Path, default=Path("data/results"), help="saved analysis snapshot to render")
 a = ap.parse_args()
 
-r = json.loads(Path(f"data/results/{a.match_key}.json").read_text())
+r = json.loads((a.results_dir / f"{a.match_key}.json").read_text())
 year = r["year"]
 clock = r["clock"]
 t0 = clock["auto_end_vt"] - clock["auto_len"] - 1.0
@@ -80,7 +81,7 @@ for e in r.get("events", []):
     if e.get("placed"):
         place_by_t[(e["placed"]["elem"], e["placed"]["t"])] = e
 blobs = None
-bp = Path(f"data/results/{a.match_key}_blobs.npz")
+bp = a.results_dir / f"{a.match_key}_blobs.npz"
 if bp.exists():
     z = np.load(bp)
     off = z["view"][:2] if "view" in z.files else (0, 0)

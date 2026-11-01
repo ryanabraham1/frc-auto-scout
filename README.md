@@ -53,8 +53,11 @@ then credited from several clues: coral seen *appearing on the reef* in the wide
 robot was there; `vision/element_changes.py`), a robot's elevator going up (its box getting taller), time spent at
 the element around the post, and algae seen flying from a robot to the NET. A robot carries one coral at a time,
 so it is unlikely to be credited two coral within 3 s. NET shots happen on the far side, where robots are often
-not detected, so a robot the tracker can't see at that moment stays a NET candidate. Coral credit in AUTO is pulled a little toward an even
-split (every robot usually scores its preload).
+not detected, so a robot the tracker can't see at that moment stays a NET candidate. Repeated close-up bumper reads
+overlapping the reef supply dwell evidence when the wide-shot floor mapping is unreliable. Guessed positions expire
+after 3 s and need at least three prior sightings. AUTO uses confirmed close-up reads, without an even-split preload
+prior. Reach above the chassis supports L2-L4 credit conservatively, relative to the robot's recent background;
+missing reach measurements stay unknown. See [the 2025 progress and evaluation notes](docs/2025_ACCURACY_PROGRESS.md).
 
 2025 accuracy, Silicon Valley (per-team averages vs OPR from matches the scouter never saw; 11 held-out matches never
 used for tuning): coral r 0.58 → 0.67, L4 0.54 → 0.59, net algae 0.79 → 0.80; score jumps decoded into the wrong

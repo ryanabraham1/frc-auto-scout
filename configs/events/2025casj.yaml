@@ -8,13 +8,17 @@ view:
 frame_size:
 - 1920
 - 1080
+# REEF centres are the floor point under each REEF (its base's top-rim centre moved down by the base's
+# height in the image). The first calibration marked the middle of the tall structure instead, which put
+# every robot near a REEF about 1-1.5 m too close to the camera; robots seen placing coral now sit at the
+# reach of a REEF face (median 1.37 m from its centre, was 1.75 m).
 points:
   blue_reef_center:
-  - 555.0
-  - 450.0
+  - 551.0
+  - 482.0
   red_reef_center:
-  - 1365.0
-  - 455.0
+  - 1367.0
+  - 494.0
   center_line_yW:
   - 962.0
   - 335.0

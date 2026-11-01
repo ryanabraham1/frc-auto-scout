@@ -106,21 +106,22 @@ def test_closeup_sighting_fills_a_gap_in_the_wide_shot_track():
     from autoscout.games.base import MatchContext
     from autoscout.vision.fusion import fuse_tracks
 
-    H = [[0.01, 0.0, 1.0], [0.0, 0.012, 0.5], [0.0, 0.0001, 1.0]]
+    # Put this sighting on carpet, outside the solid REEF exclusion zone.
+    H = [[0.01, 0.0, -0.3], [0.0, 0.012, 0.5], [0.0, 0.0001, 1.0]]
     tracks = {"blue0": [(-1.0, 3.0, 3.0, True, [0, 0, 1, 1]), (0.1, 3.0, 3.0, False, None),
                         (0.2, 3.0, 3.0, False, None), (5.0, 3.0, 3.0, True, [0, 0, 1, 1])]}
     ctx = MatchContext(match=None, field=games.get(2025).field, cal=None, clock=None, timeline=None,
                        tracks=tracks, identity={"blue0": 1}, identity_conf={}, launches={})
-    # the close-up reads team 1 at pixel (300, 300) at t=0.15, while the wide shot only coasts
-    ctx.aux_boxes = [[0.15, "blue_reef", 270, 250, 330, 300, "blue", 1, 0.9],
-                     [2.5, "blue_reef", 270, 250, 330, 300, "blue", 1, 0.9]]
+    # the close-up reads team 1 at pixel (100, 300) at t=0.15, while the wide shot only coasts
+    ctx.aux_boxes = [[0.15, "blue_reef", 70, 250, 130, 300, "blue", 1, 0.9],
+                     [2.5, "blue_reef", 70, 250, 130, 300, "blue", 1, 0.9]]
     n = fuse_tracks(ctx, {"blue_reef": {"H": H}})
     assert n == 2
     filled = [r for r in ctx.tracks["blue0"] if r[3] and r[4] is None]
     assert len(filled) == 3  # two coasting rows took the position, and one row was added in the gap
     assert all(abs(r[1] - 3.0) > 0.1 for r in filled)
     # a sighting right next to a wide-shot observation leaves the wide shot's position alone
-    ctx.aux_boxes = [[4.9, "blue_reef", 270, 250, 330, 300, "blue", 1, 0.9]]
+    ctx.aux_boxes = [[4.9, "blue_reef", 70, 250, 130, 300, "blue", 1, 0.9]]
     assert fuse_tracks(ctx, {"blue_reef": {"H": H}}) == 0
 
 
@@ -129,12 +130,104 @@ def test_fusion_leaves_the_wide_shot_tracks_untouched():
     from autoscout.games.base import MatchContext
     from autoscout.vision.fusion import fuse_tracks
 
-    H = [[0.01, 0.0, 1.0], [0.0, 0.012, 0.5], [0.0, 0.0001, 1.0]]
+    H = [[0.01, 0.0, -0.3], [0.0, 0.012, 0.5], [0.0, 0.0001, 1.0]]
     wide = {"blue0": [(-1.0, 3.0, 3.0, True, [0, 0, 1, 1]), (0.1, 3.0, 3.0, False, None)]}
     before = [list(r) for r in wide["blue0"]]
     ctx = MatchContext(match=None, field=games.get(2025).field, cal=None, clock=None, timeline=None,
                        tracks=wide, identity={"blue0": 1}, identity_conf={}, launches={})
-    ctx.aux_boxes = [[0.15, "blue_reef", 270, 250, 330, 300, "blue", 1, 0.9]]
+    ctx.aux_boxes = [[0.15, "blue_reef", 70, 250, 130, 300, "blue", 1, 0.9]]
     assert fuse_tracks(ctx, {"blue_reef": {"H": H}}) == 1
     assert [list(r) for r in wide["blue0"]] == before  # the caller's tracks (saved as raw_tracks) unchanged
     assert ctx.tracks["blue0"][1][3] is True and ctx.fused_rows
+
+
+def test_tracks_are_remapped_when_the_event_is_recalibrated():
+    from autoscout.field import Calibration
+    from autoscout.pipeline import remap_tracks
+
+    cal = Calibration.load("2025casj")
+    box = [500, 400, 560, 460]
+    p = cal.to_field([(530, 460)])[0]
+    tracks = {"blue0": [(0.0, 0.0, 0.0, True, box), (0.1, 0.5, 0.5, False, None)]}
+    out = remap_tracks(tracks, cal)["blue0"]
+    assert abs(out[0][1] - p[0]) < 1e-6 and abs(out[0][2] - p[1]) < 1e-6
+    assert abs(out[1][1] - (0.5 + p[0])) < 1e-6  # a coasting row moves with the sighting before it
+
+
+def test_closeup_reads_fill_missing_reef_dwell_without_extrapolating():
+    from types import SimpleNamespace
+    from autoscout.games.base import MatchContext
+    from autoscout import games
+
+    ctx = MatchContext(match=None, field=games.get(2025).field, cal=None, clock=None,
+                       timeline=None, tracks={}, identity={}, identity_conf={}, launches={})
+    ctx.aux_boxes = [[t, 'blue_reef', 0, 0, 50, 50, 'blue', tm, conf]
+                     for t, tm, conf in [(8, 1, 1), (8.5, 1, 1), (10, 1, 1),
+                                         (9, 2, 1), (9.5, 2, .1)]]
+    ctx.cal = SimpleNamespace(aux_watch={'blue_reef': [0, 0, 50, 50]})
+    ctx.aux_boxes += [[t, 'blue_reef', 100, 0, 150, 50, 'blue', 3, 1.] for t in (8, 8.5)]
+    _, dwell = games.get(2025)._evidence(ctx, 'blue', [1, 2, 3], 10, pre=3, post=0)
+    assert dwell[1]['reef'] == .5
+    assert dwell[2]['reef'] == 0
+    assert dwell[3]['reef'] == 0
+
+
+def test_missing_reach_does_not_disadvantage_an_unseen_scorer(monkeypatch):
+    from autoscout.games.base import MatchContext
+    from autoscout import games
+
+    plugin = games.get(2025)
+    ctx = MatchContext(match=None, field=plugin.field, cal=None, clock=None, timeline=None,
+                       tracks={}, identity={}, identity_conf={}, launches={}, lift_obs={'blue0': []})
+    monkeypatch.setattr(plugin, '_evidence', lambda *args: (
+        {1: {'reef': .3}, 2: {'reef': .3}}, {1: {'reef': 1.}, 2: {'reef': 1.}}))
+    monkeypatch.setattr(plugin, '_reach', lambda ctx, tm, *args: 1. if tm == 1 else None)
+    shares, _ = plugin._credit(ctx, 'blue', [1, 2], 10, 'L4')
+    assert shares == {1: .5, 2: .5}
+
+
+def test_l1_credit_does_not_reward_a_raised_elevator(monkeypatch):
+    from autoscout.games.base import MatchContext
+    from autoscout import games
+
+    plugin = games.get(2025)
+    ctx = MatchContext(match=None, field=plugin.field, cal=None, clock=None, timeline=None,
+                       tracks={}, identity={}, identity_conf={}, launches={}, lift_obs={'blue0': []})
+    monkeypatch.setattr(plugin, '_evidence', lambda *args: (
+        {1: {'reef': .3}, 2: {'reef': .3}}, {1: {'reef': 1.}, 2: {'reef': 1.}}))
+    def no_reach(*args):
+        raise AssertionError('L1 does not require lifting')
+    monkeypatch.setattr(plugin, '_reach', no_reach)
+    assert plugin._credit(ctx, 'blue', [1, 2], 10, 'L1')[0] == {1: .5, 2: .5}
+
+
+def test_fused_sightings_do_not_refresh_the_wide_shot_join_anchor():
+    from autoscout.vision.fusion import _last_seen
+
+    box = [0, 0, 10, 10]
+    rows = [(0, 2, 2, True, box), (4, 2, 2, True, None), (5, 2, 2, False, None)]
+    assert _last_seen(rows, 5) == rows[0]
+
+
+def test_closeup_fit_uses_the_corrected_wide_calibration(tmp_path, monkeypatch):
+    import json
+    from autoscout import pipeline
+    from autoscout.field import Calibration
+    from autoscout.vision import fusion
+
+    cal = Calibration.load('2025casj')
+    saved = {'calibration': {'view': list(cal.view), 'points': {}},
+             'raw_tracks': {'blue0': [[0, 0, 0, True, [500, 400, 560, 460]]]}}
+    path = tmp_path / '2025casj_qm1.json'
+    path.write_text(json.dumps(saved))
+    monkeypatch.setattr(pipeline, 'RESULTS_DIR', tmp_path)
+    monkeypatch.setattr(pipeline, 'CAMS_DIR', tmp_path)
+    monkeypatch.setattr(Calibration, 'load', lambda event: cal)
+    seen = []
+    def fit(results):
+        seen.extend(results)
+        return {}
+    monkeypatch.setattr(fusion, 'calibrate_views', fit)
+    pipeline.calibrate_closeups('2025casj')
+    assert np.allclose(seen[0]['raw_tracks']['blue0'][0][1:3], cal.to_field([(530, 460)])[0])
+    assert json.loads(path.read_text()) == saved

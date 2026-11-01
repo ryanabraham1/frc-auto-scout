@@ -25,22 +25,29 @@ NON_ROBOT = {"foul_minor": 2, "foul_major": 6, "hp_net": 4}  # jumps no robot ac
 NEAR = {"reef": 1.1, "net": 1.0, "processor": 1.3}  # meters from element edge
 LOOKBACK = 5.0  # s: scoring is often posted a few seconds after it happens
 CREDIT_PRE, CREDIT_POST = 3.0, 1.5  # s around a post in which time at the element counts as credit
+CAM_BOOST_AUTO = 3.0  # the same during AUTO
 CAM_BOOST = 0.0  # per unit of reef close-up read confidence (off: hurt coral vs OPR; the close-up still feeds identity and decoding)
 JOINT_CREDIT = True  # credit all of an alliance's actions together (one piece per robot at a time)
 REFRACTORY = 3.0  # s: one robot doesn't score two pieces of the same kind closer together than this
 REFRACTORY_COST = 1.0  # objective cost of crediting one robot inside that window anyway (log-likelihood)
-AUTO_SHRINK = 0.3  # pseudo-share each robot gets in splitting AUTO coral before the video's shares
+AUTO_SHRINK = 0.0  # pseudo-share each robot gets in splitting AUTO coral before the video's shares
 ELEM_TIME_W = 0.0  # weight of each robot's share of match time at the NET / PROCESSOR in algae credit
 UNSEEN_W = 0.5  # NET credit for a robot not detected around the post (the NET side is a detection blind spot)
 ALGAE_COUNTER = True  # use the overlay's per-alliance algae counter when the event has one
 ALGAE_MISMATCH = 5.0  # decoding cost per algae action more/fewer than the counter moved at that jump
 UNMATCHED_W = 0.0  # weight of a coral seen placed that no score jump explains (off: hurt vs OPR, 15 matches)
 LEVEL_HEIGHTS = [("L4", 0.75), ("L3", 0.55), ("L2", 0.38), ("L1", -1.0)]  # placement height (0-1 of reef) -> level
+REACH_PRE, REACH_POST = 3.0, 0.7  # s around a post in which a robot's reach counts
+REACH_MIN = 0.2  # box heights of lift (over the robot's usual reach) that start to count
+REACH_BOOST = 1.0  # conservative weight: stronger reach weighting hurt on the pinned 35-match comparison
+REACH_ADD = 0.3  # credit (seconds-at-the-reef equivalent) for a robot at the reef that lifted
 LIFT_BOOST = 3.0  # coral credit multiplier per unit of elevator lift (box taller than usual) near the post
 CONF_WEIGHT = True  # weigh each action's credit by how much the video says about it
 CONF_REF = {"reef": 1.5, "net": 1.0, "processor": 1.0}  # evidence (s at the element / closeness) = full confidence
 ALGAE_CREDIT = "near"  # "near": closeness + seen launches | "dwell": time at the element like coral
 LAUNCH_W = 1.0  # added credit for the robot an algae launch is seen leaving just before a NET post
+COAST_MIN_SEEN = 3  # sightings in the seconds before a coast needed for it to count
+STALE_S = 3.0  # s a coasting (unseen) position stays usable after a sighting (a robot lost behind a REEF is usually still there)
 PLACE_MIN = 0.3  # a placement only credits robots near its spot (best robot's weight at least this)
 CAM_PLACE_W = 1.0  # weight of a reef close-up placement next to a wide-shot one
 CAM_PLACE_PX = 40.0  # px: falloff of close-up placement credit with distance from a robot's box
@@ -51,7 +58,7 @@ PLACE_PX = 25.0  # px: falloff of placement credit with horizontal distance from
 DECODE = "joint"  # "joint": all jumps decoded together against official counts | "each": one at a time
 SHARE_MODE = "hybrid"  # "nearest" | "soft" | "dwell" | "hybrid" (dwell for coral, soft for algae): see _shares
 SOFT_SCALE = 1.0  # m
-DWELL_SLACK = 1.0  # m added to an element's reach when timing how long a robot stayed there
+DWELL_SLACK = 0.5  # m added to an element's reach when timing how long a robot stayed there
 
 
 CORAL = ("L1", "L2", "L3", "L4")
@@ -90,6 +97,7 @@ class Reefscape2025(GamePlugin):
     detector_ensemble = False
     static_frac = 0.5
     launch_pieces = {"algae": ((78, 60, 80), (100, 255, 255))}
+    measure_reach = True  # L2-L4 coral means lifting a mechanism: who reached up before a score
     aux_every = 0.5  # the reef close-ups see robots the wide shot loses behind the REEF: read them often
     watch_elements = ("blue_reef", "red_reef")  # coral placed on the reefs (vision/element_changes.py)
     metric_defs = [
@@ -107,10 +115,32 @@ class Reefscape2025(GamePlugin):
         {"key": "points_contributed", "label": "Points contributed", "group": "Summary"},
     ]
 
+    @staticmethod
+    def _fresh(ctx: MatchContext, slot: str) -> list:
+        """A slot's track rows whose position is worth something: seen, or coasted from a sighting less than
+        STALE_S ago. A robot the camera hasn't seen for a while keeps its last position in the tracker,
+        and that guess (often right next to a REEF where it was lost) must not earn it credit."""
+        cache = ctx.__dict__.setdefault("_fresh_rows", {})
+        tr = ctx.tracks.get(slot, [])
+        if slot not in cache or cache[slot][0] != len(tr):
+            out, seen = [], []  # seen: times of recent sightings
+            for r in tr:
+                if r[3]:
+                    seen.append(r[0])
+                    out.append(r)
+                    continue
+                while seen and r[0] - seen[0] > STALE_S + 2.0:
+                    seen.pop(0)
+                # coast only from a real stretch of sightings, not a one-frame blip (often a false box)
+                if seen and r[0] - seen[-1] <= STALE_S and len(seen) >= COAST_MIN_SEEN:
+                    out.append(r)
+            cache[slot] = (len(tr), out)
+        return cache[slot][1]
+
     def _elem_dists(self, ctx: MatchContext, slot: str, t0: float, t1: float, alliance: str):
         """Min distance of a slot to each of its alliance's scoring elements during [t0, t1]."""
         best = {"reef": 9e9, "net": 9e9, "processor": 9e9}
-        tr = ctx.tracks.get(slot, [])
+        tr = self._fresh(ctx, slot)
         for r in tr:
             if t0 <= r[0] <= t1:
                 p = (r[1], r[2])
@@ -122,7 +152,7 @@ class Reefscape2025(GamePlugin):
     def _dwell(self, ctx: MatchContext, slot: str, t0: float, t1: float, alliance: str) -> dict[str, float]:
         """Seconds a slot spent within reach of each of its alliance's scoring elements in [t0, t1]."""
         out = {"reef": 0.0, "net": 0.0, "processor": 0.0}
-        tr = ctx.tracks.get(slot, [])
+        tr = self._fresh(ctx, slot)
         prev = None
         for r in tr:
             if not t0 <= r[0] <= t1:
@@ -217,7 +247,8 @@ class Reefscape2025(GamePlugin):
         near_time = defaultdict(lambda: defaultdict(float))
         opp_time = defaultdict(float)
         tot_time = defaultdict(float)
-        for slot, tr in ctx.tracks.items():
+        for slot in ctx.tracks:
+            tr = self._fresh(ctx, slot)
             a = slot[:-1]
             for i in range(1, len(tr)):
                 team = ctx.team_at(slot, tr[i][0])
@@ -325,6 +356,23 @@ class Reefscape2025(GamePlugin):
         for team, c in ctx.seen_in_view(f"{a}_reef", t - 3.5, t + 0.5).items():
             if team in near and c >= 0.5:
                 near[team]["reef"] = min(near[team]["reef"], 0.3)
+        # Repeated bumper reads are direct observations even when the floor mapping is
+        # unreliable (a hidden bumper puts the detected box bottom above the carpet).
+        # Count only intervals bracketed by reads, never extrapolate an isolated read,
+        # and take the better view's dwell rather than counting the same time twice.
+        sightings = defaultdict(set)
+        for bt, view, *box in ctx.aux_boxes:
+            team, conf = box[-2:]
+            if view == f"{a}_reef" and team in near and conf >= 0.5:
+                region = (getattr(ctx.cal, "aux_watch", None) or {}).get(view)
+                if region and (box[2] < region[0] or box[0] > region[2]):
+                    continue  # a readable robot at the loading wall is not reef dwell
+                sightings[team].add(bt)
+        for team, times in sightings.items():
+            times = sorted(times)
+            seconds = sum(max(0.0, min(right, t + post) - max(left, t - pre))
+                          for left, right in zip(times, times[1:]) if 0 < right - left <= 0.75)
+            dwell[team]["reef"] = max(dwell[team]["reef"], seconds)
         return near, dwell
 
     def _credit(self, ctx: MatchContext, a: str, teams: list[int], t: float, cat: str) -> tuple[dict[int, float], float]:
@@ -355,11 +403,28 @@ class Reefscape2025(GamePlugin):
             return ({tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}), min(1.0, tot / CONF_REF[elem])
         near, dwell = self._evidence(ctx, a, teams, t, CREDIT_PRE, CREDIT_POST)
         w = {tm: d[elem] for tm, d in dwell.items()}
-        if elem == "reef":
+        # The reef close-up names the robots at that reef. In AUTO the robots there are the ones scoring; in
+        # TELEOP it also sees robots waiting or driving past, so it helps only in AUTO (measured vs OPR).
+        boost = CAM_BOOST_AUTO if ctx.clock and t <= ctx.clock.auto_end_vt + 1.0 else CAM_BOOST
+        if elem == "reef" and boost > 0:
             for tm, c in ctx.seen_in_view(f"{a}_reef", t - CREDIT_PRE, t + CREDIT_POST).items():
                 if tm in w:
-                    w[tm] = (w[tm] + 0.3) * (1 + CAM_BOOST * min(c, 2.0))
-        if elem == "reef" and LIFT_BOOST > 0:
+                    w[tm] = (w[tm] + 0.3) * (1 + boost * min(c, 2.0))
+        if cat in ("L2", "L3", "L4") and getattr(ctx, "lift_obs", None) and REACH_BOOST > 0:
+            # who actually reached up (elevator / arm raised out of the chassis, vision/lift.py) right before
+            # the score: a robot at the reef that lifted beats one that only stood there
+            reaches = {tm: self._reach(ctx, tm, t - REACH_PRE, t + REACH_POST) for tm in w}
+            # No pixels for a plausible scorer means unknown reach, not a lowered
+            # mechanism. Comparing only the visible robots rewards detection gaps.
+            comparable = all(reaches[tm] is not None for tm in w if w[tm] > 0)
+            for tm in w:
+                reach = reaches[tm] if comparable else None
+                if reach is None:
+                    continue
+                ev = min(max(reach - REACH_MIN, 0.0), 1.0)
+                at_reef = near[tm]["reef"] <= NEAR["reef"] + DWELL_SLACK
+                w[tm] = (w[tm] + (REACH_ADD * ev if at_reef else 0.0)) * (1 + REACH_BOOST * ev)
+        elif cat in ("L2", "L3", "L4") and LIFT_BOOST > 0:
             for tm in w:
                 lift = self._lift(ctx, tm, t - CREDIT_PRE, t + CREDIT_POST)
                 w[tm] *= 1 + LIFT_BOOST * min(max(lift - 1.15, 0.0), 1.0)
@@ -374,6 +439,39 @@ class Reefscape2025(GamePlugin):
         """Was this team's robot actually detected (not just coasted) in [t0, t1]?"""
         slot = ctx.slot_of(team, (t0 + t1) / 2)
         return bool(slot) and any(t0 <= r[0] <= t1 and r[3] for r in ctx.tracks.get(slot, []))
+
+    @staticmethod
+    def _reach(ctx: MatchContext, team: int, t0: float, t1: float) -> float | None:
+        """How much a robot lifted its mechanism in [t0, t1], over its own usual reach this match, from the
+        wide shot and the reef close-ups (vision/lift.py; the larger of the two); None if never measured."""
+        from ..vision.lift import lift_score
+
+        cache = ctx.__dict__.setdefault("_reach_cache", {})
+        if "cam" not in cache:  # close-up samples per team: read bumper, or the track fusion matched it to
+            slots = getattr(ctx, "aux_slot", {})
+            cam: dict = {}
+            for i, rv in enumerate(getattr(ctx, "aux_reach", []) or []):
+                if rv is None:
+                    continue
+                b = ctx.aux_boxes[i]
+                tm = b[7] if b[7] is not None else (ctx.team_at(slots[i], b[0]) if i in slots else None)
+                if tm is not None:
+                    cam.setdefault(tm, []).append((b[0], rv))
+            cache["cam"] = {k: sorted(v) for k, v in cam.items()}
+        scores = []
+        slot = ctx.slot_of(team, (t0 + t1) / 2)
+        for key, samples in ((("wide", slot), ctx.lift_obs.get(slot, []) if slot else []),
+                             (("cam", team), cache["cam"].get(team, []))):
+            if key not in cache:
+                cache[key] = float(np.median([r for _, r in samples])) if len(samples) >= 10 else 0.0
+            # Motion behind a parked robot can persist for an entire reef visit.
+            # A lift must exceed that recent background as well as its match norm.
+            before = [r for t, r in samples if t0 - 3.0 <= t < t0]
+            base = max(cache[key], float(np.median(before))) if len(before) >= 3 else cache[key]
+            v = lift_score(samples, t0, t1, base)
+            if v is not None:
+                scores.append(v)
+        return max(scores) if scores else None
 
     def _lift(self, ctx: MatchContext, team: int, t0: float, t1: float) -> float:
         """How far a robot raised its elevator in [t0, t1]: its tallest box (height / width) then over

@@ -169,6 +169,19 @@ def cmd_watch_elements(a):
         print("watched", k, len(r.get("element_changes", [])), "placements")
 
 
+def cmd_lift(a):
+    from . import db
+    from .pipeline import RESULTS_DIR, lift_pass
+
+    con = db.connect()
+    keys = [a.key] if "_" in a.key else [r["match_key"] for r in con.execute(
+        "SELECT match_key FROM matches WHERE event_key=? AND status='done'", (a.key,))]
+    for k in keys:
+        r = lift_pass(k)
+        db.save_result(con, r, str(RESULTS_DIR / f"{k}.json"))
+        print("lift", k, sum(len(v) for v in r.get("lift_obs", {}).values()), "samples", flush=True)
+
+
 def cmd_calibrate_cams(a):
     from .pipeline import calibrate_closeups
 
@@ -289,6 +302,8 @@ def main(argv=None):
     s.add_argument("key"); s.set_defaults(f=cmd_rescore)
     s = sub.add_parser("watch-elements", help="find pieces placed on scoring elements (2025 coral) in saved matches")
     s.add_argument("key"); s.set_defaults(f=cmd_watch_elements)
+    s = sub.add_parser("lift-pass", help="measure robots' elevator/arm reach above the chassis in saved matches")
+    s.add_argument("key"); s.set_defaults(f=cmd_lift)
     s = sub.add_parser("calibrate-cams", help="fit the close-up cameras from robots seen in them and the wide shot")
     s.add_argument("event_key"); s.set_defaults(f=cmd_calibrate_cams)
     s = sub.add_parser("recollect", help="re-collect airborne-piece blobs from video (no robot detection)")

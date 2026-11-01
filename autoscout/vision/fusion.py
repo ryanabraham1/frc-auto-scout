@@ -17,6 +17,7 @@ MIN_PAIRS = 25  # pairs needed before a close-up camera is trusted
 RANSAC_M = 0.75  # m: a pair further than this from the fitted homography is an outlier
 PAIR_DT = 0.3  # s: wide-shot observation this close in time to a close-up sighting pairs with it
 FILL_DT = 0.25  # s: wide-shot rows this close to a close-up sighting take its position if not observed
+JOIN_STALE_S = 3.0  # s: an unread close-up robot only joins a track the wide shot saw this recently
 MATCH_M = 1.5  # m: an unread close-up robot joins the alliance slot expected within this distance
 
 
@@ -76,6 +77,16 @@ def calibrate_views(results: list[dict]) -> dict[str, dict]:
     return out
 
 
+def _last_seen(track, t):
+    """The last row of a track the wide shot actually observed at or before t (None if none)."""
+    ts = [r[0] for r in track]
+    i = bisect.bisect_right(ts, t)
+    for j in range(i - 1, -1, -1):
+        if track[j][3] and track[j][4] is not None:
+            return track[j]
+    return None
+
+
 def to_field(H, px: float, py: float) -> tuple[float, float]:
     p = cv2.perspectiveTransform(np.array([[[px, py]]], np.float64), np.asarray(H, np.float64))[0, 0]
     return float(p[0]), float(p[1])
@@ -99,7 +110,9 @@ def fuse_tracks(ctx, views: dict[str, dict]) -> int:
         if not v:
             continue
         p = to_field(v["H"], *foot((x0, y0, x1, y1)))
-        if not fm.in_field(p, 0.3):
+        # a robot behind a REEF from the camera has its bumper hidden, so its box bottom (and position)
+        # lands on or in the REEF: no robot can stand there, so that sighting gives no position
+        if not fm.in_field(p, 0.3) or fm.inside_solid(p, inset=-0.3):
             continue
         slot = ctx.slot_of(team, t) if team is not None else None
         if slot is None:
@@ -107,8 +120,10 @@ def fuse_tracks(ctx, views: dict[str, dict]) -> int:
             for s in ctx.tracks:
                 if al and not s.startswith(al):
                     continue
-                r = ctx.robot_at(s, t)
-                if r is not None and np.hypot(r[0] - p[0], r[1] - p[1]) < MATCH_M:
+                # only a robot the wide shot really saw lately: a position the tracker kept guessing
+                # (a robot it lost or never saw) would let any unread robot nearby take its name
+                q = _last_seen(ctx.tracks[s], t)
+                if q is not None and t - q[0] <= JOIN_STALE_S and np.hypot(q[1] - p[0], q[2] - p[1]) < MATCH_M:
                     cands.append(s)
             if len(cands) != 1:
                 continue

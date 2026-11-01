@@ -40,6 +40,7 @@ class MatchContext:
     aux_boxes: list = field(default_factory=list)  # [t, view, x0, y0, x1, y1, alliance, team|None, conf] robots in close-ups
     blobs: dict = field(default_factory=dict, repr=False)  # piece -> moving-piece blobs (t, x, y, area, w, h)
     blob_view: tuple | None = None  # image offset of the blob coordinates
+    lift_obs: dict = field(default_factory=dict)  # slot -> [[t, reach above the chassis]] (vision/lift.py)
     element_changes: list = field(default_factory=list)  # pieces seen appearing on elements (element_changes.py)
     _ts: dict = field(default_factory=dict, repr=False)  # slot -> track times (lookup cache)
 
@@ -97,6 +98,7 @@ class GamePlugin:
     static_frac: float = 0.25  # share of frames on one spot after which a detection is a field element
     launch_pieces: dict[str, tuple] = {}  # name -> (hsv_lo, hsv_hi)
     aux_every: float = 1.0  # s between close-up camera reads
+    measure_reach: bool = False  # measure robots' elevator/arm reach above the chassis (vision/lift.py)
     watch_elements: tuple[str, ...] = ()  # elements whose placed pieces are watched in the wide shot
     metric_defs: list[dict] = []  # [{"key", "label", "group", "fmt"}]
 
