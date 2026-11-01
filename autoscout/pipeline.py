@@ -100,6 +100,8 @@ def collect_blobs(match_key: str, video_path: str, fps: float = 60.0) -> None:
     step = max(1, int(round(video.fps / fps)))
     lag = max(1, int(round(video.fps / step / 30.0)))
     dets = {n: LaunchDetector(lo, hi, lview, lag=lag) for n, (lo, hi) in plugin.launch_pieces.items()}
+    for detector in dets.values():
+        detector.online = False  # this pass saves blobs only; live tracks are discarded
     t0 = clock["auto_end_vt"] - clock["auto_len"] - 0.5
     t1 = clock["teleop_end_vt"] + 3.5
     X, Y, W, H = lview
@@ -246,43 +248,44 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     watcher = element_watcher(cal, fm, plugin, (video.width, video.height), _aux_watch(base_cal, video))
     cut = False
     n_frames = n_cut = 0
-    for i, (t, frame) in enumerate(video.iter_frames(t0, t1, step=launch_step)):
-        n_frames += 1
-        prog.update("frames", (t - t0) / max(t1 - t0, 1), f"tracking robots and game pieces ({t - t0:.0f}/{t1 - t0:.0f} s of match)")
-        if i % max(1, int(round(0.5 * fps / launch_step))) == 0:
-            cut = view_similarity(frame, own_ref, cal.view) < 0.45
-        if cut:
-            n_cut += 1
+    with video.prefetched_frames(t0, t1, step=launch_step) as frames:
+        for i, (t, frame) in enumerate(frames):
+            n_frames += 1
+            prog.update("frames", (t - t0) / max(t1 - t0, 1), f"tracking robots and game pieces ({t - t0:.0f}/{t1 - t0:.0f} s of match)")
+            if i % max(1, int(round(0.5 * fps / launch_step))) == 0:
+                cut = view_similarity(frame, own_ref, cal.view) < 0.45
+            if cut:
+                n_cut += 1
+                for L in launchers.values():
+                    L.prev = None
+                continue
+            if watcher is not None:
+                watcher.step(t, frame)
+            view = frame[y: y + h, x: x + w]
+            lv = frame[lview[1]: lview[1] + lview[3], lview[0]: lview[0] + lview[2]]
             for L in launchers.values():
-                L.prev = None
-            continue
-        if watcher is not None:
-            watcher.step(t, frame)
-        view = frame[y: y + h, x: x + w]
-        lv = frame[lview[1]: lview[1] + lview[3], lview[0]: lview[0] + lview[2]]
-        for L in launchers.values():
-            L.step(t, lv)
-        if (i * launch_step) % robot_every < launch_step:
-            dets = veto(view, det(view, conf=WEAK_CONF))  # weak ones only extend tracked robots
-            for d in dets:
-                d.x0 += x; d.x1 += x; d.y0 += y; d.y1 += y
-                if not d.alliance:
-                    d.alliance, _ = alliance_from_pixels(frame, d)
-            tracker.update(t, frame, static([d for d in dets if d.alliance]))
-        if writer is not None:
-            vis = view.copy()
-            for tid, al, b in tracker.live_boxes(t):
-                col = (0, 0, 255) if al == "red" else (255, 0, 0) if al == "blue" else (200, 200, 200)
-                cv2.rectangle(vis, (int(b[0] - x), int(b[1] - y)), (int(b[2] - x), int(b[3] - y)), col, 2)
-                cv2.putText(vis, f"#{tid}", (int(b[0] - x), int(b[1] - y) - 4), 0, 0.6, col, 2)
-            for L in launchers.values():
-                for tr in L.tracks:
-                    if len(tr.pts) > 1:
-                        p = np.array([(q[1], q[2]) for q in tr.pts[-20:]], np.int32)
-                        cv2.polylines(vis, [p], False, (0, 255, 0), 2)
-            ph, rem = clock.phase(t)
-            cv2.putText(vis, f"{ph} {rem:5.1f}", (10, 30), 0, 1.0, (255, 255, 255), 2)
-            writer.write(vis)
+                L.step(t, lv)
+            if (i * launch_step) % robot_every < launch_step:
+                dets = veto(view, det(view, conf=WEAK_CONF))  # weak ones only extend tracked robots
+                for d in dets:
+                    d.x0 += x; d.x1 += x; d.y0 += y; d.y1 += y
+                    if not d.alliance:
+                        d.alliance, _ = alliance_from_pixels(frame, d)
+                tracker.update(t, frame, static([d for d in dets if d.alliance]))
+            if writer is not None:
+                vis = view.copy()
+                for tid, al, b in tracker.live_boxes(t):
+                    col = (0, 0, 255) if al == "red" else (255, 0, 0) if al == "blue" else (200, 200, 200)
+                    cv2.rectangle(vis, (int(b[0] - x), int(b[1] - y)), (int(b[2] - x), int(b[3] - y)), col, 2)
+                    cv2.putText(vis, f"#{tid}", (int(b[0] - x), int(b[1] - y) - 4), 0, 0.6, col, 2)
+                for L in launchers.values():
+                    for tr in L.tracks:
+                        if len(tr.pts) > 1:
+                            p = np.array([(q[1], q[2]) for q in tr.pts[-20:]], np.int32)
+                            cv2.polylines(vis, [p], False, (0, 255, 0), 2)
+                ph, rem = clock.phase(t)
+                cv2.putText(vis, f"{ph} {rem:5.1f}", (10, 30), 0, 1.0, (255, 255, 255), 2)
+                writer.write(vis)
     if writer is not None:
         writer.release()
         _to_h264(out)

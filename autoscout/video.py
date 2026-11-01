@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
@@ -119,6 +121,37 @@ class Video:
                 if not self.cap.grab():
                     break
             idx += 1
+
+    @contextmanager
+    def prefetched_frames(self, t0: float = 0.0, t1: float | None = None, step: int = 1):
+        """Decode one frame ahead while the caller processes the current frame.
+
+        Uses the same sequential decoder, pixels, timestamps and sampling as iter_frames.
+        The context joins the decoder on errors or early exit, before the capture can be reused.
+        Only one worker touches the capture; callers must not seek it inside this context.
+        """
+        source = self.iter_frames(t0, t1, step)
+        try:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-decode") as pool:
+                pending = pool.submit(next, source, None)
+
+                def frames():
+                    nonlocal pending
+                    while True:
+                        item = pending.result()
+                        if item is None:
+                            return
+                        pending = pool.submit(next, source, None)
+                        yield item
+
+                stream = frames()
+                try:
+                    yield stream
+                finally:
+                    stream.close()
+                    pending.cancel()
+        finally:
+            source.close()
 
     def close(self) -> None:
         self.cap.release()

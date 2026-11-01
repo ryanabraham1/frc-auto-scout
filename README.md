@@ -165,6 +165,11 @@ See [docs/SETUP_PC.md](docs/SETUP_PC.md). With CUDA:
 
 On CPU only it takes about 4–5 minutes per match.
 
+The main frame loop decodes one frame ahead while processing the current frame. This preserves
+all frame pixels, timestamps, sampling rates and detection settings, with a bounded frame buffer.
+The blob-only collection command also skips live trajectory linking, whose output it does not use.
+These changes apply to newly started processing jobs.
+
 ## New season (2027)
 
 See [docs/NEW_SEASON.md](docs/NEW_SEASON.md). You write one field YAML and one plugin file (`games/template_new_season.py`).
