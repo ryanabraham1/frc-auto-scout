@@ -29,6 +29,7 @@ class FieldModel:
     zones: dict[str, tuple[float, float, float, float]]
     elements: dict[str, dict]
     game_pieces: dict[str, dict]
+    robot_margin: float = 0.6  # m outside the field edge a detected robot's ground point may map to
 
     @classmethod
     def load(cls, year: int) -> "FieldModel":
@@ -39,7 +40,16 @@ class FieldModel:
             landmarks={k: tuple(v) for k, v in d["landmarks"].items()},
             zones={k: tuple(v) for k, v in d["zones"].items()},
             elements=d.get("elements", {}), game_pieces=d.get("game_pieces", {}),
+            robot_margin=d.get("robot_margin", 0.6),
         )
+
+    def inside_solid(self, p, inset: float = 0.15) -> bool:
+        """Is a field point inside an element no robot can stand in (e.g. a REEF), by more than inset m?"""
+        for e in self.elements.values():
+            if e.get("solid") and "radius" in e:
+                if np.linalg.norm(np.asarray(p, float) - np.asarray(e["center"], float)) < e["radius"] - inset:
+                    return True
+        return False
 
     def zone_of(self, p) -> str | None:
         x, y = p

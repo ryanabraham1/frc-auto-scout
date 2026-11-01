@@ -73,6 +73,28 @@ for name, ls in r.get("launches", {}).items():
         if L.get("pts"):
             flights.append((L["t0"], L["pts"][-1][0], np.array([(p[1], p[2]) for p in L["pts"]]), L.get("target")))
 
+# 2025 debug layers: coral seen placed on the reefs, moving algae, reef close-up reads, decoded jumps
+placements = r.get("element_changes", [])
+place_by_t = {}
+for e in r.get("events", []):
+    if e.get("placed"):
+        place_by_t[(e["placed"]["elem"], e["placed"]["t"])] = e
+blobs = None
+bp = Path(f"data/results/{a.match_key}_blobs.npz")
+if bp.exists():
+    z = np.load(bp)
+    off = z["view"][:2] if "view" in z.files else (0, 0)
+    blobs = {k: (z[k][:, 0], z[k][:, 1:3] + off) for k in z.files if k != "view"}
+aux = r.get("aux_reads", [])
+aux_views = {}
+try:
+    import yaml
+    aux_views = (yaml.safe_load(open(f"configs/events/{r['event_key']}.yaml")) or {}).get("aux_views") or {}
+except Exception:
+    pass
+jumps = sorted([e for e in r.get("events", []) if e.get("alliance") and e.get("kind")], key=lambda e: e["t"])
+trail = defaultdict(list)  # slot -> recent box bottoms (image px)
+
 teams = {"red": r["red"], "blue": r["blue"]}
 video = Video(a.video)
 # Layout: the whole broadcast frame (its scoreboard and close-up camera views stay visible) with
@@ -178,6 +200,67 @@ def sidebar(t):
     return sb
 
 
+REEF_PT = {a: r["calibration"]["points"].get(f"{a}_reef_center") for a in ("red", "blue")}
+for e in jumps:
+    if e.get("placed"):
+        e["_target"] = (e["placed"]["x"], e["placed"]["y"])
+    elif str(e.get("kind", "")).startswith("L") and REEF_PT.get(e["alliance"]):
+        e["_target"] = tuple(REEF_PT[e["alliance"]])
+
+
+def recent_credit(t):
+    return [e for e in jumps if e.get("shares") and 0 <= t - e["t"] <= 1.5]
+
+
+LEVEL = lambda h: "L4" if h > 0.8 else "L3" if h > 0.6 else "L2" if h > 0.4 else "L1"  # noqa: E731
+
+
+def draw_2025(img, t):
+    """Debug layers: coral placements on the reefs (ring when it appears, then a dot labelled with the
+    team credited), moving algae seen in the wide shot, close-up reads on the reef cams, and a banner
+    decoding each live score increase."""
+    for p in placements:
+        if p["t"] > t:
+            continue
+        c = (int(p["x"] * scale), int(p["y"] * scale))
+        e = place_by_t.get((p["elem"], p["t"]))
+        age = t - p["t"]
+        col = (0, 255, 0) if e else (200, 200, 200)
+        if age < 1.5:
+            cv2.circle(img, c, int(8 + 14 * age), col, 2, cv2.LINE_AA)
+            cv2.putText(img, f"coral {LEVEL(p['h'])}?" + (f" {e['team']}" if e else " (unmatched)"),
+                        (c[0] + 10, c[1] - 10), FONT, 0.45, col, 1, cv2.LINE_AA)
+        cv2.circle(img, c, 3, col, -1, cv2.LINE_AA)
+    if blobs:
+        for name, (bt, xy) in blobs.items():
+            m = (bt > t - 0.4) & (bt <= t)
+            for (x_, y_), tt in zip(xy[m], bt[m]):
+                cv2.circle(img, (int(x_ * scale), int(y_ * scale)), 2, (255, 255, 0), -1)
+    shown = defaultdict(int)
+    for rt, view, team, conf in aux:
+        if 0 <= t - rt < 1.0 and view in aux_views:
+            ax, ay, aw, ah = aux_views[view]
+            al = "red" if team in teams["red"] else "blue"
+            org = (int((ax + 8) * scale), int((ay + ah - 12) * scale) - 22 * shown[view])
+            shown[view] += 1
+            cv2.putText(img, f"cam read {team} {conf:.0%}", org, FONT, 0.5, RED if al == "red" else BLUE, 2, cv2.LINE_AA)
+    # banner: the last score increase of each alliance and what it was decoded as
+    for al, x_ in (("blue", 0.30), ("red", 0.56)):
+        last = [e for e in jumps if e["alliance"] == al and 0 <= t - e["t"] < 2.5]
+        if not last:
+            continue
+        parts = []
+        for e in last[-2:]:
+            k = e["kind"]
+            who = f" {e['team']}" if e.get("team") else ""
+            parts.append(f"{k}{who}" + (" (seen placed)" if e.get("placed") else ""))
+        txt = f"+{last[-1].get('jump', last[-1].get('points', ''))}: " + ", ".join(parts)
+        org = (int(x_ * W), int(0.17 * vh))
+        (tw, th), _ = cv2.getTextSize(txt, FONT, 0.55, 2)
+        cv2.rectangle(img, (org[0] - 6, org[1] - th - 8), (org[0] + tw + 6, org[1] + 6), (0, 0, 0), -1)
+        cv2.putText(img, txt, org, FONT, 0.55, RED if al == "red" else BLUE, 2, cv2.LINE_AA)
+
+
 for t, frame in video.iter_frames(t0, t1, step=step):
     img = cv2.resize(frame, (W, vh), interpolation=cv2.INTER_AREA)
     # flights in progress (draw the trail up to now)
@@ -187,6 +270,8 @@ for t, frame in video.iter_frames(t0, t1, step=step):
             pts = (P[:n] * scale).astype(np.int32)
             cv2.polylines(img, [pts], False, (0, 255, 255) if not tgt else (0, 255, 0), 2, cv2.LINE_AA)
             cv2.circle(img, tuple(pts[-1]), 3, (0, 255, 255), -1)
+    if year == 2025:
+        draw_2025(img, t)
     # robots
     for slot in tracks:
         b, obs = box_at(slot, t)
@@ -203,6 +288,22 @@ for t, frame in video.iter_frames(t0, t1, step=step):
         cv2.putText(img, label, (p0[0] + 4, p0[1] - 5), FONT, 0.5, WHITE, 1, cv2.LINE_AA)
         if team in flash and flash[team][0] > t:
             cv2.putText(img, flash[team][1], (p0[0], p1[1] + 18), FONT, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
+        if year == 2025:
+            foot = (int((b[0] + b[2]) / 2 * scale), int(b[3] * scale))
+            tr = trail[slot]
+            tr.append((t, foot))
+            while tr and t - tr[0][0] > 2.5:
+                tr.pop(0)
+            if len(tr) > 1:
+                cv2.polylines(img, [np.array([q for _, q in tr], np.int32)], False, col, 1, cv2.LINE_AA)
+            # who got credit for a score in the last 1.5 s: a line to where it was scored
+            for e in recent_credit(t):
+                if str(team) in (e.get("shares") or {}) and e["shares"][str(team)] >= 0.2:
+                    tgt = e.get("_target")
+                    if tgt is not None:
+                        cv2.line(img, (int((b[0] + b[2]) / 2 * scale), int((b[1] + b[3]) / 2 * scale)),
+                                 (int(tgt[0] * scale), int(tgt[1] * scale)), (0, 255, 0),
+                                 max(1, int(4 * e["shares"][str(team)])), cv2.LINE_AA)
     # events up to now
     while ei < len(events) and events[ei]["t"] <= t:
         e = events[ei]
@@ -216,7 +317,12 @@ for t, frame in video.iter_frames(t0, t1, step=step):
         else:
             msg = ("+" + k.upper()) if year == 2025 else ("+shot" if k == "shot" else "+feed")
             flash[team] = (t + 1.2, msg)
-            feed.append((e["t"], team, msg[1:] if year == 2026 else k))
+            if year == 2025 and e.get("shares"):
+                sh = sorted(e["shares"].items(), key=lambda kv: -kv[1])
+                desc = f"{k} {int(100 * sh[0][1])}%" + (f" ({sh[1][0]} {int(100 * sh[1][1])}%)" if len(sh) > 1 and sh[1][1] >= 0.1 else "")
+                feed.append((e["t"], team, desc + (" *" if e.get("placed") else "")))
+            else:
+                feed.append((e["t"], team, msg[1:] if year == 2026 else k))
         ei += 1
     out = np.full((H, W + SIDE, 3), BG, np.uint8)
     out[: vh, : W] = img

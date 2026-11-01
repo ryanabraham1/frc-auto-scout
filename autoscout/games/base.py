@@ -39,6 +39,7 @@ class MatchContext:
     aux_reads: list = field(default_factory=list)  # [(t, view, team, conf)] from close-up views
     blobs: dict = field(default_factory=dict, repr=False)  # piece -> moving-piece blobs (t, x, y, area, w, h)
     blob_view: tuple | None = None  # image offset of the blob coordinates
+    element_changes: list = field(default_factory=list)  # pieces seen appearing on elements (element_changes.py)
     _ts: dict = field(default_factory=dict, repr=False)  # slot -> track times (lookup cache)
 
     def seen_in_view(self, view: str, t0: float, t1: float) -> dict[int, float]:
@@ -94,6 +95,7 @@ class GamePlugin:
     detector_ensemble: bool = False  # also run Spy Glass (more recall, less precision)
     static_frac: float = 0.25  # share of frames on one spot after which a detection is a field element
     launch_pieces: dict[str, tuple] = {}  # name -> (hsv_lo, hsv_hi)
+    watch_elements: tuple[str, ...] = ()  # elements whose placed pieces are watched in the wide shot
     metric_defs: list[dict] = []  # [{"key", "label", "group", "fmt"}]
 
     def __init_subclass__(cls, **kw):

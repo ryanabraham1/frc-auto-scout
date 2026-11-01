@@ -140,12 +140,36 @@ class RobotTracker:
         self.stats: dict = {}
 
     # ---- stage 1: tracklets ----------------------------------------------------------------
+    def _helper_ok(self, frame: np.ndarray, d: Det, foot) -> bool:
+        """A box only the helper model of an ensemble (Spy Glass) found must look like a robot on the
+        field: inside the field line, not on a solid element's base (a REEF's skirt), not cut by the
+        bottom of the wide shot (people at the rail), and with bumper colour of its alliance in it."""
+        from .detect import alliance_from_pixels
+
+        if not self.fm.in_field(foot, 0.0) or self.fm.inside_solid(foot, inset=-0.35):
+            return False
+        if not hasattr(self, "_solid_boxes"):
+            from .element_changes import element_region
+            self._solid_boxes = [r for k, e in self.fm.elements.items() if e.get("solid")
+                                 if (r := element_region(self.cal, self.fm, k, height_k=0.5))]
+        for bx0, by0, bx1, by1 in self._solid_boxes:  # the element's own skirt seen as a robot
+            ix = max(0.0, min(d.x1, bx1) - max(d.x0, bx0))
+            iy = max(0.0, min(d.y1, by1) - max(d.y0, by0))
+            if ix * iy > 0.3 * d.w * d.h and d.w > 0.85 * (bx1 - bx0):  # robots are narrower than a REEF
+                return False
+        x, y, w, h = self.cal.view
+        if d.y1 >= y + h - 4:
+            return False
+        al, frac = alliance_from_pixels(frame, d)
+        return bool(al) and al == (d.alliance or al) and frac >= 0.7
+
     def update(self, t: float, frame: np.ndarray, dets: list[Det]) -> None:
         from .identity import read_team_numbers_many
 
         self.times.append(t)
         foot = self.cal.to_field([d.foot for d in dets]) if dets else np.zeros((0, 2))
-        keep = [i for i in range(len(dets)) if self.fm.in_field(foot[i], 0.6)]
+        keep = [i for i in range(len(dets)) if self.fm.in_field(foot[i], getattr(self.fm, "robot_margin", 0.6))
+                and not self.fm.inside_solid(foot[i]) and (getattr(dets[i], "src", 0) == 0 or self._helper_ok(frame, dets[i], foot[i]))]
         dets, foot = [dets[i] for i in keep], foot[keep] if keep else np.zeros((0, 2))
         # A tracklet only continues across a short miss: after longer gaps (a robot lost in a pile
         # of pieces or behind a HUB) the nearest detection is too often another robot, and one

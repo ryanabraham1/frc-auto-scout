@@ -1,11 +1,13 @@
 """2025 REEFSCAPE.
 
-Per-robot attribution: every increase of the live overlay score is matched to the scoring
-element a robot of that alliance was working in the seconds before (REEF, NET side of the
-BARGE, PROCESSOR); the point value of the increase identifies the action (e.g. teleop +5 at
-the REEF = L4 CORAL). Exact alliance totals per category come from the official breakdown and
-are split among robots in proportion to these attributed events. LEAVE and BARGE results are
-reported per station in the breakdown, so they are exact per team.
+The live overlay score says what was scored and when; the video says who. An alliance's score jumps
+are decoded together so the actions add up to the official breakdown's counts per category
+(decode_jumps): equal point values (teleop L3 = NET = 4, teleop L2 = LEAVE = 3) are told apart by
+what the official counts still need and where the robots were. Each robot action is then credited
+from coral seen appearing on the reef (which robot was at that spot), elevator lift, time at the
+element and algae launches, one piece per robot at a time (assign_actions). The exact official
+counts are split among robots by these credits. LEAVE and BARGE results are reported per station
+in the breakdown, so they are exact per team.
 """
 from __future__ import annotations
 
@@ -22,9 +24,34 @@ CATS = ["L1", "L2", "L3", "L4", "net", "processor"]
 NON_ROBOT = {"foul_minor": 2, "foul_major": 6, "hp_net": 4}  # jumps no robot action explains
 NEAR = {"reef": 1.1, "net": 1.0, "processor": 1.3}  # meters from element edge
 LOOKBACK = 5.0  # s: scoring is often posted a few seconds after it happens
+CREDIT_PRE, CREDIT_POST = 3.0, 1.5  # s around a post in which time at the element counts as credit
+CAM_BOOST = 0.0  # per unit of reef close-up read confidence (off: hurt coral vs OPR; the close-up still feeds identity and decoding)
+JOINT_CREDIT = True  # credit all of an alliance's actions together (one piece per robot at a time)
+REFRACTORY = 3.0  # s: one robot doesn't score two pieces of the same kind closer together than this
+REFRACTORY_COST = 1.0  # objective cost of crediting one robot inside that window anyway (log-likelihood)
+AUTO_SHRINK = 0.3  # pseudo-share each robot gets in splitting AUTO coral before the video's shares
+UNMATCHED_W = 0.0  # weight of a coral seen placed that no score jump explains (off: hurt vs OPR, 15 matches)
+LEVEL_HEIGHTS = [("L4", 0.75), ("L3", 0.55), ("L2", 0.38), ("L1", -1.0)]  # placement height (0-1 of reef) -> level
+LIFT_BOOST = 3.0  # coral credit multiplier per unit of elevator lift (box taller than usual) near the post
+CONF_WEIGHT = True  # weigh each action's credit by how much the video says about it
+CONF_REF = {"reef": 1.5, "net": 1.0, "processor": 1.0}  # evidence (s at the element / closeness) = full confidence
+ALGAE_CREDIT = "near"  # "near": closeness + seen launches | "dwell": time at the element like coral
+LAUNCH_W = 1.0  # added credit for the robot an algae launch is seen leaving just before a NET post
+PLACE_MIX = 0.7  # weight of "whose robot was over the spot where the coral appeared" in coral credit
+PLACE_WINDOW = (-1.0, 4.5)  # s: a post comes this long after the coral was seen placed
+PLACE_LAG = 1.0  # s: typical delay from placement to post
+PLACE_PX = 25.0  # px: falloff of placement credit with horizontal distance from the robot's box
+DECODE = "joint"  # "joint": all jumps decoded together against official counts | "each": one at a time
 SHARE_MODE = "hybrid"  # "nearest" | "soft" | "dwell" | "hybrid" (dwell for coral, soft for algae): see _shares
 SOFT_SCALE = 1.0  # m
 DWELL_SLACK = 1.0  # m added to an element's reach when timing how long a robot stayed there
+
+
+CORAL = ("L1", "L2", "L3", "L4")
+BARGE_TOKENS = {"park": 2, "shallow": 6, "deep": 12}
+COUNT_SLACK = 2.0  # objective cost of each action the decoded jumps leave over/under an official count
+FOUL_SLACK = 0.3  # per point of foul points not matched by decoded foul jumps (fouls often post late)
+NOTHING = -4.0  # a jump explained by nothing (overlay misread)
 
 
 def _decompose(points: int, allowed: dict[str, int]) -> list[list[str]]:
@@ -49,11 +76,13 @@ def _decompose(points: int, allowed: dict[str, int]) -> list[list[str]]:
 
 class Reefscape2025(GamePlugin):
     year = 2025
+    prior: dict | None = None  # alliance -> {team: {cat: weight}}, set by an event-level pass
     # Robots spend long stretches at a REEF face, often half hidden: recall matters more than in 2026
     # (Silicon Valley, 11 matches: coral vs OPR r=0.80 with these, 0.67 with the 2026 settings)
     detector_ensemble = True
     static_frac = 0.5
     launch_pieces = {"algae": ((78, 60, 80), (100, 255, 255))}
+    watch_elements = ("blue_reef", "red_reef")  # coral placed on the reefs (vision/element_changes.py)
     metric_defs = [
         {"key": "coral_total", "label": "Coral", "group": "Coral"},
         {"key": "coral_L4", "label": "L4", "group": "Coral"},
@@ -121,6 +150,9 @@ class Reefscape2025(GamePlugin):
         events = []
         if ctx.timeline is not None and ctx.clock is not None:
             for a in ("red", "blue"):
+                if DECODE == "joint":
+                    self._decode_alliance(ctx, a, teams[a], weights, events)
+                    continue
                 for t, d in ctx.timeline.deltas(a):
                     phase, _ = ctx.match_time(t)
                     if phase == "pause":
@@ -204,6 +236,10 @@ class Reefscape2025(GamePlugin):
                 for cat in CATS:
                     official = counts[ph][cat] if counts else sum(weights[ph][t][cat] for t in teams[a])
                     w = {t: weights[ph][t][cat] for t in teams[a]}
+                    if ph == "auto" and AUTO_SHRINK > 0 and sum(w.values()) > 0:
+                        # in AUTO nearly every robot scores its preloaded coral: the video only tilts the split
+                        tot = sum(w.values())
+                        w = {t: v / tot + AUTO_SHRINK for t, v in w.items()}
                     elem = "reef" if cat.startswith("L") else cat
                     fb = {t: near_time[t][elem] for t in teams[a]}
                     split[ph][cat] = self.proportional_split(official, w, fb)
@@ -257,6 +293,330 @@ class Reefscape2025(GamePlugin):
                 moved[slot] = float(np.linalg.norm(P[-1] - P[0])) > 0.6
         add_station_evidence(ctx, evidence, {a: [bd[a].get(f"autoLineRobot{i}") == "Yes" for i in (1, 2, 3)]
                                              for a in ("red", "blue")}, moved, 1.0, "leave")
+
+    def _evidence(self, ctx: MatchContext, a: str, teams: list[int], t: float, pre: float = LOOKBACK, post: float = 0.0):
+        """Per team: closest approach to, and time spent at, each scoring element in [t - pre, t + post]
+        around a score posted at t (the reef close-up camera puts the teams it reads at the reef)."""
+        near, dwell = {}, {}
+        for team in teams:
+            slot = ctx.slot_of(team, t)
+            if slot:
+                near[team] = self._elem_dists(ctx, slot, t - pre, t + post, a)
+                dwell[team] = self._dwell(ctx, slot, t - pre, t + post, a)
+            else:
+                near[team] = {"reef": 9e9, "net": 9e9, "processor": 9e9}
+                dwell[team] = {"reef": 0.0, "net": 0.0, "processor": 0.0}
+        # Seen there = at the reef. Not seen proves nothing (bumper may face away from that camera),
+        # so unseen teams keep their wide-shot evidence.
+        for team, c in ctx.seen_in_view(f"{a}_reef", t - 3.5, t + 0.5).items():
+            if team in near and c >= 0.5:
+                near[team]["reef"] = min(near[team]["reef"], 0.3)
+        return near, dwell
+
+    def _credit(self, ctx: MatchContext, a: str, teams: list[int], t: float, cat: str) -> tuple[dict[int, float], float]:
+        """How likely each team made one decoded action posted at t (sums to 1; empty = no idea), and
+        how much the video says at all (0..1: nobody near the element = little).
+
+        The live score posts about a second after a piece is placed and the robot usually is still at
+        the element then, so time at the element is counted in a short window around the post. Teams
+        the reef close-up camera reads in that window are at the reef: their share is boosted."""
+        elem = "reef" if cat in CORAL else cat
+        if elem != "reef" and ALGAE_CREDIT == "near":
+            # algae is shot / thrown from a little way off: closeness over the lookback, as before, plus
+            # algae seen flying from a robot just before the post
+            near, _ = self._evidence(ctx, a, teams, t)
+            w = {tm: np.exp(-d[elem] / SOFT_SCALE) for tm, d in near.items() if d[elem] <= NEAR[elem] + 1.0}
+            for L in ctx.launches.get("algae", []):
+                if getattr(L, "rising", True) and t - LOOKBACK <= L.t0 <= t + 0.5:
+                    slot, _ = self.attribute_launch(ctx, L)
+                    tm = ctx.team_at(slot, L.t0) if slot else None
+                    if tm in teams:
+                        w[tm] = w.get(tm, 0.0) + LAUNCH_W
+            tot = sum(w.values())
+            return ({tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}), min(1.0, tot / CONF_REF[elem])
+        near, dwell = self._evidence(ctx, a, teams, t, CREDIT_PRE, CREDIT_POST)
+        w = {tm: d[elem] for tm, d in dwell.items()}
+        if elem == "reef":
+            for tm, c in ctx.seen_in_view(f"{a}_reef", t - CREDIT_PRE, t + CREDIT_POST).items():
+                if tm in w:
+                    w[tm] = (w[tm] + 0.3) * (1 + CAM_BOOST * min(c, 2.0))
+        if elem == "reef" and LIFT_BOOST > 0:
+            for tm in w:
+                lift = self._lift(ctx, tm, t - CREDIT_PRE, t + CREDIT_POST)
+                w[tm] *= 1 + LIFT_BOOST * min(max(lift - 1.15, 0.0), 1.0)
+        conf = min(1.0, sum(w.values()) / CONF_REF[elem])
+        if sum(w.values()) <= 0:  # nobody stayed there: closeness instead
+            w = {tm: np.exp(-d[elem] / SOFT_SCALE) for tm, d in near.items() if d[elem] <= NEAR[elem] + 1.0}
+            conf = 0.3 * min(1.0, sum(w.values()))
+        tot = sum(w.values())
+        return ({tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}), conf
+
+    def _lift(self, ctx: MatchContext, team: int, t0: float, t1: float) -> float:
+        """How far a robot raised its elevator in [t0, t1]: its tallest box (height / width) then over
+        its usual shape this match. Scoring L2-L4 means lifting the mechanism; driving doesn't."""
+        cache = ctx.__dict__.setdefault("_lift_base", {})
+        slot = ctx.slot_of(team, (t0 + t1) / 2)
+        if not slot:
+            return 1.0
+        rows = [r for r in ctx.tracks.get(slot, []) if r[3] and r[4] is not None]
+        if slot not in cache:
+            ar = [(b[3] - b[1]) / max(b[2] - b[0], 1) for *_, b in rows]
+            cache[slot] = float(np.median(ar)) if len(ar) > 20 else None
+        base = cache[slot]
+        win = [(b[3] - b[1]) / max(b[2] - b[0], 1) for r in rows if t0 <= r[0] <= t1 for b in [r[4]]]
+        if not base or len(win) < 3:
+            return 1.0
+        return float(np.percentile(win, 90)) / base
+
+    def _placement_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict) -> dict[int, float]:
+        """Which robot put a coral seen appearing on the reef there: the alliance robot whose image box
+        is over that spot (horizontally) when it appeared, and that is at the reef."""
+        w = {}
+        for team in teams:
+            slot = ctx.slot_of(team, pl["t"])
+            best = 0.0
+            for dt in (-1.0, -0.5, 0.0, 0.5):
+                rb = self.robot_box(ctx, slot, pl["t"] + dt) if slot else None
+                if rb is None:
+                    continue
+                (x0, _y0, x1, _y1), obs = rb
+                dx = max(x0 - pl["x"], 0, pl["x"] - x1)
+                r = ctx.robot_at(slot, pl["t"] + dt)
+                at = r is not None and self.field.dist_to_element(r[:2], f"{a}_reef") < NEAR["reef"] + DWELL_SLACK
+                best = max(best, np.exp(-dx / PLACE_PX) * (1.0 if at else 0.25) * (1.0 if obs else 0.6))
+            w[team] = best
+        tot = sum(w.values())
+        return {tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}
+
+    def _match_placements(self, ctx: MatchContext, a: str, actions: list[dict]) -> None:
+        """Pair decoded coral actions with coral seen placed on the alliance's reef (each placement used
+        once, placed up to PLACE_WINDOW before the post) and fold in who placed it."""
+        from scipy.optimize import linear_sum_assignment
+
+        pls = [p for p in ctx.element_changes if p["elem"] == f"{a}_reef"]
+        idx = [i for i, A in enumerate(actions) if A["piece"] == "coral"]
+        if not pls or not idx or PLACE_MIX <= 0:
+            return
+        big = 1e6
+        cost = np.full((len(idx), len(pls)), big)
+        for r, i in enumerate(idx):
+            for c, p in enumerate(pls):
+                lag = actions[i]["t"] - p["t"]
+                if PLACE_WINDOW[0] <= lag <= PLACE_WINDOW[1]:
+                    cost[r, c] = abs(lag - PLACE_LAG)
+        rows, cols = linear_sum_assignment(cost)
+        teams = list(ctx.match.teams(a))
+        for r, c in zip(rows, cols):
+            if cost[r, c] >= big:
+                continue
+            A = actions[idx[r]]
+            pc = self._placement_credit(ctx, a, teams, pls[c])
+            if not pc:
+                continue
+            A["placed"] = pls[c]
+            A["conf"] = 1.0
+            A["t_place"] = pls[c]["t"]
+            base = A["p"] or {tm: 1 / 3 for tm in teams}
+            A["p"] = {tm: (1 - PLACE_MIX) * base.get(tm, 0) + PLACE_MIX * pc.get(tm, 0) for tm in teams}
+
+    @staticmethod
+    def assign_actions(actions: list[dict], teams: list[int], prior: dict | None = None) -> list[dict[int, float]]:
+        """Credit robot actions of one alliance jointly.
+
+        actions: [{"t", "piece" ("coral"/"algae"), "cat", "p": {team: likelihood}}, optional "t_place"].
+        A robot carries one piece of a kind at a time, so it can't make two of them within REFRACTORY
+        seconds: when two quick coral go on while two robots are at the reef, each robot most likely
+        made one. The actions of each piece kind form a chain in time; crediting one robot with
+        consecutive pieces closer than REFRACTORY costs a factor exp(-REFRACTORY_COST) (soft: the live
+        score sometimes posts a batch), and forward-backward gives each action's credit. prior:
+        {team: {cat: weight}} multiplies the likelihoods (event-wide tendencies). Returns per action
+        {team: weight} summing to 1.
+        """
+        if not actions:
+            return []
+        teams = list(teams)
+        nt = len(teams)
+        lik = np.zeros((len(actions), nt))
+        for i, A in enumerate(actions):
+            p = np.array([A["p"].get(tm, 0.0) for tm in teams], float)
+            p = p / p.sum() if p.sum() > 0 else np.full(nt, 1 / nt)
+            if prior:
+                p = p * np.array([prior.get(tm, {}).get(A["cat"], 1.0) for tm in teams])
+                p = p / p.sum() if p.sum() > 0 else np.full(nt, 1 / nt)
+            lik[i] = 0.98 * p + 0.02 / nt  # nothing is ever certain
+        post = lik.copy()
+        tm_of = lambda A: A.get("t_place", A["t"])  # noqa: E731
+        same = np.exp(-REFRACTORY_COST)
+        for piece in ("coral", "algae"):
+            idx = sorted((i for i, A in enumerate(actions) if A["piece"] == piece), key=lambda i: tm_of(actions[i]))
+            if len(idx) < 2:
+                continue
+            T = [np.where(np.eye(nt) > 0, same if tm_of(actions[j]) - tm_of(actions[i]) < REFRACTORY else 1.0, 1.0)
+                 for i, j in zip(idx, idx[1:])]
+            fw = [lik[idx[0]] / lik[idx[0]].sum()]
+            for k in range(1, len(idx)):
+                f = (fw[-1] @ T[k - 1]) * lik[idx[k]]
+                fw.append(f / f.sum())
+            bw = [np.ones(nt)]
+            for k in range(len(idx) - 2, -1, -1):
+                b = T[k] @ (lik[idx[k + 1]] * bw[0])
+                bw.insert(0, b / b.sum())
+            for k, i in enumerate(idx):
+                m = fw[k] * bw[k]
+                post[i] = m / m.sum()
+        return [{tm: float(post[i, k]) for k, tm in enumerate(teams)} for i in range(len(actions))]
+
+    def _decode_alliance(self, ctx: MatchContext, a: str, teams: list[int], weights, events) -> None:
+        """Decode an alliance's score jumps jointly against the official counts, then credit each
+        robot action to the robots at its element (see decode_jumps and assign_actions)."""
+        clk = ctx.clock
+        bd = (ctx.match.breakdown or {}).get(a)
+        need, foul_pts = self.official_tokens(bd, self.official_counts(bd)) if bd else (None, 0)
+        jumps, info = [], []
+        for t, d in ctx.timeline.deltas(a):
+            if not clk.start_vt - 1 < t < clk.teleop_end_vt + 3:
+                continue
+            allowed = {"net": 4, "processor": 6, "foul2": 2, "foul6": 6}
+            if t < clk.auto_end_vt + 4:
+                allowed.update({f"auto_{c}": AUTO_VALUES[c] for c in CORAL})
+            if t > clk.auto_end_vt - 1:
+                allowed.update({f"teleop_{c}": TELE_VALUES[c] for c in CORAL})
+            if t < clk.auto_end_vt + 6:
+                allowed["leave"] = 3
+            if t > clk.teleop_end_vt - 3:
+                allowed.update(BARGE_TOKENS)
+            near, dwell = self._evidence(ctx, a, teams, t)
+            score = {}
+            for tok in allowed:
+                cat = tok.split("_")[-1]
+                if cat in CATS:
+                    elem = "reef" if cat.startswith("L") else cat
+                    best = min((nr[elem] for nr in near.values()), default=9e9)
+                    score[tok] = 1.0 - best / (NEAR[elem] + 1.0) if best <= NEAR[elem] + 1.0 else -3.0
+                else:
+                    score[tok] = {"leave": 0.6, "foul2": -0.2, "foul6": -0.2}.get(tok, 0.3)
+            jumps.append({"points": d, "allowed": allowed, "score": score})
+            info.append((t, d))
+        actions = []
+        for (t, d), combo in zip(info, self.decode_jumps(jumps, need, foul_pts)):
+            phase = "auto" if t <= clk.auto_end_vt + 0.5 else "teleop"
+            if combo is None:
+                events.append({"t": round(t, 2), "alliance": a, "phase": phase, "points": d, "kind": "unexplained"})
+                continue
+            for tok in combo:
+                cat = tok.split("_")[-1]
+                if cat not in CATS:
+                    events.append({"t": round(t, 2), "alliance": a, "phase": phase, "points": d, "kind": tok})
+                    continue
+                ph = tok.split("_")[0] if cat in CORAL else "teleop"
+                p, conf = self._credit(ctx, a, teams, t, cat)
+                actions.append({"t": t, "cat": cat, "phase": ph, "piece": "coral" if cat in CORAL else "algae",
+                                "p": p, "conf": conf, "jump": d})
+        self._match_placements(ctx, a, actions)
+        # Vision first: coral seen going onto the reef with no score jump to pair it with (missed overlay
+        # read, batched post) still says which robot scored, and its height roughly which level.
+        used = {(A["placed"]["elem"], A["placed"]["t"]) for A in actions if "placed" in A}
+        for pl in ctx.element_changes:
+            if pl["elem"] != f"{a}_reef" or (pl["elem"], pl["t"]) in used or UNMATCHED_W <= 0:
+                continue
+            if not clk.start_vt <= pl["t"] <= clk.teleop_end_vt:
+                continue
+            pc = self._placement_credit(ctx, a, teams, pl)
+            lvl = next(k for k, lo in LEVEL_HEIGHTS if pl["h"] >= lo)
+            ph = "auto" if pl["t"] <= clk.auto_end_vt else "teleop"
+            for who, share in pc.items():
+                weights[ph][who][lvl] += UNMATCHED_W * share
+            if pc:
+                events.append({"t": round(pl["t"], 2), "alliance": a, "phase": ph, "kind": "coral_seen",
+                               "level_guess": lvl, "team": max(pc, key=pc.get),
+                               "shares": {str(k): round(v, 2) for k, v in pc.items() if v >= 0.01}, "placed": pl})
+        if JOINT_CREDIT:
+            credit = self.assign_actions(actions, teams, (self.prior or {}).get(a))
+        else:
+            credit = [A["p"] for A in actions]
+        for A, cr in zip(actions, credit):
+            # actions the video says little about weigh little in splitting the official counts
+            k = A["conf"] if CONF_WEIGHT else 1.0
+            for who, share in cr.items():
+                weights[A["phase"]][who][A["cat"]] += share * max(k, 0.05)
+            vals = AUTO_VALUES if A["phase"] == "auto" else TELE_VALUES
+            events.append({"t": round(A["t"], 2), "alliance": a, "phase": A["phase"], "points": vals[A["cat"]],
+                           "jump": A["jump"], "team": max(cr, key=cr.get) if cr else None, "kind": A["cat"],
+                           "shares": {str(k): round(v, 2) for k, v in cr.items() if v >= 0.01},
+                           "likelihood": {str(k): round(v, 2) for k, v in A["p"].items() if v >= 0.01},
+                           **({"placed": A["placed"]} if "placed" in A else {})})
+
+    @staticmethod
+    def official_tokens(bd_a: dict, counts: dict) -> tuple[dict[str, int], int]:
+        """Exact number of each decodable action an alliance's score jumps must add up to, and
+        the foul points it was awarded (known as points only)."""
+        need = {f"auto_{c}": counts["auto"][c] for c in CORAL}
+        need.update({f"teleop_{c}": counts["teleop"][c] for c in CORAL})
+        need["net"], need["processor"] = counts["teleop"]["net"], counts["teleop"]["processor"]
+        need["leave"] = sum(bd_a.get(f"autoLineRobot{i}") == "Yes" for i in (1, 2, 3))
+        eg = [bd_a.get(f"endGameRobot{i}", "None") for i in (1, 2, 3)]
+        need["park"], need["shallow"], need["deep"] = (eg.count("Parked"), eg.count("ShallowCage"),
+                                                       eg.count("DeepCage"))
+        return need, int(bd_a.get("foulPoints", 0) or 0)
+
+    @staticmethod
+    def decode_jumps(jumps: list[dict], need: dict[str, int] | None, foul_pts: int) -> list[list[str] | None]:
+        """Decode every score jump of one alliance into the actions behind it, jointly.
+
+        jumps: [{"points", "allowed": {token: value}, "score": {token: evidence}}], where tokens are
+        "auto_L4", "teleop_L2", "net", "processor", "leave", "foul2", "foul6", "park", "shallow",
+        "deep" and evidence says how well the robots' positions fit that action. Decoding each
+        jump alone confuses equal values (teleop L3 = NET = 4, teleop L2 = LEAVE = 3); here the
+        decoded actions must also add up to the official per-category counts, so a +4 that a robot
+        at the barge explains as well as one at the reef goes to whichever the official count
+        still lacks. Returns per jump the chosen tokens (None = left unexplained).
+        """
+        from scipy.optimize import Bounds, LinearConstraint, milp
+
+        opts, cols = [], []  # cols: (jump index, tokens, objective)
+        for j, J in enumerate(jumps):
+            for combo in _decompose(J["points"], J["allowed"]):
+                s = sum(J["score"][k] for k in combo) - 1.2 * (len(combo) - 1)
+                cols.append((j, combo, s))
+            cols.append((j, None, NOTHING))
+        if not cols:
+            return []
+        cats = sorted(need) if need else []
+        n_x, n_c = len(cols), len(cats)
+        # variables: x (one per option), then under/over slack per category, then foul under/over
+        n = n_x + 2 * n_c + 2
+        c = np.zeros(n)
+        c[:n_x] = [-s for _, _, s in cols]
+        c[n_x: n_x + 2 * n_c] = COUNT_SLACK
+        c[n_x + 2 * n_c:] = FOUL_SLACK
+        A, lo, hi = [], [], []
+        for j in range(len(jumps)):
+            row = np.zeros(n)
+            row[[i for i, (jj, _, _) in enumerate(cols) if jj == j]] = 1
+            A.append(row), lo.append(1), hi.append(1)
+        for ci, cat in enumerate(cats):
+            row = np.zeros(n)
+            for i, (_, combo, _) in enumerate(cols):
+                row[i] = combo.count(cat) if combo else 0
+            row[n_x + 2 * ci], row[n_x + 2 * ci + 1] = 1, -1
+            A.append(row), lo.append(need[cat]), hi.append(need[cat])
+        if need is not None:
+            row = np.zeros(n)
+            for i, (_, combo, _) in enumerate(cols):
+                row[i] = sum({"foul2": 2, "foul6": 6}.get(k, 0) for k in combo) if combo else 0
+            row[n - 2], row[n - 1] = 1, -1
+            A.append(row), lo.append(foul_pts), hi.append(foul_pts)
+        integ = np.r_[np.ones(n_x), np.zeros(n - n_x)]
+        res = milp(c, constraints=LinearConstraint(np.array(A), lo, hi), integrality=integ,
+                   bounds=Bounds(np.zeros(n), np.r_[np.ones(n_x), np.full(n - n_x, np.inf)]),
+                   options={"time_limit": 10})
+        out: list[list[str] | None] = [None] * len(jumps)
+        if res.x is None:
+            return out
+        for i, (j, combo, _) in enumerate(cols):
+            if res.x[i] > 0.5:
+                out[j] = combo
+        return out
 
     @staticmethod
     def _shares(near: dict[int, dict[str, float]], team: int, cat: str, dwell=None) -> dict[int, float]:

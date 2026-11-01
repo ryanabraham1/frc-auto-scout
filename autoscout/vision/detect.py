@@ -25,6 +25,7 @@ class Det:
     y1: float
     conf: float
     alliance: str  # "red" | "blue" | "" (unknown)
+    src: int = 0  # which model of an ensemble found it (0 = our own model)
 
     @property
     def foot(self) -> tuple[float, float]:
@@ -174,10 +175,11 @@ class EnsembleDetector:
 
     def __call__(self, image: np.ndarray, conf: float | None = None) -> list[Det]:
         dets = []
-        for d in self.detectors:
+        for i, d in enumerate(self.detectors):
             for b in d(image, conf=conf):
                 if not b.alliance:
                     b.alliance, _ = alliance_from_pixels(image, b)
+                b.src = i
                 dets.append(b)
         dets.sort(key=lambda b: -(b.w * b.h))
         out: list[Det] = []

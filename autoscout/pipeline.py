@@ -18,12 +18,13 @@ from . import config, games, ocr, overlay
 from .games.base import add_closeup_evidence
 from .field import Calibration, align_to_reference, view_similarity
 from .tba import TBA, MatchInfo
-from .video import Video, download
+from .video import VIDEO_DIR, Video, download
 from .vision.detect import PersonVeto, RobotDetector, StaticSuppressor, alliance_from_pixels, default_detector
 from .vision.identity import IdentityEvidence, identity_timeline
 from .vision.appearance import add_to_bank, load_bank
 from .vision.bumper_ocr import reader
 from .vision.tracker import WEAK_CONF, RobotTracker
+from .vision.element_changes import HZ as HZ_ELEMENTS, ElementWatcher, element_region
 from .vision.launches import LaunchExtractor
 from .vision.trajectories import Launch, LaunchDetector
 
@@ -237,6 +238,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     reader()  # load the shared bumper reader once, before two threads ask for it
     aux_pool = ThreadPoolExecutor(1)
     aux_job = aux_pool.submit(collect_aux_reads, Video(video_path), base_cal, tl, {"red": m.red, "blue": m.blue})
+    watcher = element_watcher(cal, fm, plugin, (video.width, video.height))
     cut = False
     n_frames = n_cut = 0
     for i, (t, frame) in enumerate(video.iter_frames(t0, t1, step=launch_step)):
@@ -249,6 +251,8 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
             for L in launchers.values():
                 L.prev = None
             continue
+        if watcher is not None:
+            watcher.step(t, frame)
         view = frame[y: y + h, x: x + w]
         lv = frame[lview[1]: lview[1] + lview[3], lview[0]: lview[0] + lview[2]]
         for L in launchers.values():
@@ -315,6 +319,9 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
                              identity={}, identity_conf={}, launches=launches)
     ctx.aux_reads = aux_reads
     ctx.blobs, ctx.blob_view = blobs, tuple(lview)
+    ctx.element_changes = watcher.changes() if watcher is not None else []
+    if ctx.element_changes:
+        log(f"pieces placed on elements: {len(ctx.element_changes)}")
     if hasattr(plugin, "identity_evidence"):
         plugin.identity_evidence(ctx, evidence)
     ov = overrides_for(match_key)
@@ -340,6 +347,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "identity_scores": {f"{k[0]}:{k[1]}": round(v, 3) for k, v in evidence.score.items()},
         "identity_timed": evidence.timed,
         "aux_reads": ctx.aux_reads,
+        "element_changes": ctx.element_changes,
         "identity_timeline": ctx.identity_tl,
         "calibration": {"view": list(cal.view), "points": {k: list(map(float, v)) for k, v in cal.points.items()}},
         "detector": str(det.weights.name),
@@ -402,6 +410,7 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     ctx = games.MatchContext(match=m, field=plugin.field, cal=cal, clock=clock, timeline=tl, tracks=tracks,
                              identity={}, identity_conf={}, launches=launches)
     ctx.aux_reads = [tuple(x) for x in old.get("aux_reads", [])]
+    ctx.element_changes = old.get("element_changes", [])
     bp = RESULTS_DIR / f"{match_key}_blobs.npz"
     if bp.exists():
         z = np.load(bp)
@@ -641,6 +650,40 @@ def _aux_detector():
     if _AUX_DET is None:
         _AUX_DET = default_detector()
     return _AUX_DET
+
+
+def element_watcher(cal: Calibration, fm, plugin, frame_size) -> ElementWatcher | None:
+    regions = {k: r for k in plugin.watch_elements if (r := element_region(cal, fm, k))}
+    return ElementWatcher(regions, frame_size) if regions else None
+
+
+def element_pass(match_key: str, video_path: str | None = None, save: bool = True) -> dict:
+    """Watch the scoring elements of an already processed match for placed pieces, then reanalyze."""
+    path = RESULTS_DIR / f"{match_key}.json"
+    old = json.loads(path.read_text())
+    plugin = games.get(old["year"])
+    if video_path is None:
+        video_path = str(next(Path(VIDEO_DIR).glob(f"{old['video']}.*")))
+    video = Video(video_path)
+    c = old["calibration"]
+    cal = Calibration(event_key=old["event_key"], year=old["year"], view=tuple(c["view"]),
+                      points={k: tuple(v) for k, v in c["points"].items()})
+    watcher = element_watcher(cal, plugin.field, plugin, (video.width, video.height))
+    if watcher is None:
+        return old
+    own_ref = video.frame_at(old["clock"]["teleop_end_vt"] - old["clock"]["teleop_len"] + 20)
+    clk = old["clock"]
+    step = max(1, int(round(video.fps / HZ_ELEMENTS)))
+    cut = False
+    for i, (t, frame) in enumerate(video.iter_frames(clk["auto_end_vt"] - clk["auto_len"] - PRE_MATCH_S,
+                                                    clk["teleop_end_vt"] + 3.5, step=step)):
+        if i % 2 == 0 and own_ref is not None:
+            cut = view_similarity(frame, own_ref, cal.view) < 0.45
+        if not cut:
+            watcher.step(t, frame)
+    old["element_changes"] = watcher.changes()
+    path.write_text(json.dumps(old, default=_json_default))
+    return reanalyze(match_key, save=save)
 
 
 def aux_pass(match_key: str, video_path: str) -> dict:
