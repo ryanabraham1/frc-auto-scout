@@ -57,6 +57,11 @@ def finish(args):
         states = {r['match_key']: r['status'] for r in con.execute(
             'SELECT match_key,status FROM matches WHERE event_key=?', (EVENT,))}
         retry = [k for k in expected if states.get(k) != 'done' or not (pipeline.RESULTS_DIR / f'{k}.json').exists()]
+        # qm6 failed after frame processing in full2 and was omitted from full3.
+        # A later reanalysis can mark its older cached result done, so DB status
+        # alone cannot establish that this match was freshly reprocessed.
+        if f'{EVENT}_qm6' in expected and f'{EVENT}_qm6' not in retry:
+            retry.append(f'{EVENT}_qm6')
         stage('retry_failed_matches')
         if retry:
             run('retry', [sys.executable, '-m', 'autoscout.cli', 'run-event', EVENT,

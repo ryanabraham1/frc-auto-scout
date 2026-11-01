@@ -98,7 +98,7 @@ low-confidence. These sheets do not establish that every coral is credited corre
 The old `full2` process had imported a pipeline predating the lift collector's tuple return
 and failed on qm6. Its orphan GPU workers were removed. A current-code run is processing
 the remaining matches in `data/run_2025casj_full3.log`; qm7 and qm9 have completed. The run
-omits qm6, so the finalizer explicitly retries failed DB entries before calibration.
+omits qm6, so the finalizer explicitly retries qm6 and failed DB entries before calibration.
 **qm19 is blocked by YouTube's copyright restriction**, not silently counted as processed.
 
 `scripts/finish2025.py --wait-pid PID --publish` waits for the existing event process, retries
