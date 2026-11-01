@@ -81,7 +81,7 @@ def match(match_key: str):
         r["metric_defs"] = games.get(r["year"]).metric_defs
     except KeyError:
         r["metric_defs"] = []
-    kind, _ = _annotated_video(match_key)
+    kind, vpath = _annotated_video(match_key)
     clock = r.get("clock") or {}
     # demo videos (scripts/render_demo.py) run in real time from 1 s before auto, so video time maps to demo time
     offset = clock["auto_end_vt"] - clock["auto_len"] - 1.0 if kind == "demo" and "auto_end_vt" in clock else None

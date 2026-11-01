@@ -50,3 +50,23 @@ def test_watcher_finds_a_piece_that_stays_and_ignores_one_that_passes():
         w.step(t, f)
     ch = w.changes(min_area=20)
     assert len(ch) == 1 and abs(ch[0]["t"] - 10) < 1.0 and 20 <= ch[0]["x"] <= 35
+
+
+def test_algae_counter_decides_net_vs_coral():
+    # a robot sits at the barge, so on positions alone this +4 would be NET; the algae counter didn't move
+    need = {"net": 0, "teleop_L3": 1, "teleop_L2": 0, "leave": 0}
+    j = _jump(4, {"net": 0.9, "teleop_L3": 0.1})
+    j["algae"] = 0
+    assert Reefscape2025.decode_jumps([j], need, 0) == [["teleop_L3"]]
+    j["algae"] = 1
+    assert Reefscape2025.decode_jumps([j], {**need, "net": 1, "teleop_L3": 0}, 0) == [["net"]]
+
+
+def test_overlay_counter_deltas():
+    from autoscout.overlay import ScoreSample, ScoreTimeline
+
+    s = [ScoreSample(t, None, 0, 0) for t in (0.0, 0.5, 1.0, 1.5)]
+    tl = ScoreTimeline(samples=s, clock=None, blue=np.zeros(4), red=np.zeros(4),
+                       counters={"red_algae": np.array([0, 0, 1, 3])})
+    assert tl.counter_deltas("red_algae") == [(1.0, 1), (1.5, 2)]
+    assert tl.to_dict()["counters"]["red_algae"] == [0, 0, 1, 3]

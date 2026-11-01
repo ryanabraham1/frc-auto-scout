@@ -192,7 +192,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
             base_cal.overlay = layout.to_dict()
             base_cal.save()
     prog.update("scoreboard", 0.1, "reading match clock and score", force=True)
-    tl = overlay.read_timeline(video, layout, fm.auto_len, fm.teleop_len)
+    tl = overlay.read_timeline(video, layout, fm.auto_len, fm.teleop_len, counters=_counters(base_cal, video))
     clock = tl.clock
     if clock is None:
         raise RuntimeError("could not read the match clock from the overlay")
@@ -399,7 +399,8 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     clock = MatchClock(**old["clock"])
     tl_d = old["timeline"]
     samples = [ScoreSample(t, tm, b, r) for t, tm, b, r in zip(tl_d["t"], tl_d["timer"], tl_d["blue"], tl_d["red"])]
-    tl = ScoreTimeline(samples=samples, clock=clock, blue=np.array(tl_d["blue"], float), red=np.array(tl_d["red"], float))
+    tl = ScoreTimeline(samples=samples, clock=clock, blue=np.array(tl_d["blue"], float), red=np.array(tl_d["red"], float),
+                       counters={k: np.array(v, float) for k, v in tl_d.get("counters", {}).items()})
     tracks = {k: [tuple(r) for r in v] for k, v in old["raw_tracks"].items()}
     launches = {}
     for k, v in old["launches"].items():
@@ -478,6 +479,15 @@ def _track_fields(tracks: dict) -> dict:
     }
 
 
+def _counters(base_cal: Calibration, video: Video) -> dict | None:
+    """Extra overlay counters configured for the event (overlay.counters in its YAML), if the video
+    has the calibrated frame size."""
+    ov = base_cal.overlay or {}
+    if ov.get("counters") and tuple(ov.get("frame_size", ())) == (video.width, video.height):
+        return ov["counters"]
+    return None
+
+
 def rescore(match_key: str, tba: TBA | None = None) -> dict:
     """Re-read the broadcast score timeline (e.g. after a fix to score reading), then reanalyze."""
     path = RESULTS_DIR / f"{match_key}.json"
@@ -491,7 +501,7 @@ def rescore(match_key: str, tba: TBA | None = None) -> dict:
     if layout is None:
         layout = overlay.detect_layout(video)
     fm = games.get(old["year"]).field
-    tl = overlay.read_timeline(video, layout, fm.auto_len, fm.teleop_len)
+    tl = overlay.read_timeline(video, layout, fm.auto_len, fm.teleop_len, counters=_counters(base_cal, video))
     old["timeline"] = tl.to_dict()
     path.write_text(json.dumps(old, default=_json_default))
     return reanalyze(match_key, tba)

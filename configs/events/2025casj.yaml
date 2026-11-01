@@ -41,6 +41,10 @@ overlay:
   frame_size:
   - 1920
   - 1080
+  # algae scored per alliance (NET + PROCESSOR), shown next to the coral-level counter
+  counters:
+    blue_algae: [230, 78, 56, 34]
+    red_algae: [1636, 78, 56, 34]
 aux_views:
   blue_reef: [0, 645, 960, 370]
   red_reef: [960, 645, 960, 370]

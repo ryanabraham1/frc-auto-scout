@@ -35,7 +35,7 @@ class OverlayLayout:
 
     @classmethod
     def from_dict(cls, d):
-        return cls(**{k: tuple(v) for k, v in d.items()})
+        return cls(**{k: tuple(d[k]) for k in ("timer", "blue_score", "red_score", "frame_size")})
 
 
 def _center(b: Box):
@@ -189,6 +189,8 @@ class ScoreTimeline:
     clock: MatchClock | None
     blue: np.ndarray = field(default=None)  # cleaned, aligned with samples
     red: np.ndarray = field(default=None)
+    # extra per-alliance counters some broadcasts show (2025: algae scored), cleaned, aligned with samples
+    counters: dict = field(default_factory=dict)
 
     @property
     def times(self) -> np.ndarray:
@@ -205,14 +207,25 @@ class ScoreTimeline:
                 out.append((float(t[i]), d))
         return out
 
+    def counter_deltas(self, name: str) -> list[tuple[float, int]]:
+        """(video_time, +count) for every increase of an overlay counter (e.g. "red_algae")."""
+        arr = self.counters.get(name)
+        if arr is None:
+            return []
+        t = self.times
+        return [(float(t[i]), int(arr[i] - arr[i - 1])) for i in range(1, len(arr)) if arr[i] > arr[i - 1]]
+
     def to_dict(self):
-        return {
+        d = {
             "t": self.times.round(3).tolist(),
             "blue": self.blue.astype(int).tolist(),
             "red": self.red.astype(int).tolist(),
             "timer": [s.timer for s in self.samples],
             "clock": self.clock.to_dict() if self.clock else None,
         }
+        if self.counters:
+            d["counters"] = {k: np.asarray(v).astype(int).tolist() for k, v in self.counters.items()}
+        return d
 
 
 def clean_scores(raw: list[int | None], confirm: int = 2, window: int = 4, max_rise: int = 15) -> np.ndarray:
@@ -264,11 +277,18 @@ def fit_clock(samples: list[ScoreSample], auto_len: int, teleop_len: int, pause:
 
 
 def read_timeline(video: Video, layout: OverlayLayout, auto_len: int, teleop_len: int,
-                  interval: float = 0.5, t0: float = 0.0, t1: float | None = None) -> ScoreTimeline:
+                  interval: float = 0.5, t0: float = 0.0, t1: float | None = None,
+                  counters: dict | None = None) -> ScoreTimeline:
+    """Match clock and live scores; `counters` ({name: [x, y, w, h]}, e.g. "red_algae") are extra
+    overlay numbers read from the same frames."""
     samples = []
+    raw_counters = {k: [] for k in counters or {}}
     step = max(1, int(round(video.fps * interval)))
     dr = DigitReader()
     for t, img in video.iter_frames(t0, t1, step=step):
+        for k, box in (counters or {}).items():
+            c = dr.read(_crop(img, tuple(box)), "counter")
+            raw_counters[k].append(int(c) if c and len(c) <= 2 else None)
         tt = dr.read(_crop(img, layout.timer), "timer")
         b = dr.read(_crop(img, layout.blue_score), "score")
         r = dr.read(_crop(img, layout.red_score), "score")
@@ -286,11 +306,14 @@ def read_timeline(video: Video, layout: OverlayLayout, auto_len: int, teleop_len
     # Only trust scores within the match window (+ a few seconds of post-match counting).
     if clock:
         lo, hi = clock.start_vt - 2, clock.teleop_end_vt + 6
-        for s in samples:
+        for i, s in enumerate(samples):
             if s.t < lo:
                 s.blue = s.red = 0
             elif s.t > hi:
                 s.blue = s.red = None  # post-match graphics/replays: ignore
+            for v in raw_counters.values():
+                v[i] = 0 if s.t < lo else None if s.t > hi else v[i]
     tl.blue = clean_scores([s.blue for s in samples])
     tl.red = clean_scores([s.red for s in samples])
+    tl.counters = {k: clean_scores(v, max_rise=3) for k, v in raw_counters.items()}
     return tl

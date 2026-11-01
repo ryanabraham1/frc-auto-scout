@@ -40,17 +40,25 @@ endgame; the auto winner is inactive in shifts 1 and 3. Shots at an inactive Hub
 **2025.** The live overlay score says *what* was scored and when; the video says *who*. All of an alliance's score
 jumps are decoded together so they add up to the official FMS counts per category (L1–L4 auto/teleop, net,
 processor, leave, barge, foul points): a +4 that could be teleop L3 or NET goes to whichever the official counts still
-need and the robots' positions fit, and the +3s of LEAVE posted at the end of auto stay LEAVE. Each robot action is
+need and the robots' positions fit, and the +3s of LEAVE posted at the end of auto stay LEAVE. Where the broadcast
+shows each alliance's algae count (configure `overlay.counters` in the event YAML, as for 2025casj), every jump's
+number of algae is read from it directly. Each robot action is
 then credited from several clues: coral seen *appearing on the reef* in the wide shot (where on the reef → which
 robot was there; `vision/element_changes.py`), a robot's elevator going up (its box getting taller), time spent at
 the element around the post, and algae seen flying from a robot to the NET. A robot carries one coral at a time,
-so it is unlikely to be credited two coral within 3 s. Coral credit in AUTO is pulled a little toward an even
+so it is unlikely to be credited two coral within 3 s. NET shots happen on the far side, where robots are often
+not detected, so a robot the tracker can't see at that moment stays a NET candidate. Coral credit in AUTO is pulled a little toward an even
 split (every robot usually scores its preload).
 
 2025 accuracy, Silicon Valley (per-team averages vs OPR from matches the scouter never saw; 11 held-out matches never
 used for tuning): coral r 0.58 → 0.67, L4 0.54 → 0.59, net algae 0.79 → 0.80; score jumps decoded into the wrong
 category 44% → 4%. Check with `python scripts/eval2025.py 2025casj`. Matches processed before the reef watcher
-existed get it with `autoscout watch-elements EVENT` (seconds per match, no robot detection).
+existed get it with `autoscout watch-elements EVENT` (seconds per match, no robot detection), and the algae counter
+with `autoscout rescore EVENT`.
+
+2025 robot detection uses our own model only (no Spy Glass), with field checks: a robot's ground point must map
+inside the field line (2025 `robot_margin`), not inside a REEF, and no box as wide as a REEF over its base counts.
+On 12 hand-marked 2025 frames (48 robots): recall 75%, precision 90% (the ensemble without the checks: 83% / 61%).
 
 ## Quick start
 

@@ -30,6 +30,10 @@ JOINT_CREDIT = True  # credit all of an alliance's actions together (one piece p
 REFRACTORY = 3.0  # s: one robot doesn't score two pieces of the same kind closer together than this
 REFRACTORY_COST = 1.0  # objective cost of crediting one robot inside that window anyway (log-likelihood)
 AUTO_SHRINK = 0.3  # pseudo-share each robot gets in splitting AUTO coral before the video's shares
+ELEM_TIME_W = 0.0  # weight of each robot's share of match time at the NET / PROCESSOR in algae credit
+UNSEEN_W = 0.5  # NET credit for a robot not detected around the post (the NET side is a detection blind spot)
+ALGAE_COUNTER = True  # use the overlay's per-alliance algae counter when the event has one
+ALGAE_MISMATCH = 5.0  # decoding cost per algae action more/fewer than the counter moved at that jump
 UNMATCHED_W = 0.0  # weight of a coral seen placed that no score jump explains (off: hurt vs OPR, 15 matches)
 LEVEL_HEIGHTS = [("L4", 0.75), ("L3", 0.55), ("L2", 0.38), ("L1", -1.0)]  # placement height (0-1 of reef) -> level
 LIFT_BOOST = 3.0  # coral credit multiplier per unit of elevator lift (box taller than usual) near the post
@@ -77,9 +81,10 @@ def _decompose(points: int, allowed: dict[str, int]) -> list[list[str]]:
 class Reefscape2025(GamePlugin):
     year = 2025
     prior: dict | None = None  # alliance -> {team: {cat: weight}}, set by an event-level pass
-    # Robots spend long stretches at a REEF face, often half hidden: recall matters more than in 2026
-    # (Silicon Valley, 11 matches: coral vs OPR r=0.80 with these, 0.67 with the 2026 settings)
-    detector_ensemble = True
+    # Spy Glass used to be ensembled for recall at the REEF; on 12 hand-marked 2025 frames (48 robots) our
+    # own model with the field filters scores recall 75% / precision 90% vs the ensemble's 77% / 82%
+    # (61% unfiltered), and every false box becomes a junk track
+    detector_ensemble = False
     static_frac = 0.5
     launch_pieces = {"algae": ((78, 60, 80), (100, 255, 255))}
     watch_elements = ("blue_reef", "red_reef")  # coral placed on the reefs (vision/element_changes.py)
@@ -242,6 +247,11 @@ class Reefscape2025(GamePlugin):
                         w = {t: v / tot + AUTO_SHRINK for t, v in w.items()}
                     elem = "reef" if cat.startswith("L") else cat
                     fb = {t: near_time[t][elem] for t in teams[a]}
+                    if elem != "reef" and ELEM_TIME_W > 0 and sum(fb.values()) > 0 and sum(w.values()) > 0:
+                        # who hangs around the NET / PROCESSOR all match is who scores there: steadier than
+                        # positions at each post (the NET side is where robots go undetected)
+                        tw, tf = sum(w.values()), sum(fb.values())
+                        w = {t: w[t] / tw + ELEM_TIME_W * fb[t] / tf for t in w}
                     split[ph][cat] = self.proportional_split(official, w, fb)
             explained = sum(sum(weights[ph][t][c] for t in teams[a] for c in CATS) for ph in ("auto", "teleop"))
             off_total = sum(sum(counts[ph].values()) for ph in counts) if counts else None
@@ -326,6 +336,11 @@ class Reefscape2025(GamePlugin):
             # algae seen flying from a robot just before the post
             near, _ = self._evidence(ctx, a, teams, t)
             w = {tm: np.exp(-d[elem] / SOFT_SCALE) for tm, d in near.items() if d[elem] <= NEAR[elem] + 1.0}
+            # The NET is on the far side, where robots often go undetected: a robot the tracker can't see
+            # right now is a real candidate, one clearly seen elsewhere is not.
+            for tm in teams:
+                if UNSEEN_W > 0 and not self._seen(ctx, tm, t - 3.0, t + 0.5):
+                    w[tm] = max(w.get(tm, 0.0), UNSEEN_W)
             for L in ctx.launches.get("algae", []):
                 if getattr(L, "rising", True) and t - LOOKBACK <= L.t0 <= t + 0.5:
                     slot, _ = self.attribute_launch(ctx, L)
@@ -350,6 +365,11 @@ class Reefscape2025(GamePlugin):
             conf = 0.3 * min(1.0, sum(w.values()))
         tot = sum(w.values())
         return ({tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}), conf
+
+    def _seen(self, ctx: MatchContext, team: int, t0: float, t1: float) -> bool:
+        """Was this team's robot actually detected (not just coasted) in [t0, t1]?"""
+        slot = ctx.slot_of(team, (t0 + t1) / 2)
+        return bool(slot) and any(t0 <= r[0] <= t1 and r[3] for r in ctx.tracks.get(slot, []))
 
     def _lift(self, ctx: MatchContext, team: int, t0: float, t1: float) -> float:
         """How far a robot raised its elevator in [t0, t1]: its tallest box (height / width) then over
@@ -495,8 +515,17 @@ class Reefscape2025(GamePlugin):
                     score[tok] = 1.0 - best / (NEAR[elem] + 1.0) if best <= NEAR[elem] + 1.0 else -3.0
                 else:
                     score[tok] = {"leave": 0.6, "foul2": -0.2, "foul6": -0.2}.get(tok, 0.3)
-            jumps.append({"points": d, "allowed": allowed, "score": score})
+            jumps.append({"points": d, "allowed": allowed, "score": score, "t": t})
             info.append((t, d))
+        # The broadcast's algae counter (NET + PROCESSOR) says how many of each jump's actions were algae.
+        cdel = ctx.timeline.counter_deltas(f"{a}_algae") if ALGAE_COUNTER else []
+        if f"{a}_algae" in getattr(ctx.timeline, "counters", {}) and ALGAE_COUNTER:
+            for J in jumps:
+                J["algae"] = 0
+            for tc, n in cdel:
+                near_j = [J for J in jumps if abs(J["t"] - tc) <= 1.0]
+                if near_j:
+                    min(near_j, key=lambda J: abs(J["t"] - tc))["algae"] += n
         actions = []
         for (t, d), combo in zip(info, self.decode_jumps(jumps, need, foul_pts)):
             phase = "auto" if t <= clk.auto_end_vt + 0.5 else "teleop"
@@ -577,6 +606,8 @@ class Reefscape2025(GamePlugin):
         for j, J in enumerate(jumps):
             for combo in _decompose(J["points"], J["allowed"]):
                 s = sum(J["score"][k] for k in combo) - 1.2 * (len(combo) - 1)
+                if J.get("algae") is not None:  # the overlay's algae counter moved by this much
+                    s -= ALGAE_MISMATCH * abs(sum(k in ("net", "processor") for k in combo) - J["algae"])
                 cols.append((j, combo, s))
             cols.append((j, None, NOTHING))
         if not cols:
