@@ -76,3 +76,18 @@ def test_cancel_with_nothing_running(monkeypatch):
     monkeypatch.setattr(web, '_orphan_runs', lambda ek: [])
     monkeypatch.setattr(web, 'JOBS', {})
     assert web.cancel_run('2026test') == {'cancelled': False, 'reason': 'nothing is running for this event'}
+
+
+def test_run_rejects_bad_workers(monkeypatch):
+    monkeypatch.setattr(web.Calibration, 'load', staticmethod(lambda ek: type('C', (), {'points': {i: 0 for i in range(4)}})()))
+    monkeypatch.setattr(web, '_event_job', lambda ek: None)
+    with pytest.raises(HTTPException) as error:
+        web.run_event('2026test', body={'workers': 'many'})
+    assert error.value.status_code == 400
+
+
+def test_annotate_accepts_quarterfinal_keys(monkeypatch, tmp_path):
+    monkeypatch.setattr(web, '_results', lambda: tmp_path)
+    with pytest.raises(HTTPException) as error:
+        web.annotate('2026test_qf1m1')
+    assert error.value.status_code == 404  # passed key validation, no result yet

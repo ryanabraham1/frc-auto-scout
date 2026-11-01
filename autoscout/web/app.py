@@ -42,7 +42,7 @@ def events():
     for p in config.EVENTS_DIR.glob("*.yaml"):
         if p.stem.endswith("_overrides"):
             continue
-        d = yaml.safe_load(p.read_text())
+        d = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         out.setdefault(p.stem, {"event_key": p.stem, "year": d.get("year"), "matches": 0, "done": 0})
         out[p.stem]["calibrated"] = len(d.get("points", {})) >= 4
     return sorted(out.values(), key=lambda e: (-(e["year"] or 0), e["event_key"]))
@@ -54,7 +54,8 @@ def event(event_key: str):
     c = con()
     ms = [dict(r) for r in c.execute(
         "SELECT match_key,label,comp_level,set_number,match_number,red,blue,red_score,blue_score,status,error "
-        "FROM matches WHERE event_key=? ORDER BY comp_level='f', comp_level='sf', set_number, match_number", (event_key,))]
+        "FROM matches WHERE event_key=? ORDER BY CASE comp_level WHEN 'qm' THEN 0 WHEN 'ef' THEN 1 WHEN 'qf' THEN 2 "
+        "WHEN 'sf' THEN 3 WHEN 'f' THEN 4 ELSE 5 END, set_number, match_number", (event_key,))]
     for m in ms:
         m["red"] = json.loads(m["red"]) if m["red"] else []
         m["blue"] = json.loads(m["blue"]) if m["blue"] else []
@@ -229,7 +230,11 @@ def run_event(event_key: str, limit: int = 0, body: dict | None = None):
     if (_event_job(event_key) or {}).get("running"):
         return {"started": False, "reason": "already running"}
     body = body or {}
-    args = ["run-event", event_key, "--limit", str(limit), "--workers", str(max(1, min(int(body.get("workers", 1)), 4)))]
+    try:
+        workers = max(1, min(int(body.get("workers", 1)), 4))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "workers must be a number from 1 to 4")
+    args = ["run-event", event_key, "--limit", str(limit), "--workers", str(workers)]
     matches = [str(k) for k in body.get("matches") or []]
     for k in matches:
         if not re.fullmatch(re.escape(event_key) + r"_(?:qm\d+|(?:ef|qf|sf|f)\d+m\d+)", k):
@@ -238,9 +243,10 @@ def run_event(event_key: str, limit: int = 0, body: dict | None = None):
         args += ["--matches", ",".join(matches)]
     if body.get("debug_video"):
         args.append("--debug-video")
-    log = open(config.DATA_DIR / f"run_{event_key}.log", "w")
-    JOBS[event_key] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", *args],
-                                       stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(config.DATA_DIR / f"run_{event_key}.log", "w") as log:
+        JOBS[event_key] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", *args],
+                                           stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
     return {"started": True}
 
 
@@ -441,7 +447,7 @@ def _label_frame(video: str, t: float, event: str = ""):
 def add_seeds(body: dict, background: BackgroundTasks):
     path = config.CONFIG_DIR / "seeds" / "dashboard.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    segs = yaml.safe_load(path.read_text()) if path.exists() else []
+    segs = (yaml.safe_load(path.read_text()) if path.exists() else None) or []
     seg = {"video": body["video"], "event": body["event"], "t": float(body["t"]),
            "duration": int(body.get("duration", 30)), "fps": int(body.get("fps", 4)),
            "robots": [[r[0], *[int(v) for v in r[1:]]] for r in body["robots"]]}
@@ -451,9 +457,9 @@ def add_seeds(body: dict, background: BackgroundTasks):
         one = config.DATA_DIR / "tmp" / "seed_once.yaml"
         one.parent.mkdir(parents=True, exist_ok=True)
         one.write_text(yaml.safe_dump([seg]))
-        log = open(config.DATA_DIR / "label_jobs.log", "a")
-        JOBS["label"] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", "label-seeds", str(one)],
-                                         stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
+        with open(config.DATA_DIR / "label_jobs.log", "a") as log:
+            JOBS["label"] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", "label-seeds", str(one)],
+                                             stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
     return {"ok": True, "segments": len(segs)}
 
 
@@ -511,9 +517,9 @@ def train():
     if (_job_status("train") and _job_status("train")["running"]) or _training_status()["running"]:
         raise HTTPException(409, "Detector training is already running")
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    log = open(config.DATA_DIR / "train.log", "w")
-    JOBS["train"] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", "train-robots"],
-                                     stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
+    with open(config.DATA_DIR / "train.log", "w") as log:
+        JOBS["train"] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", "train-robots"],
+                                         stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
     return {"started": True}
 
 
@@ -716,7 +722,7 @@ def annotated_file(name: str, download: bool = False):
 @app.post("/api/annotate/{match_key}")
 def annotate(match_key: str):
     """Render the annotated video of a processed match in the background."""
-    if not re.fullmatch(r"20\d\d[a-z0-9]+_(qm|sf|f)\d+(m\d+)?", match_key):
+    if not re.fullmatch(r"20\d\d[a-z0-9]+_(?:qm\d+|(?:ef|qf|sf|f)\d+m\d+)", match_key):
         raise HTTPException(400, "bad match key")
     rp = _results() / f"{match_key}.json"
     if not rp.exists():
@@ -731,10 +737,10 @@ def annotate(match_key: str):
     if _job_status(key) and _job_status(key)["running"]:
         return {"started": False, "reason": "already rendering"}
     DEMOS.mkdir(exist_ok=True)
-    log = open(config.DATA_DIR / f"render_{match_key}.log", "w")
-    JOBS[key] = subprocess.Popen([sys.executable, "scripts/render_demo.py", match_key, str(src),
-                                  str(DEMOS / f"{match_key}_annotated.mp4")], stdout=log, stderr=subprocess.STDOUT,
-                                 cwd=config.ROOT)
+    with open(config.DATA_DIR / f"render_{match_key}.log", "w") as log:
+        JOBS[key] = subprocess.Popen([sys.executable, "scripts/render_demo.py", match_key, str(src),
+                                      str(DEMOS / f"{match_key}_annotated.mp4")], stdout=log, stderr=subprocess.STDOUT,
+                                     cwd=config.ROOT)
     return {"started": True}
 
 
