@@ -441,17 +441,17 @@ async function viewMatch(mk) {
       ${periods ? `<div style="margin-top:14px"><div class="legend" style="margin-bottom:8px">${periods.map((p, i) => `<span><i style="background:${PERIOD_COLORS[i]}"></i>${p}</span>`).join('')}</div>
         ${teams.map(([t, m]) => { const tot = Math.max(1, ...Object.values(r.teams).map(x => x.fuel_scored));
           return `<div class="row small" style="margin:6px 0;flex-wrap:nowrap"><span style="width:48px" class="num"><b>${t}</b></span><div class="bar" style="width:${Math.max(4, 100 * m.fuel_scored / tot)}%;max-width:62%">
-          ${periods.map((p, i) => `<span title="${p}: ${m.fuel_scored_by_period[p]}" style="width:${100 * m.fuel_scored_by_period[p] / Math.max(1, m.fuel_scored)}%;background:${PERIOD_COLORS[i]}"></span>`).join('')}</div>
+          ${periods.map((p, i) => `<span title="${p}: ${m.fuel_scored_by_period?.[p] ?? 0}" style="width:${100 * (m.fuel_scored_by_period?.[p] ?? 0) / Math.max(1, m.fuel_scored)}%;background:${PERIOD_COLORS[i]}"></span>`).join('')}</div>
           <span class="muted num">${m.fuel_scored} scored · ${m.fuel_fed} fed</span></div>`; }).join('')}</div>` : ''}
       ${r.alliances?.[a] ? `<div class="small muted" style="margin-top:10px">${Object.entries(r.alliances[a]).map(([k, v]) => `${esc(k.replaceAll('_', ' '))}: <b>${fmt(v)}</b>`).join(' · ')}</div>` : ''}
     </div>`; };
   const slotRows = ['red', 'blue'].map(a => `<div class="row" style="margin:6px 0">${[0, 1, 2].map(i => { const s = `${a}${i}`;
-    const c = r.identity_conf[s]; const cc = c >= 0.7 ? 'good' : 'warn';
+    const c = r.identity_conf?.[s]; const cc = c >= 0.7 ? 'good' : 'warn';
     return `<label class="row small" style="gap:6px"><span class="chip ${a}">${s}</span><select data-slot="${s}">${r[a].map(t => `<option ${r.identity[s] == t ? 'selected' : ''}>${t}</option>`).join('')}</select><span class="chip ${cc}" title="identity confidence">${c ?? '?'}</span></label>`; }).join('')}</div>`).join('');
   const yt = t => `https://www.youtube.com/watch?v=${r.video}&t=${Math.max(0, Math.floor(t - 2))}s`;
   const av = r.annotated_video, seekable = av && av.offset != null;
   app.innerHTML = head(esc(r.label), teamsInline(r.red, r.blue),
-    `${av && av.kind === 'demo' ? `<a class="btn" href="/api/annotated/${mk}_annotated.mp4?download=1" download>Download video</a>` : ''}<a class="btn" href="#/robots/${mk}">Who is this?</a><a class="btn" target="_blank" href="https://www.youtube.com/watch?v=${r.video}">YouTube</a>${av ? '' : `<button class="primary" data-render="${mk}">Render annotated video</button>`}`,
+    `${av && av.downloadable ? `<a class="btn" href="/api/annotated/${mk}_annotated.mp4?download=1" download>Download video</a>` : ''}<a class="btn" href="#/robots/${mk}">Who is this?</a><a class="btn" target="_blank" href="https://www.youtube.com/watch?v=${r.video}">YouTube</a>${av ? '' : `<button class="primary" data-render="${mk}">Render annotated video</button>`}`,
     `<a href="#/events">Events</a> / <a href="#/event/${r.event_key}">${esc(r.event_key)}</a> / ${esc(mk)}`) +
   `${av ? `<div class="player" style="margin-bottom:16px"><video id="av" controls preload="metadata" src="/api/match/${mk}/video.mp4"></video></div>` : ''}
   <div class="card"><div class="card-head"><h2>Score over time</h2><div class="legend"><span><i style="background:var(--red)"></i>red</span><span><i style="background:var(--blue)"></i>blue</span></div></div>${timelineSVG(r.timeline, r.clock)}</div>
@@ -565,7 +565,7 @@ async function viewLabel() {
     return JSON.stringify({...JSON.parse(loaded), robots: boxes, duration: 5, fps: 4}); };
   $('#prop').onclick = async () => { await api('/api/label/seeds', {method: 'POST', headers: H, body: body()}); $('#msg').textContent = 'Propagating in the background…'; };
   $('#sug').onclick = async () => { const requested = loaded; body(); $('#sug').disabled = true;
-    try { const b = await api(`/api/label/suggest?video=${encodeURIComponent($('#vid').value)}&t=${$('#t').value}&event=${$('#ev').value}`);
+    try { const b = await api(`/api/label/suggest?video=${encodeURIComponent($('#vid').value)}&t=${$('#t').value}&event=${encodeURIComponent($('#ev').value.trim())}`);
       if (requested !== loaded) return; boxes.length = 0; boxes.push(...b); draw(); }
     finally { $('#sug').disabled = !loaded; } };
   const save = async () => { const r = await api('/api/label/save', {method: 'POST', headers: H, body: body()}); $('#msg').textContent = `Saved ${r.stem}`; };

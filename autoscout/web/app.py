@@ -85,7 +85,8 @@ def match(match_key: str):
     clock = r.get("clock") or {}
     # demo videos (scripts/render_demo.py) run in real time from 1 s before auto, so video time maps to demo time
     offset = clock["auto_end_vt"] - clock["auto_len"] - 1.0 if kind == "demo" and "auto_end_vt" in clock else None
-    r["annotated_video"] = {"kind": kind, "offset": offset} if kind else None
+    r["annotated_video"] = ({"kind": kind, "offset": offset, "downloadable": vpath.name == f"{match_key}_annotated.mp4" and vpath.parent == DEMOS}
+                            if kind else None)
     return r
 
 
@@ -153,6 +154,7 @@ def match_video(match_key: str):
 
 @app.get("/api/team/{event_key}/{team}")
 def team(event_key: str, team: int):
+    _event_key(event_key)
     rows = con().execute("SELECT match_key, metrics FROM team_matches WHERE event_key=? AND team=?", (event_key, team))
     return [{"match_key": r["match_key"], **json.loads(r["metrics"])} for r in rows]
 
@@ -321,6 +323,7 @@ def run_log(event_key: str):
 # ---- calibration -------------------------------------------------------------------------
 @app.get("/api/calibration/{event_key}")
 def get_cal(event_key: str):
+    _event_key(event_key)
     cal = Calibration.load(event_key)
     year = int(event_key[:4])
     fm = FieldModel.load(year)
@@ -331,6 +334,7 @@ def get_cal(event_key: str):
 
 @app.get("/api/calibration/{event_key}/ref.jpg")
 def cal_ref(event_key: str):
+    _event_key(event_key)
     cal = Calibration.load(event_key)
     if not cal or not cal.reference:
         raise HTTPException(404, "no reference frame; run `autoscout calibrate <match_key>`")
@@ -339,6 +343,7 @@ def cal_ref(event_key: str):
 
 @app.post("/api/calibration/{event_key}")
 def save_cal(event_key: str, body: dict):
+    _event_key(event_key)
     cal = Calibration.load(event_key)
     year = int(event_key[:4])
     if cal is None:
@@ -354,6 +359,7 @@ def save_cal(event_key: str, body: dict):
 
 @app.get("/api/calibration/{event_key}/preview.jpg")
 def cal_preview(event_key: str):
+    _event_key(event_key)
     import numpy as np
 
     cal = Calibration.load(event_key)
