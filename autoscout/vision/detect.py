@@ -63,6 +63,8 @@ def available_weights():
     """TensorRT is CUDA-only and must not shadow newer portable weights."""
     for p in map(Path, DEFAULT_WEIGHTS):
         if p.suffix == ".engine":
+            if not p.exists():
+                continue  # retired when newer weights were deployed (train_robots.promote)
             portable = p.with_suffix(".pt")
             if config.device() != "cuda" or (portable.exists() and portable.stat().st_mtime > p.stat().st_mtime):
                 continue

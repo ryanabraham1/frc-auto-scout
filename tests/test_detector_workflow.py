@@ -181,3 +181,13 @@ def test_cross_scale_consensus_and_weak_tracking_evidence():
     assert detect.merge_scales([[a], [Det(1, 1, 21, 21, .4, "blue")]], .3) == []
     confident = Det(0, 0, 20, 20, .7, "red")
     assert detect.merge_scales([[confident], []], .3) == [confident]
+
+
+def test_missing_tensorrt_engine_is_skipped(tmp_path, monkeypatch):
+    from autoscout.vision import detect
+
+    pt = tmp_path / "autoscout-robots.pt"
+    pt.write_bytes(b"x")
+    monkeypatch.setattr(detect, "DEFAULT_WEIGHTS", [str(tmp_path / "autoscout-robots.engine"), str(pt)])
+    monkeypatch.setattr(detect.config, "device", lambda: "cuda")
+    assert list(detect.available_weights()) == [pt]  # no crash on the retired engine
