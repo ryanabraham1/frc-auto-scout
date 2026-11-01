@@ -30,6 +30,12 @@ COLUMN_WEIGHT = 0.3  # release blobs per detected shot (a ball is seen leaving i
 FEED_MIN_DEPTH = 0.5  # m past the zone line: closer launches are shots taken from the line
 FEED_SPEED = 1.0  # m/s of image-horizontal speed toward the own zone at release
 FEED_ACCURACY = 0.8  # share of own-zone shots that score, for converting release blobs to balls
+HISTORY_S = 3.0  # s: a robot that fired with certainty this recently is preferred for nearby launches
+HISTORY_BONUS = 0.25  # box widths
+SURE_D, SURE_MARGIN = 0.15, 0.5  # a launch is certain when it starts at a detected robot and no other is near
+MIN_EVIDENCE = 1.0  # evidence (~ one detected shot) below which the longer volley window is added
+VOLLEY_WINDOW = 8.0  # s looked back for shooters when nobody released just before a score
+TRACE_BACK = 4  # blob frames kept for tracing a ball back to its shooter
 RELEASE_SPEED = 3.0  # m/s upward: launched FUEL leaves a shooter at ~8-12 m/s; crowd and hopper motion is slower
 SHOT_WINDOW = 3.0  # s before a score increase in which the scoring shot was released
 COUNT_LAG = 1.0  # s between release and the hub sensor counting the FUEL
@@ -171,6 +177,7 @@ class Rebuilt2026(GamePlugin):
         unattributed = 0.0
         shot_log = []  # (t0, team or "HP", alliance, pieces, made) for time-local attribution
         hub_zone = self.hub_top_zone(ctx)
+        shooter_of = self.history_shooters(ctx, ctx.launches.get("fuel", []), hub_zone)
         for L in ctx.launches.get("fuel", []):
             period = period_of(ctx, L.t0 + COUNT_LAG)
             if period is None:
@@ -179,8 +186,8 @@ class Rebuilt2026(GamePlugin):
                 continue  # first seen at a HUB's top: FUEL dropping in or bouncing off, not a release
             if getattr(L, "rising", True):
                 # a release must be right at a robot's top: looser matches pick up crowd motion
-                # and the overlay above far-side robots
-                slot, _ = self.attribute_launch(ctx, L, max_d=0.6)
+                # and the overlay above far-side robots; ties go to whoever was already firing
+                slot = shooter_of.get(id(L))
             elif L.target and L.target.endswith("_hub"):
                 # descent-only (ascent hidden, typical inside a volley) but dropping into a HUB:
                 # trace the arc back to the shooter of that HUB's alliance
@@ -401,6 +408,7 @@ class Rebuilt2026(GamePlugin):
         # against it: nothing in the HUB-top zone is a release
         keep = ~self.hub_top_zone(ctx)(X, Y)
         prev_tree, prev_t, prev_xy = None, None, None
+        hist = []  # (t, xy, tree) of the last few blob frames, to trace balls back to where they started
         for k in range(len(times)):
             sel = keep[starts[k]: ends[k]]
             xy = np.stack([X[starts[k]: ends[k]][sel], Y[starts[k]: ends[k]][sel]], 1)
@@ -436,6 +444,8 @@ class Rebuilt2026(GamePlugin):
                         cx = 0.5 * (x0 + x1)
                         inside = ((np.abs(xy[:, 0] - cx) < 0.7 * w) & (xy[:, 1] < y0 + 0.15 * h)
                                   & (xy[:, 1] > y0 - 1.6 * h) & (vy < -RELEASE_SPEED * ppm))
+                        if inside.any():  # it must have come out of this robot, not flown in over it
+                            inside[inside] = self._from_robot(xy[inside], hist, x0, y0, x1, y1, vmax)
                         dd = np.hypot((xy[:, 0] - cx) / w, (xy[:, 1] - y0) / h)
                         take = inside & (dd < best_d)
                         best[take], best_d[take] = zi, dd[take]
@@ -452,7 +462,93 @@ class Rebuilt2026(GamePlugin):
                                 self.feed_blobs[team][period_of(ctx, times[k]) or "teleop"] += c
                                 self.feed_log.append((float(times[k]), team, slot[:-1], c))
             prev_tree, prev_t, prev_xy = tree, times[k], xy
+            hist = (hist + [(times[k], xy, tree)])[-TRACE_BACK:]
         return times, {slot: np.cumsum(c) for slot, c in counts.items()}
+
+    @staticmethod
+    def _from_robot(pts, hist, x0, y0, x1, y1, step):
+        """Which of these ball positions trace back (nearest blob, frame by frame) to inside the robot's
+        box within the last few frames. A ball shot by a teammate, or bouncing off the HUB, is moving up
+        over a robot too, but it was never inside it."""
+        w, h = x1 - x0, y1 - y0
+        out = np.zeros(len(pts), bool)
+        cur = pts.copy()
+        alive = np.ones(len(pts), bool)
+        for _t, xy, tree in reversed(hist[:-1] if hist else []):
+            if tree is None or not alive.any():
+                break
+            d, j = tree.query(cur[alive], distance_upper_bound=step)
+            idx = np.nonzero(alive)[0]
+            found = np.isfinite(d)
+            alive[idx[~found]] = False
+            cur[idx[found]] = xy[j[found]]
+            p = cur[idx[found]]
+            hit = (p[:, 0] > x0 - 0.15 * w) & (p[:, 0] < x1 + 0.15 * w) & (p[:, 1] > y0 - 0.25 * h) & (p[:, 1] < y1)
+            out[idx[found][hit]] = True
+        # first sighting already above the box (fast release, or one missed frame): accept if it is
+        # within one box height of the robot's top and directly over it
+        first = ~out & ~alive
+        out |= first & (np.abs(pts[:, 0] - 0.5 * (x0 + x1)) < 0.5 * w) & (pts[:, 1] > y0 - 1.0 * h)
+        return out
+
+    def history_shooters(self, ctx: MatchContext, launches, hub_zone) -> dict[int, str | None]:
+        """Shooter slot of every rising launch, using each robot's recent firing history.
+
+        Pass 1: launches whose nearest robot is detected right there (and clearly nearer than any
+        other) are certain; they mark that robot as firing at that moment. Pass 2: every launch is
+        scored by distance, minus a bonus for robots that fired with certainty within HISTORY_S s,
+        and an estimated (not detected) box costs less for such a robot: when a shooter's detection
+        drops out mid-volley, its estimated position plus its history keep the volley its own, rather
+        than handing it to a detected robot nearby that never fired."""
+        cand = {}
+        sure = defaultdict(list)  # slot -> times of certain launches
+        bounce = self.hub_bounce(ctx)
+        for L in launches:
+            if not getattr(L, "rising", True) or hub_zone(np.array([L.start[0]]), np.array([L.start[1]]))[0]:
+                continue
+            if bounce(L):
+                continue
+            ds = self.launch_distances(ctx, L)
+            if not ds:
+                continue
+            cand[id(L)] = (L.t0, ds)
+            ranked = sorted(ds.items(), key=lambda kv: kv[1][0])
+            (s0, (d0, obs0)) = ranked[0]
+            d1 = ranked[1][1][0] if len(ranked) > 1 else 9.0
+            if obs0 and d0 < SURE_D and d1 - d0 > SURE_MARGIN:
+                sure[s0].append(L.t0)
+        sure = {k: np.sort(v) for k, v in sure.items()}
+        out = {}
+        for lid, (t, ds) in cand.items():
+            best, best_d = None, 1e9
+            for slot, (d, observed) in ds.items():
+                ts = sure.get(slot)
+                fired = bool(ts is not None and len(ts) and np.min(np.abs(ts - t)) < HISTORY_S)
+                d_eff = d + (0.0 if observed else (0.05 if fired else 0.25)) - (HISTORY_BONUS if fired else 0.0)
+                if d_eff < best_d:
+                    best, best_d = slot, d_eff
+            out[lid] = best if best_d < 0.6 else None
+        return out
+
+    def hub_bounce(self, ctx: MatchContext):
+        """f(launch) -> True for FUEL popping up in front of a HUB without ever rising to its opening:
+        a bounce off the HUB face or out of a hopper parked against it, not a shot (a shot from point
+        blank still has to arc up over the opening to go in)."""
+        hubs = []
+        for hub in ("red_hub", "blue_hub"):
+            top = ctx.cal.points.get(f"{hub}_top")
+            if top is not None:
+                e = self.field.elements[hub]
+                r = 0.6 * e["size"][0] * ctx.cal.px_per_meter_x(e["center"])
+                hubs.append((float(top[0]), float(top[1]), r))
+
+        def f(L):
+            sx, sy = L.start
+            for tx, ty, r in hubs:
+                if abs(sx - tx) < 2.5 * r and sy > ty and L.apex[1] > ty - 0.3 * r:
+                    return True
+            return False
+        return f
 
     def hub_top_zone(self, ctx: MatchContext):
         """f(X, Y) -> bool array: image points in the zone around and above either HUB opening
@@ -529,6 +625,23 @@ class Rebuilt2026(GamePlugin):
                         if c > 0:
                             w[team] += COLUMN_WEIGHT * c
             src = "seen" if w else "position"
+            if sum(w.values()) < MIN_EVIDENCE and ctimes is not None:
+                # little or nothing released in the last 3 s: the score is usually the tail of a volley that
+                # started earlier (FUEL queues in the HUB before it is counted), so also count who was firing
+                # over a longer window; a stray blip alone must not take a whole increase
+                lo2 = t - VOLLEY_WINDOW
+                i0, i1 = np.searchsorted(ctimes, lo2), np.searchsorted(ctimes, hi) - 1
+                for team in teams:
+                    slot = ctx.slot_of(team, t)
+                    if slot in csum and i1 >= max(i0, 0):
+                        c = csum[slot][i1] - (csum[slot][i0 - 1] if i0 > 0 else 0.0)
+                        if c > 0:
+                            w[team] += COLUMN_WEIGHT * c
+                for t0, who, a, n, is_made in shot_log:
+                    if a == alliance and lo2 <= t0 <= hi:
+                        w[who] += n * (2.0 if is_made else 1.0)
+                if w and src == "position":
+                    src = "volley"
             if not w:
                 for team in teams:
                     slot = ctx.slot_of(team, t)

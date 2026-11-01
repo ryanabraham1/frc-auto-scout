@@ -122,6 +122,24 @@ class GamePlugin:
         return (foot[0] - w / 2, foot[1] - 0.8 * w, foot[0] + w / 2, foot[1]), False
 
     @staticmethod
+    def launch_distances(ctx: MatchContext, launch, alliances=("red", "blue")) -> dict[str, tuple[float, bool]]:
+        """{slot: (distance in box widths from the release point to its box, box observed?)}"""
+        out = {}
+        sx, sy = launch.start
+        for slot in ctx.tracks:
+            if slot[:-1] not in alliances:
+                continue
+            rb = GamePlugin.robot_box(ctx, slot, launch.t0)
+            if rb is None:
+                continue
+            (x0, y0, x1, y1), observed = rb
+            w, h = x1 - x0, y1 - y0
+            dx = max(x0 - sx, 0, sx - x1)
+            dy = max((y0 - max(1.5 * h, 1.0 * w)) - sy, 0, sy - y1)
+            out[slot] = (float(np.hypot(dx, dy)) / max(w, 20), bool(observed))
+        return out
+
+    @staticmethod
     def attribute_launch(ctx: MatchContext, launch, alliances=("red", "blue"), max_d: float = 1.0):
         """Find the robot slot that released a launch (nearest robot box to the release point).
 
