@@ -43,3 +43,36 @@ def test_duplicate_job_does_not_start_process(monkeypatch):
 def test_invalid_event_is_rejected():
     with pytest.raises(HTTPException):
         web.event('../invalid')
+
+
+def test_run_passes_selected_matches_debug_video_and_workers(monkeypatch, tmp_path):
+    started = {}
+
+    class Proc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(web.Calibration, 'load', staticmethod(lambda ek: type('C', (), {'points': {i: 0 for i in range(4)}})()))
+    monkeypatch.setattr(web, '_event_job', lambda ek: None)
+    monkeypatch.setattr(web.config, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(web.subprocess, 'Popen', lambda cmd, **kw: started.setdefault('cmd', cmd) and Proc())
+    monkeypatch.setattr(web, 'JOBS', {})
+    assert web.run_event('2026test', body={'matches': ['2026test_qm3', '2026test_sf1m1'], 'debug_video': True, 'workers': 9})['started']
+    cmd = started['cmd']
+    assert cmd[cmd.index('--matches') + 1] == '2026test_qm3,2026test_sf1m1'
+    assert '--debug-video' in cmd
+    assert cmd[cmd.index('--workers') + 1] == '4'
+
+
+def test_run_rejects_match_from_another_event(monkeypatch):
+    monkeypatch.setattr(web.Calibration, 'load', staticmethod(lambda ek: type('C', (), {'points': {i: 0 for i in range(4)}})()))
+    monkeypatch.setattr(web, '_event_job', lambda ek: None)
+    with pytest.raises(HTTPException) as error:
+        web.run_event('2026test', body={'matches': ['2026other_qm1']})
+    assert error.value.status_code == 400
+
+
+def test_cancel_with_nothing_running(monkeypatch):
+    monkeypatch.setattr(web, '_orphan_runs', lambda ek: [])
+    monkeypatch.setattr(web, 'JOBS', {})
+    assert web.cancel_run('2026test') == {'cancelled': False, 'reason': 'nothing is running for this event'}

@@ -64,7 +64,7 @@ def event(event_key: str):
     except KeyError:
         defs = []
     return {"event_key": event_key, "year": year, "matches": ms, "teams": team_table(c, event_key), "metric_defs": defs,
-            "job": _job_status(event_key)}
+            "job": _event_job(event_key)}
 
 
 @app.get("/api/match/{match_key}")
@@ -176,18 +176,127 @@ def _job_status(key):
     return {"running": p.poll() is None, "returncode": p.returncode}
 
 
+def _orphan_runs(event_key: str):
+    """`run-event` processes for this event that this dashboard did not start (e.g. before a restart)."""
+    import psutil
+
+    own = {p.pid for p in JOBS.values() if p.poll() is None}
+    out = []
+    for p in psutil.process_iter(["pid", "ppid", "cmdline"]):
+        try:
+            cmd = p.info["cmdline"] or []
+        except psutil.Error:
+            continue
+        if "autoscout.cli" in cmd and "run-event" in cmd and event_key in cmd:
+            out.append(p)
+    # the venv launcher starts a second python with the same command line: keep only the outermost
+    pids = {p.pid for p in out} | own
+    return [p for p in out if p.pid not in own and p.info["ppid"] not in pids]
+
+
+def _event_job(event_key: str):
+    st = _job_status(event_key)
+    if st and st["running"]:
+        return st
+    if _orphan_runs(event_key):
+        return {"running": True, "returncode": None, "external": True}
+    return st
+
+
+def _kill_tree(pid: int):
+    import psutil
+
+    try:
+        root = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+    procs = root.children(recursive=True) + [root]
+    for p in procs:
+        try:
+            p.kill()
+        except psutil.NoSuchProcess:
+            pass
+    psutil.wait_procs(procs, timeout=10)
+
+
 @app.post("/api/run/{event_key}")
-def run_event(event_key: str, limit: int = 0):
+def run_event(event_key: str, limit: int = 0, body: dict | None = None):
+    """Body (all optional): matches [keys], debug_video bool, workers 1-4."""
     _event_key(event_key)
     cal = Calibration.load(event_key)
     if not cal or len(cal.points) < 4:
         raise HTTPException(400, "Calibrate this event before processing matches")
-    if _job_status(event_key) and _job_status(event_key)["running"]:
+    if (_event_job(event_key) or {}).get("running"):
         return {"started": False, "reason": "already running"}
+    body = body or {}
+    args = ["run-event", event_key, "--limit", str(limit), "--workers", str(max(1, min(int(body.get("workers", 1)), 4)))]
+    matches = [str(k) for k in body.get("matches") or []]
+    for k in matches:
+        if not re.fullmatch(re.escape(event_key) + r"_(?:qm\d+|(?:ef|qf|sf|f)\d+m\d+)", k):
+            raise HTTPException(400, f"{k} is not a match of {event_key}")
+    if matches:
+        args += ["--matches", ",".join(matches)]
+    if body.get("debug_video"):
+        args.append("--debug-video")
     log = open(config.DATA_DIR / f"run_{event_key}.log", "w")
-    JOBS[event_key] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", "run-event", event_key,
-                                        "--limit", str(limit)], stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
+    JOBS[event_key] = subprocess.Popen([sys.executable, "-m", "autoscout.cli", *args],
+                                       stdout=log, stderr=subprocess.STDOUT, cwd=config.ROOT)
     return {"started": True}
+
+
+@app.post("/api/run/{event_key}/cancel")
+def cancel_run(event_key: str):
+    """Stop the event's processing job (and its workers, downloads and encoders)."""
+    from ..progress import DIR, all_progress
+
+    _event_key(event_key)
+    pids = [p.pid for p in _orphan_runs(event_key)]
+    p = JOBS.get(event_key)
+    if p is not None and p.poll() is None:
+        pids.append(p.pid)
+    if not pids:
+        return {"cancelled": False, "reason": "nothing is running for this event"}
+    for pid in pids:
+        _kill_tree(pid)
+    # matches it was in the middle of would otherwise look stuck on the Overview page
+    for d in all_progress():
+        if d["match_key"].startswith(event_key + "_") and d["stage"] not in ("done", "error"):
+            d.update(stage="error", error="cancelled", detail="cancelled", eta_s=None)
+            (DIR / f"{d['match_key']}.json").write_text(json.dumps({k: v for k, v in d.items() if k != "stale"}))
+    with open(config.DATA_DIR / f"run_{event_key}.log", "a") as log:
+        log.write("\n--- cancelled from the dashboard ---\n")
+    return {"cancelled": True}
+
+
+@app.get("/api/run/{event_key}/status")
+def run_status(event_key: str):
+    _event_key(event_key)
+    return _event_job(event_key) or {"running": False}
+
+
+@app.get("/api/event/{event_key}/schedule")
+def schedule(event_key: str):
+    """Every match of the event on TBA, with whether it has video and its processing status."""
+    from ..progress import all_progress
+    from ..tba import TBA, MatchInfo, sort_key
+
+    _event_key(event_key)
+    try:
+        ms = sorted((MatchInfo.from_tba(m) for m in TBA(max_age_s=300).event_matches(event_key)), key=sort_key)
+    except Exception as e:
+        raise HTTPException(502, f"Could not load the schedule from The Blue Alliance: {e}") from e
+    status = {r["match_key"]: (r["status"], r["error"]) for r in con().execute(
+        "SELECT match_key, status, error FROM matches WHERE event_key=?", (event_key,))}
+    live = {d["match_key"]: d for d in all_progress()}
+    out = []
+    for m in ms:
+        st, err = status.get(m.key, (None, None))
+        pr = live.get(m.key)
+        if pr and pr["stage"] not in ("done", "error") and not pr.get("stale"):
+            st = "processing"
+        out.append({"match_key": m.key, "label": m.label, "comp_level": m.comp_level, "red": m.red, "blue": m.blue,
+                    "has_video": bool(m.videos), "status": st or "new", "error": err})
+    return out
 
 
 @app.get("/api/progress")

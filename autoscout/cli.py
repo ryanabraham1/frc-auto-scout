@@ -19,33 +19,89 @@ def cmd_run_match(a):
     print(json.dumps({t: {k: v for k, v in m.items() if not isinstance(v, dict)} for t, m in r["teams"].items()}, indent=1))
 
 
-def cmd_run_event(a):
-    from . import db
-    from .pipeline import NeedsCalibration, Options, RESULTS_DIR, process_match
-    from .tba import TBA, MatchInfo, sort_key
+_WORKER = {}
+
+
+def _init_worker(weights, year):
+    """Each worker process loads its own detector once and reuses it for every match it gets."""
+    from . import games
+    from .tba import TBA
     from .vision.detect import default_detector
+
+    _WORKER.update(tba=TBA(max_age_s=300),
+                   det=default_detector(weights, ensemble=games.get(year).detector_ensemble))
+
+
+def _work(match_key, video_path, opts):
+    """Process one match in a worker; the parent saves results so only one process writes the database."""
+    from .pipeline import NeedsCalibration, process_match
+
+    try:
+        return match_key, process_match(match_key, opts, tba=_WORKER["tba"], video_path=video_path,
+                                        detector=_WORKER["det"]), None
+    except NeedsCalibration as e:
+        return match_key, None, ("calibration", str(e))
+    except Exception as e:
+        traceback.print_exc()
+        return match_key, None, ("error", str(e))
+
+
+def cmd_run_event(a):
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
+
+    from . import db
+    from .pipeline import Options, RESULTS_DIR
+    from .tba import TBA, MatchInfo, sort_key
+    from .video import download
 
     tba = TBA(max_age_s=300)
     con = db.connect()
     ms = sorted((MatchInfo.from_tba(m) for m in tba.event_matches(a.event_key)), key=sort_key)
-    levels = set(a.levels.split(","))
-    ms = [m for m in ms if m.comp_level in levels and m.videos]
-    done = {r["match_key"] for r in con.execute("SELECT match_key FROM matches WHERE status='done'")}
-    todo = [m for m in ms if a.force or m.key not in done][: a.limit or None]
-    print(f"{a.event_key}: {len(ms)} matches with video, {len(todo)} to process")
-    from . import games
-
-    det = default_detector(a.weights, ensemble=games.get(int(a.event_key[:4])).detector_ensemble)
-    for m in todo:
-        try:
-            r = process_match(m.key, Options(weights=a.weights), tba=tba, detector=det)
-            db.save_result(con, r, str(RESULTS_DIR / f"{m.key}.json"))
-        except NeedsCalibration as e:
-            print(e)
-            return 2
-        except Exception as e:  # keep going; record the error for the dashboard
-            traceback.print_exc()
-            db.save_error(con, m.key, m.event_key, m.year, str(e))
+    if a.matches:  # an explicit list is processed whether or not it was done before
+        want = {k if "_" in k else f"{a.event_key}_{k}" for k in a.matches.split(",") if k}
+        todo = [m for m in ms if m.key in want and m.videos]
+        missing = want - {m.key for m in todo}
+        if missing:
+            print("no video on TBA (skipped):", ", ".join(sorted(missing)))
+    else:
+        levels = set(a.levels.split(","))
+        ms = [m for m in ms if m.comp_level in levels and m.videos]
+        done = {r["match_key"] for r in con.execute("SELECT match_key FROM matches WHERE status='done'")}
+        todo = [m for m in ms if a.force or m.key not in done][: a.limit or None]
+    workers = max(1, min(a.workers, len(todo) or 1))
+    print(f"{a.event_key}: {len(todo)} to process, {workers} at a time"
+          f"{', with debug videos' if a.debug_video else ''}", flush=True)
+    opts = Options(weights=a.weights, debug_video=a.debug_video)
+    info = {m.key: m for m in todo}
+    # Downloads run ahead of processing (network-bound), and up to `workers` matches process at once
+    # (each frame loop is sequential, but separate matches share nothing until they are saved).
+    with ThreadPoolExecutor(2) as dl, ProcessPoolExecutor(workers, initializer=_init_worker,
+                                                          initargs=(a.weights, int(a.event_key[:4]))) as pool:
+        fetch = {dl.submit(download, m.videos[0], height=opts.video_height): m for m in todo}
+        pending = set(fetch)
+        while pending:
+            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for f in finished:
+                if f in fetch:  # a download finished: queue the match
+                    m = fetch[f]
+                    try:
+                        nxt = pool.submit(_work, m.key, str(f.result()), opts)
+                        pending.add(nxt)
+                    except Exception as e:
+                        print(f"[{m.key}] download failed: {e}", flush=True)
+                        db.save_error(con, m.key, m.event_key, m.year, f"download failed: {e}")
+                    continue
+                key, r, err = f.result()
+                m = info[key]
+                if err is None:
+                    db.save_result(con, r, str(RESULTS_DIR / f"{key}.json"))
+                elif err[0] == "calibration":
+                    print(err[1])
+                    dl.shutdown(cancel_futures=True)
+                    pool.shutdown(cancel_futures=True)
+                    return 2
+                else:  # keep going; record the error for the dashboard
+                    db.save_error(con, key, m.event_key, m.year, err[1])
 
 
 def cmd_reanalyze(a):
@@ -195,6 +251,9 @@ def main(argv=None):
     s.add_argument("--debug-video", action="store_true"); s.add_argument("--weights"); s.set_defaults(f=cmd_run_match)
     s = sub.add_parser("run-event"); s.add_argument("event_key"); s.add_argument("--levels", default="qm,sf,f")
     s.add_argument("--force", action="store_true"); s.add_argument("--limit", type=int, default=0)
+    s.add_argument("--matches", help="comma-separated match keys (or qm12-style suffixes) to process, even if done")
+    s.add_argument("--debug-video", action="store_true", help="also write each match's debug video")
+    s.add_argument("--workers", type=int, default=1, help="matches processed at the same time")
     s.add_argument("--weights"); s.set_defaults(f=cmd_run_event)
     s = sub.add_parser("reanalyze", help="recompute stats from saved observations (match or event key)")
     s.add_argument("key"); s.set_defaults(f=cmd_reanalyze)

@@ -76,6 +76,15 @@ def add_to_bank(event_key: str, examples: dict[int, list[tuple[str, np.ndarray]]
     """Remember identified tracklets as {team: [(key, feature)]}, key = "match:tracklet". A key seen
     before replaces its old entry under any team (a robot relabelled moves), and each team keeps its
     most recent MAX_PER_TEAM."""
+    from filelock import FileLock
+
+    BANK_DIR.mkdir(parents=True, exist_ok=True)
+    # matches of one event can process in parallel: read-modify-write the bank one at a time
+    with FileLock(str(_path(event_key)) + ".lock"):
+        _add_to_bank(event_key, examples)
+
+
+def _add_to_bank(event_key: str, examples: dict[int, list[tuple[str, np.ndarray]]]) -> None:
     bank = _load(event_key)
     new_keys = {k for ex in examples.values() for k, _ in ex}
     out = {}
@@ -86,11 +95,12 @@ def add_to_bank(event_key: str, examples: dict[int, list[tuple[str, np.ndarray]]
         ks = [keys[i] for i in keep] + [k for k, _ in examples.get(team, [])]
         if rows:
             out[team] = (np.array(rows[-MAX_PER_TEAM:], np.float32), ks[-MAX_PER_TEAM:])
-    BANK_DIR.mkdir(parents=True, exist_ok=True)
     arrays = {}
     for t, (f, ks) in out.items():
         arrays[f"t{t}"], arrays[f"k{t}"] = f, np.array(ks)
-    np.savez_compressed(_path(event_key), **arrays)
+    tmp = _path(event_key).with_suffix(".tmp.npz")  # replace in one step so readers never see half a file
+    np.savez_compressed(tmp, **arrays)
+    tmp.replace(_path(event_key))
 
 
 def similarity(emb: np.ndarray, bank: dict[int, np.ndarray], teams: list[int], k: int = 5) -> dict[int, float]:

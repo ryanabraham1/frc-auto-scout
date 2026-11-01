@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -231,6 +232,11 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         out = RESULTS_DIR / f"{match_key}_debug.mp4"
         out.parent.mkdir(parents=True, exist_ok=True)
         writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), fps / launch_step, (w, h))
+    # the close-up pass only needs the score timeline, so it reads its own copy of the video in a
+    # thread while the frame loop runs (decoding and OCR overlap instead of running back to back)
+    reader()  # load the shared bumper reader once, before two threads ask for it
+    aux_pool = ThreadPoolExecutor(1)
+    aux_job = aux_pool.submit(collect_aux_reads, Video(video_path), base_cal, tl, {"red": m.red, "blue": m.blue})
     cut = False
     n_frames = n_cut = 0
     for i, (t, frame) in enumerate(video.iter_frames(t0, t1, step=launch_step)):
@@ -287,7 +293,8 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     # The tracker read bumpers while tracking; close-up reads join them, then every tracklet is
     # labelled with a team and slot "red0" is red's first team (bumper reads decide, not order).
     prog.update("close-ups", 0.0, "reading close-up camera views", force=True)
-    aux_reads = collect_aux_reads(video, base_cal, tl, {"red": m.red, "blue": m.blue})
+    aux_reads = aux_job.result()
+    aux_pool.shutdown()
     if aux_reads:
         log(f"close-up views: {len(aux_reads)} team reads")
     prog.update("identity", 0.5, "labelling robots with teams", force=True)

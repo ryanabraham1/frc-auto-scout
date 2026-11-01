@@ -94,6 +94,8 @@ button.primary:hover { filter: brightness(1.06); background: var(--accent); }
 button.ghost { background: transparent; border-color: transparent; color: var(--ink-2); }
 button.ghost:hover { background: var(--surface-2); }
 button:disabled { opacity: .5; cursor: default; }
+input[type=checkbox] { min-height: 0; padding: 0; width: 16px; height: 16px; accent-color: var(--accent); vertical-align: middle; }
+label.opt { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 a.btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; min-height: 36px; border-radius: var(--radius-sm); border: 1px solid var(--line-2); color: var(--ink); font-weight: 500; background: var(--surface); }
 a.btn:hover { background: var(--surface-2); text-decoration: none; }
 input:focus, select:focus { outline: none; border-color: var(--ink-2); box-shadow: 0 0 0 3px var(--surface-2); }
@@ -265,7 +267,7 @@ function liveJobs(progress) {
   const act = progress.filter(j => !['done', 'error'].includes(j.stage));
   if (!act.length) return `<div class="empty">Nothing processing right now.<div class="small" style="margin-top:6px">Start an event from <a href="#/events">Events</a> or run <span class="mono">autoscout run-event</span>.</div></div>`;
   return act.map(j => `<div class="job"><div class="row"><b><a href="#/match/${j.match_key}">${esc(j.match_key)}</a></b><span class="chip ${j.stale ? 'warn' : 'accent'}">${esc(j.stage)}</span><span class="spacer"></span>
-    <span class="small muted num">${j.pct.toFixed(0)}% · ${fmtS(j.elapsed_s)}${j.eta_s != null ? ' · ~' + fmtS(j.eta_s) + ' left' : ''}</span></div>
+    <span class="small muted num">${j.pct.toFixed(0)}% · ${fmtS(j.elapsed_s)}${j.eta_s != null ? ' · ~' + fmtS(j.eta_s) + ' left' : ''}</span><button class="small ghost" data-cancel="${esc(j.match_key.split('_')[0])}" title="Stop this event's processing job">Cancel</button></div>
     <div class="progress" style="margin:8px 0 6px"><span style="width:${j.pct}%"></span></div><div class="small muted">${esc(j.detail || '')}${j.stale ? ' · no update for 2+ min' : ''}</div></div>`).join('');
 }
 function accCard(a) {
@@ -313,6 +315,9 @@ async function viewOverview() {
       ['Time per match', secs.length ? fmtS(secs.reduce((a, b) => a + b, 0) / secs.length) : '–', 'recent average'],
     ].map(([l, v, s]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${s}</div></div>`).join('');
     $('#live').innerHTML = liveJobs(d.progress);
+    $('#live').querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => { const ek = b.dataset.cancel;
+      if (!confirm(`Stop processing ${ek}? Matches already finished are kept; the ones in progress are dropped.`)) return;
+      const r = await api(`/api/run/${ek}/cancel`, {method: 'POST'}).catch(e => ({reason: e.message})); notify(r.cancelled ? `Cancelled ${ek}.` : r.reason); tick(); });
     $('#recent').innerHTML = recentRows(d.recent); wireVideoButtons($('#recent'));
     return d;
   };
@@ -346,9 +351,15 @@ async function viewEvent(ek) {
   const cell = (t, m) => { const v = t[`${m.key}.avg`]; if (v !== undefined) return `<td data-v="${v}">${fmt(v)}</td>`;
     const c = t[`${m.key}.counts`]; return `<td class="small">${c ? Object.entries(c).map(([k, n]) => `${esc(k)}×${n}`).join(' ') : '–'}</td>`; };
   app.innerHTML = head(esc(ek), 'Team averages and match evidence. Per-robot numbers split the official alliance totals by what the video shows.',
-    `<button class="primary" id="run">Process new matches</button><button id="reanalyze">Recompute</button><a class="btn" href="/api/event/${ek}/export" download>Export CSV</a><a class="btn" href="#/calibrate/${ek}">Calibrate</a>`,
+    `<button class="primary" id="run">Process matches…</button><button id="cancel" hidden>Cancel processing</button><button id="reanalyze">Recompute</button><a class="btn" href="/api/event/${ek}/export" download>Export CSV</a><a class="btn" href="#/calibrate/${ek}">Calibrate</a>`,
     `<a href="#/events">Events</a> / ${esc(ek)}`) +
   `<div id="job" class="small muted" style="margin:-10px 0 14px">${d.job?.running ? 'Processing…' : ''}</div>
+  <div class="card" id="procpanel" hidden><div class="card-head"><h2>Process matches</h2><div class="row">
+    <label class="opt" title="Also write a video with boxes and tracks drawn for each match (slower)"><input type="checkbox" id="dbg"> Debug video</label>
+    <label class="opt" title="Matches processed at the same time. 2 suits the RTX 3060; more uses more GPU memory">At once <select id="workers" aria-label="Matches at once">${[1, 2, 3, 4].map(n => `<option>${n}</option>`).join('')}</select></label></div></div>
+    <div class="row" style="margin-bottom:10px"><button class="small" id="selnew">Select new</button><button class="small" id="selall">All</button><button class="small" id="selnone">None</button>
+      <input id="msearch" aria-label="Filter matches" placeholder="Filter, e.g. qm12 or 254" style="width:200px"><span class="spacer"></span><button class="primary" id="gosel" disabled>Process selected</button></div>
+    <div class="table-wrap" style="max-height:380px;overflow:auto"><table><thead><tr><th></th><th style="text-align:left">Match</th><th>Red</th><th>Blue</th><th>Status</th></tr></thead><tbody id="sched"><tr><td colspan="5" class="empty">Loading the schedule…</td></tr></tbody></table></div></div>
   <div id="accwrap"></div>
   <div class="card"><div class="card-head"><h2>Teams</h2><div class="row"><input id="search" aria-label="Search teams or matches" placeholder="Search team or match…" style="width:220px">
     <select id="metrics" aria-label="Metric group"><option value="">All metrics</option>${[...new Set(defs.map(m => m.group))].map(g => `<option>${esc(g)}</option>`).join('')}</select></div></div>
@@ -363,13 +374,43 @@ async function viewEvent(ek) {
    <td class="num">${m.red_score ?? ''}–${m.blue_score ?? ''}</td><td>${m.status === 'error' ? `<span class="chip bad" title="${esc(m.error)}">error</span>` : `<span class="chip ${m.status === 'done' ? 'good' : ''}">${esc(m.status)}</span>`}</td></tr>`).join('')}
   </tbody></table></div></div>`;
   sortable($('#tt'));
-  const filter = () => { const q = $('#search').value.toLowerCase(); app.querySelectorAll('tbody tr').forEach(r => r.hidden = !r.textContent.toLowerCase().includes(q) || (r.closest('table').id !== 'tt' && $('#status').value && !r.cells[4]?.textContent.includes($('#status').value))); };
+  const filter = () => { const q = $('#search').value.toLowerCase(); app.querySelectorAll('tbody:not(#sched) tr').forEach(r => r.hidden = !r.textContent.toLowerCase().includes(q) || (r.closest('table').id !== 'tt' && $('#status').value && !r.cells[4]?.textContent.includes($('#status').value))); };
   $('#metrics').onchange = () => { [...$('#tt').rows].forEach(r => [...r.cells].forEach((c, i) => { c.hidden = i > 1 && $('#metrics').value && defs[i - 2].group !== $('#metrics').value; })); };
   $('#search').oninput = filter; $('#status').onchange = filter;
   $('#reanalyze').onclick = async () => { await api(`/api/event/${ek}/reanalyze`, {method: 'POST'}); notify('Recomputing saved matches. Follow progress in the processing log.'); };
-  $('#run').disabled = !!d.job?.running;
-  $('#run').onclick = async () => { const res = await api(`/api/run/${ek}`, {method: 'POST'}); $('#run').disabled = true; $('#job').textContent = res.started ? 'Processing started. Follow it on the Overview page.' : res.reason; };
-  app.querySelectorAll('tbody').forEach(b => { if (!b.rows.length) b.innerHTML = `<tr><td colspan="${b.closest('table').rows[0].cells.length}" class="empty">No processed results yet. Calibrate the event, then process new matches.</td></tr>`; });
+  // processing: pick matches, debug video, how many at once; cancel a running job
+  const pref = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch {} };
+  $('#dbg').checked = pref('proc.debug') === '1'; $('#workers').value = pref('proc.workers') || '2';
+  $('#dbg').onchange = () => pref('proc.debug', $('#dbg').checked ? '1' : '0'); $('#workers').onchange = () => pref('proc.workers', $('#workers').value);
+  let running = !!d.job?.running;
+  const jobState = st => { running = !!st?.running; $('#cancel').hidden = !running; $('#gosel').disabled = running || !app.querySelectorAll('#sched input:checked').length;
+    $('#job').textContent = running ? 'Processing… follow it on the Overview page.' : st?.returncode != null && st.returncode !== 0 ? 'The last job stopped (cancelled or failed). See the processing log.' : ''; };
+  jobState(d.job);
+  const pick = () => { const n = app.querySelectorAll('#sched input:checked').length; $('#gosel').textContent = n ? `Process ${n} match${n > 1 ? 'es' : ''}` : 'Process selected'; $('#gosel').disabled = running || !n; };
+  const chip = s => `<span class="chip ${s === 'done' ? 'good' : s === 'error' ? 'bad' : s === 'processing' ? 'accent' : ''}">${esc(s)}</span>`;
+  const loadSched = async () => { try { const s = await api(`/api/event/${ek}/schedule`);
+      const was = new Set([...app.querySelectorAll('#sched input:checked')].map(c => c.dataset.mk));
+      $('#sched').innerHTML = s.map(m => `<tr data-st="${m.status}"><td><input type="checkbox" data-mk="${m.match_key}" aria-label="Select ${esc(m.label)}" ${m.has_video ? '' : 'disabled title="No video on TBA yet"'}></td>
+        <td style="text-align:left"><b>${esc(m.label)}</b><div class="small muted">${esc(m.match_key)}</div></td><td class="teams-inline"><span class="r">${m.red.join(' ')}</span></td><td class="teams-inline"><span class="b">${m.blue.join(' ')}</span></td>
+        <td>${m.has_video ? chip(m.status) : '<span class="chip">no video</span>'}${m.error ? ` <span class="small muted" title="${esc(m.error)}">ⓘ</span>` : ''}</td></tr>`).join('') || `<tr><td colspan="5" class="empty">TBA has no matches for this event yet.</td></tr>`;
+      $('#sched').querySelectorAll('input').forEach(c => { c.checked = was.has(c.dataset.mk) && !c.disabled; c.onchange = pick; });
+      $('#msearch').oninput(); pick();
+    } catch (e) { $('#sched').innerHTML = `<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`; } };
+  const boxes = () => [...app.querySelectorAll('#sched input:not(:disabled)')].filter(c => !c.closest('tr').hidden);
+  $('#selall').onclick = () => { boxes().forEach(c => c.checked = true); pick(); };
+  $('#selnone').onclick = () => { app.querySelectorAll('#sched input').forEach(c => c.checked = false); pick(); };
+  $('#selnew').onclick = () => { boxes().forEach(c => c.checked = ['new', 'error'].includes(c.closest('tr').dataset.st)); pick(); };
+  $('#msearch').oninput = () => { const q = $('#msearch').value.toLowerCase(); $('#sched').querySelectorAll('tr').forEach(r => r.hidden = !!q && !r.textContent.toLowerCase().includes(q)); };
+  $('#run').onclick = () => { const p = $('#procpanel'); p.hidden = !p.hidden; if (!p.hidden) { loadSched(); p.scrollIntoView({behavior: 'smooth', block: 'nearest'}); } };
+  $('#gosel').onclick = async () => { const matches = [...app.querySelectorAll('#sched input:checked')].map(c => c.dataset.mk);
+    const res = await api(`/api/run/${ek}`, {method: 'POST', headers: H, body: JSON.stringify({matches, debug_video: $('#dbg').checked, workers: +$('#workers').value})}).catch(e => ({reason: e.message}));
+    notify(res.started ? `Processing ${matches.length} match${matches.length > 1 ? 'es' : ''}${$('#dbg').checked ? ' with debug videos' : ''}. Follow it on the Overview page.` : res.reason);
+    if (res.started) { jobState({running: true}); setTimeout(loadSched, 4000); } };
+  $('#cancel').onclick = async () => { if (!confirm(`Stop processing ${ek}? Matches already finished are kept; the ones in progress are dropped.`)) return;
+    $('#cancel').disabled = true; const res = await api(`/api/run/${ek}/cancel`, {method: 'POST'}).catch(e => ({reason: e.message}));
+    $('#cancel').disabled = false; notify(res.cancelled ? 'Processing cancelled.' : res.reason); jobState({running: false}); if (!$('#procpanel').hidden) loadSched(); };
+  every(4000, async () => { if (location.hash !== `#/event/${ek}`) return; jobState(await api(`/api/run/${ek}/status`).catch(() => ({running}))); });
+  app.querySelectorAll('tbody:not(#sched)').forEach(b => { if (!b.rows.length) b.innerHTML = `<tr><td colspan="${b.closest('table').rows[0].cells.length}" class="empty">No processed results yet. Calibrate the event, then process new matches.</td></tr>`; });
   if (d.matches.filter(m => m.status === 'done').length >= 4) api(`/api/accuracy/${ek}`).then(a => { if ($('#accwrap')) $('#accwrap').innerHTML = accCard(a); }).catch(() => {});
 }
 
