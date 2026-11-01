@@ -271,6 +271,41 @@ class RobotTracker:
         return out
 
     # ---- stage 2: labelling -------------------------------------------------------------------
+    def add_calibrated_reads(self, aux_boxes, cams: dict, max_dist: float = 1.6, margin: float = 0.8,
+                             weight: float = 1.2) -> int:
+        """Bumper reads in calibrated close-up cameras (vision/fusion.py) are reads of the tracklet standing
+        at that field point, like a wide-shot bumper read: they label the tracklet, and a tracklet that
+        jumped between two robots carries reads of both, so split_conflicts cuts it. Returns reads used."""
+        from .fusion import foot, to_field
+
+        if getattr(self, "calibrated_reads", False):
+            return 0  # already in these tracklets' reads (saved tracklets re-labelled)
+        trs = self.done + self.active
+        n = 0
+        for t, view, x0, y0, x1, y1, al, team, conf in aux_boxes:
+            a = self.alliance_of.get(team)
+            if a is None or view not in cams:
+                continue
+            p = np.array(to_field(cams[view]["H"], *foot((x0, y0, x1, y1))))
+            cand = []
+            for tr in trs:
+                if not (tr.t0 - 0.3 <= t <= tr.t1 + 0.3) or tr.alliance_frac(a) < 0.5:
+                    continue
+                o = min(tr.obs, key=lambda o: abs(o[0] - t))
+                if abs(o[0] - t) <= 0.4:
+                    cand.append((float(np.hypot(o[1] - p[0], o[2] - p[1])), tr))
+            cand.sort(key=lambda x: x[0])
+            if not cand or cand[0][0] > max_dist or (len(cand) > 1 and cand[1][0] - cand[0][0] < margin):
+                continue
+            tr = cand[0][1]
+            v = weight * conf
+            tr.reads[team] = tr.reads.get(team, 0.0) + v
+            tr.read_log.append((t, team, v))
+            n += 1
+        self.calibrated_reads = True
+        self.stats["calibrated_closeup_reads"] = n
+        return n
+
     def add_closeup_reads(self, aux_reads, dist_to_element, max_dist: float = 3.0) -> None:
         """A team read in a close-up of a field element is the robot of its alliance nearest that
         element at that moment (a defender is read in the opponent's close-up the same way)."""
@@ -587,14 +622,18 @@ class RobotTracker:
     def _disjoint(chain: list) -> bool:
         return all(not _overlap(a, b) for a, b in zip(chain, chain[1:]))
 
-    def finalize(self, aux_reads=(), dist_to_element=None, bank=None, manual=None) -> None:
+    def finalize(self, aux_reads=(), dist_to_element=None, bank=None, manual=None, aux_boxes=(), cams=None) -> None:
         """Label tracklets with teams and write per-station slot tracks.
 
         bank: per-event appearance examples {team: features}; manual: {tracklet id: team or NOT_ROBOT}.
+        aux_boxes + cams: robots seen in calibrated close-ups, read as bumper reads at their field point.
         """
+        calibrated = set(cams or {}) & {b[1] for b in aux_boxes}
+        if calibrated:
+            self.add_calibrated_reads(aux_boxes, cams)
         self.split_conflicts()
         if dist_to_element is not None:
-            self.add_closeup_reads(aux_reads, dist_to_element)
+            self.add_closeup_reads([r for r in aux_reads if r[1] not in calibrated], dist_to_element)
         self.relabel(bank, manual)
 
     def split_conflicts(self, min_read: float = 1.0) -> None:
@@ -665,12 +704,14 @@ class RobotTracker:
                                                    for o in t.obs],
                                "reads": {str(k): round(v, 3) for k, v in t.reads.items()}, "team": t.team,
                                "emb": None if t.emb is None else [round(float(x), 4) for x in t.emb]}
-                              for t in self.done + self.active]}
+                              for t in self.done + self.active],
+                "calibrated_reads": getattr(self, "calibrated_reads", False)}
 
     @classmethod
     def from_dict(cls, d: dict, cal=None, field_model=None) -> "RobotTracker":
         tr = cls(cal, field_model, {a: [int(t) for t in d["teams"][a]] for a in ("red", "blue")})
         tr.times = list(d["times"])
+        tr.calibrated_reads = d.get("calibrated_reads", False)
         for x in d["tracklets"]:
             t = Tracklet(x["id"], obs=[tuple(o[:3]) + (tuple(o[3]), o[4]) for o in x["obs"]],
                          reads={int(k): v for k, v in x["reads"].items()}, team=x.get("team"))

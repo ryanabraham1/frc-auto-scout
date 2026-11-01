@@ -15,7 +15,7 @@ import numpy as np
 import yaml
 
 from . import config, games, ocr, overlay
-from .games.base import add_closeup_evidence
+from .games.base import add_calibrated_closeup_evidence, add_closeup_evidence
 from .field import Calibration, align_to_reference, view_similarity
 from .tba import TBA, MatchInfo
 from .video import VIDEO_DIR, Video, download
@@ -30,7 +30,8 @@ from .vision.trajectories import Launch, LaunchDetector
 
 RESULTS_DIR = config.DATA_DIR / "results"
 AUX_CONF = 0.15  # robot detection threshold in close-up views
-FUSE_CLOSEUPS = True  # fill wide-shot tracks with robots seen in calibrated close-up cameras
+FUSE_CLOSEUPS = True
+CALIBRATED_IDENTITY = True  # close-up bumper reads name the wide-shot robot at the read's field position  # fill wide-shot tracks with robots seen in calibrated close-up cameras
 PRE_MATCH_S = 4.0  # s tracked before AUTO starts
 TRACKER_EVIDENCE = 8.0  # the tracker labels robots by team, so its station slots are the identity
 
@@ -308,6 +309,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     prog.update("identity", 0.5, "labelling robots with teams", force=True)
     tracker.embed()
     tracker.finalize(aux_reads, lambda p, view: fm.dist_to_element(p, view) if view in fm.elements else None,
+                     aux_boxes=aux_boxes, cams=closeup_calibration(m.event_key) if CALIBRATED_IDENTITY else None,
                      bank=load_bank(m.event_key), manual=load_labels(match_key))
     # robots identified for sure (bumper read / labelled) teach the bank; label again with it
     _remember_appearance(m.event_key, match_key, tracker)
@@ -457,6 +459,9 @@ def relabel(match_key: str, tba: TBA | None = None) -> dict:
         raise FileNotFoundError(f"{match_key} was processed before tracklets were saved: run it again")
     tracker = RobotTracker.from_dict(json.loads(tp.read_text()), field_model=games.get(old["year"]).field)
     labels = load_labels(match_key)
+    cams = closeup_calibration(old["event_key"]) if CALIBRATED_IDENTITY else {}
+    if cams and old.get("aux_boxes") and tracker.add_calibrated_reads(old["aux_boxes"], cams):
+        tracker.split_conflicts()
     tracker.relabel(None, labels)
     _remember_appearance(old["event_key"], match_key, tracker)
     tracker.relabel(load_bank(old["event_key"]), labels)
@@ -552,7 +557,17 @@ def _solve_identity(ctx, evidence: IdentityEvidence, m: MatchInfo, clock, ov: di
     identity scores stay the re-derivable OCR + station evidence; returns that copy (for its notes)."""
     ev = copy.deepcopy(evidence)
     ev.t = None
-    add_closeup_evidence(ctx, ev)
+    cams = closeup_calibration(m.event_key)
+    calibrated = {b[1] for b in ctx.aux_boxes} & set(cams)
+    if calibrated and CALIBRATED_IDENTITY:
+        # reads in calibrated close-ups name the exact robot; other close-ups keep the nearest-element rule
+        add_calibrated_closeup_evidence(ctx, ev, cams)
+        keep = ctx.aux_reads
+        ctx.aux_reads = [x for x in keep if x[1] not in calibrated]
+        add_closeup_evidence(ctx, ev)
+        ctx.aux_reads = keep
+    else:
+        add_closeup_evidence(ctx, ev)
     for a in ("red", "blue"):
         keys = [f"{a}{i}" for i in range(3)]
         mapping, conf = ev.solve(keys, m.teams(a), ov)

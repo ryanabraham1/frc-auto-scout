@@ -41,6 +41,7 @@ CONF_WEIGHT = True  # weigh each action's credit by how much the video says abou
 CONF_REF = {"reef": 1.5, "net": 1.0, "processor": 1.0}  # evidence (s at the element / closeness) = full confidence
 ALGAE_CREDIT = "near"  # "near": closeness + seen launches | "dwell": time at the element like coral
 LAUNCH_W = 1.0  # added credit for the robot an algae launch is seen leaving just before a NET post
+PLACE_MIN = 0.3  # a placement only credits robots near its spot (best robot's weight at least this)
 CAM_PLACE_W = 1.0  # weight of a reef close-up placement next to a wide-shot one
 CAM_PLACE_PX = 40.0  # px: falloff of close-up placement credit with distance from a robot's box
 PLACE_MIX = 0.7  # weight of "whose robot was over the spot where the coral appeared" in coral credit
@@ -406,8 +407,11 @@ class Reefscape2025(GamePlugin):
                 dx = max(x0 - pl["x"], 0, pl["x"] - x1)
                 r = ctx.robot_at(slot, pl["t"] + dt)
                 at = r is not None and self.field.dist_to_element(r[:2], f"{a}_reef") < NEAR["reef"] + DWELL_SLACK
-                best = max(best, np.exp(-dx / PLACE_PX) * (1.0 if at else 0.25) * (1.0 if obs else 0.6))
+                # a coasting (guessed) position must not claim a placement only a seen robot could have made
+                best = max(best, np.exp(-dx / PLACE_PX) * (1.0 if at else 0.25) * (1.0 if obs else 0.15))
             w[team] = best
+        if max(w.values(), default=0.0) < PLACE_MIN:
+            return {}  # no robot we can see is at that spot: the placement doesn't say who
         tot = sum(w.values())
         return {tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}
 
@@ -426,6 +430,8 @@ class Reefscape2025(GamePlugin):
                 continue
             dx = max(x0 - pl["x"], 0, pl["x"] - x1)
             w[tm] = w.get(tm, 0.0) + float(np.exp(-dx / CAM_PLACE_PX)) * (1.0 - abs(bt - pl["t"]) / 1.5)
+        if max(w.values(), default=0.0) < PLACE_MIN:
+            return {}  # the robot under that spot wasn't boxed in the close-up (often cut off at its edge)
         tot = sum(w.values())
         return {tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}
 

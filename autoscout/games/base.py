@@ -243,6 +243,36 @@ def add_station_evidence(ctx: MatchContext, evidence, per_station: dict[str, lis
                 evidence.add(slot, team, weight if flag == obs else -weight, why if flag == obs else "")
 
 
+def add_calibrated_closeup_evidence(ctx: MatchContext, evidence, cams: dict, weight: float = 1.0,
+                                    max_dist: float = 1.6, margin: float = 0.8) -> int:
+    """Bumper reads in calibrated close-up cameras (vision/fusion.py): the read robot stands at a known
+    field point, so the read names the wide-shot slot standing there at that moment (not just "the
+    one nearest the element"). Returns the number of reads used."""
+    from ..vision.fusion import foot, to_field
+
+    used = 0
+    for t, view, x0, y0, x1, y1, al, team, conf in ctx.aux_boxes:
+        if team is None or view not in cams:
+            continue
+        p = to_field(cams[view]["H"], *foot((x0, y0, x1, y1)))
+        a = "red" if team in ctx.match.teams("red") else "blue"
+        d = {}
+        for i in range(3):
+            P = slot_positions_between(ctx, f"{a}{i}", t - 0.3, t + 0.3)
+            if len(P):
+                d[f"{a}{i}"] = float(np.min(np.hypot(P[:, 0] - p[0], P[:, 1] - p[1])))
+        ranked = sorted(d.items(), key=lambda x: x[1])
+        if not ranked or ranked[0][1] > max_dist:
+            continue
+        if len(ranked) > 1 and ranked[1][1] - ranked[0][1] < margin:
+            continue  # two robots there: the read doesn't say which
+        evidence.t = t
+        evidence.add(ranked[0][0], team, weight * conf, f"close-up {view} at the robot")
+        used += 1
+    evidence.t = None
+    return used
+
+
 def add_closeup_evidence(ctx: MatchContext, evidence, weight: float = 0.6, max_dist: float = 3.0) -> None:
     """Close-up camera reads (a hub/reef cam named after its field element): the team read there is the
     robot of its alliance nearest that element at that moment. Reads of the opposing alliance identify

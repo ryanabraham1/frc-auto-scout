@@ -77,6 +77,20 @@ def bumper_windows(frame: np.ndarray, box, min_h: int = 7) -> list[np.ndarray]:
     # the number often sits in the upper or lower half of a tall strip (box includes the floor)
     if sh > 26:
         out += [strip[: int(0.7 * sh)], strip[int(0.3 * sh):]]
+    # Big robots (close-up cameras): the digits are a thin band low in the box, much shorter than the
+    # strip, and a corner view shows two bumper faces side by side. Slide windows sized to that band.
+    if h > 60:
+        for top, bot in ((0.68, 1.04), (0.74, 1.08), (0.62, 0.96)):
+            ta, tb = max(0, y0 + int(top * h)), min(H, y0 + int(bot * h))
+            band = frame[ta:tb, xa:xb]
+            bh, bw = band.shape[:2]
+            if bh < min_h:
+                continue
+            for k in (3.0, 4.5):
+                ww = int(min(bw, k * bh))
+                n = max(1, int(np.ceil((bw - ww) / (0.3 * ww))) + 1) if ww < bw else 1
+                for s0 in np.linspace(0, bw - ww, n):
+                    out.append(band[:, int(s0): int(s0) + ww])
     return out
 
 
