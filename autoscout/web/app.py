@@ -596,10 +596,12 @@ def annotated_list():
 
 
 @app.get("/api/annotated/{name}")
-def annotated_file(name: str):
+def annotated_file(name: str, download: bool = False):
     if not re.fullmatch(r"[\w-]+_annotated\.mp4", name) or not (DEMOS / name).exists():
         raise HTTPException(404, "no such video")
-    return FileResponse(DEMOS / name, media_type="video/mp4")
+    # ?download=1 saves the file instead of playing it in the page
+    return FileResponse(DEMOS / name, media_type="video/mp4", filename=name if download else None,
+                        content_disposition_type="attachment" if download else "inline")
 
 
 @app.post("/api/annotate/{match_key}")
