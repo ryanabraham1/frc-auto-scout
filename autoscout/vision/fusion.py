@@ -90,7 +90,10 @@ def fuse_tracks(ctx, views: dict[str, dict]) -> int:
         return 0
     fm = ctx.field
     used = 0
+    # work on copies: the saved wide-shot tracks must stay the wide shot's own (re-derivable)
+    ctx.tracks = {k: list(v) for k, v in ctx.tracks.items()}
     ctx.aux_slot = {}  # aux_boxes index -> slot it was matched to
+    ctx.fused_rows = []  # [t, slot, x, y]: positions the close-ups added where the wide shot had none
     for k, (t, view, x0, y0, x1, y1, al, team, conf) in enumerate(ctx.aux_boxes):
         v = views.get(view)
         if not v:
@@ -123,6 +126,7 @@ def fuse_tracks(ctx, views: dict[str, dict]) -> int:
                 tr[j] = (tr[j][0], p[0], p[1], True, None)
         else:
             tr.insert(i0, (t, p[0], p[1], True, None))
+        ctx.fused_rows.append([round(t, 2), slot, round(p[0], 2), round(p[1], 2)])
         used += 1
     ctx._ts.clear()
     return used

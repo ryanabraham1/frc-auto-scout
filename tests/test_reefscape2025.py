@@ -122,3 +122,19 @@ def test_closeup_sighting_fills_a_gap_in_the_wide_shot_track():
     # a sighting right next to a wide-shot observation leaves the wide shot's position alone
     ctx.aux_boxes = [[4.9, "blue_reef", 270, 250, 330, 300, "blue", 1, 0.9]]
     assert fuse_tracks(ctx, {"blue_reef": {"H": H}}) == 0
+
+
+def test_fusion_leaves_the_wide_shot_tracks_untouched():
+    from autoscout import games
+    from autoscout.games.base import MatchContext
+    from autoscout.vision.fusion import fuse_tracks
+
+    H = [[0.01, 0.0, 1.0], [0.0, 0.012, 0.5], [0.0, 0.0001, 1.0]]
+    wide = {"blue0": [(-1.0, 3.0, 3.0, True, [0, 0, 1, 1]), (0.1, 3.0, 3.0, False, None)]}
+    before = [list(r) for r in wide["blue0"]]
+    ctx = MatchContext(match=None, field=games.get(2025).field, cal=None, clock=None, timeline=None,
+                       tracks=wide, identity={"blue0": 1}, identity_conf={}, launches={})
+    ctx.aux_boxes = [[0.15, "blue_reef", 270, 250, 330, 300, "blue", 1, 0.9]]
+    assert fuse_tracks(ctx, {"blue_reef": {"H": H}}) == 1
+    assert [list(r) for r in wide["blue0"]] == before  # the caller's tracks (saved as raw_tracks) unchanged
+    assert ctx.tracks["blue0"][1][3] is True and ctx.fused_rows

@@ -355,6 +355,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "aux_reads": ctx.aux_reads,
         "aux_boxes": ctx.aux_boxes,
         "fused_sightings": fused,
+        "fused_rows": getattr(ctx, "fused_rows", []),
         "element_changes": ctx.element_changes,
         "identity_timeline": ctx.identity_tl,
         "calibration": {"view": list(cal.view), "points": {k: list(map(float, v)) for k, v in cal.points.items()}},
@@ -435,6 +436,7 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     ov.update(_db_overrides(match_key))
     solved = _solve_identity(ctx, evidence, m, clock, ov)
     old["fused_sightings"] = fuse_closeups(ctx, m.event_key)
+    old["fused_rows"] = getattr(ctx, "fused_rows", [])
     res = plugin.analyze(ctx)
     old["identity_timeline"] = ctx.identity_tl
     old.update(res)

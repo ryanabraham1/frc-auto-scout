@@ -88,6 +88,33 @@ if bp.exists():
 aux = r.get("aux_reads", [])
 aux_boxes = sorted(r.get("aux_boxes", []), key=lambda b: b[0])
 aux_bt = np.array([b[0] for b in aux_boxes])
+# close-up camera fusion: where each close-up sighting lands on the field, drawn in the wide shot
+cams_p = Path(f"configs/events/{r['event_key']}_cams.json")
+cams = json.loads(cams_p.read_text()) if cams_p.exists() else {}
+fused_at = []  # (t, wide-shot px, team or None, alliance, fills a gap the wide shot missed)
+if cams and aux_boxes:
+    from autoscout.field import Calibration
+    from autoscout.vision.fusion import to_field
+
+    c = r["calibration"]
+    wcal = Calibration(event_key=r["event_key"], year=r["year"], view=tuple(c["view"]),
+                       points={k: tuple(v) for k, v in c["points"].items()})
+    # every close-up sighting where the camera puts it (rings) ...
+    for bt, view, x0, y0, x1, y1, al, team, conf in aux_boxes:
+        if view not in cams:
+            continue
+        fx, fy = to_field(cams[view]["H"], (x0 + x1) / 2, y1)
+        if -0.3 <= fx <= 17.85 and -0.3 <= fy <= 8.35:
+            px = wcal.to_image([(fx, fy)])[0]
+            fused_at.append((bt, (float(px[0]), float(px[1])), team, al, False))
+    # ... and the positions the analysis actually added to tracks where the wide shot had lost the robot
+    for ft, slot, fx, fy in r.get("fused_rows", []):
+        px = wcal.to_image([(fx, fy)])[0]
+        fused_at.append((ft, (float(px[0]), float(px[1])), team_at(slot, ft), slot[:-1], True))
+fused_at.sort(key=lambda f: f[0])
+fused_t = np.array([f[0] for f in fused_at])
+n_fills = sum(1 for f in fused_at if f[4])
+n_seen = len(fused_at) - n_fills
 aux_views = {}
 try:
     import yaml
@@ -190,6 +217,10 @@ def sidebar(t):
                 text(sb, FINAL(r["teams"][str(team)]), (SIDE - 24, yy), 0.45, GREEN, 1, right=True)
         y += 30 + 3 * 34 + 14
     # recent events
+    if fused_at:
+        text(sb, f"close-up cams: {n_seen} sightings placed on the field, {n_fills} filled where the wide shot lost the robot",
+             (20, y + 4), 0.38, (0, 220, 220))
+        y += 16
     text(sb, "Recent", (20, y + 18), 0.5, GREY)
     for k, (et, team, msg) in enumerate(reversed(feed[-8:])):
         yy = y + 44 + k * 26
@@ -257,6 +288,19 @@ def draw_2025(img, t):
             (tw, th), _ = cv2.getTextSize(label, FONT, 0.45, 1)
             cv2.rectangle(img, (p0[0], p0[1] - th - 6), (p0[0] + tw + 6, p0[1]), col, -1)
             cv2.putText(img, label, (p0[0] + 3, p0[1] - 4), FONT, 0.45, WHITE, 1, cv2.LINE_AA)
+    # fused close-up sightings in the wide shot: a ring where the close-up puts the robot; a filled,
+    # labelled marker when it is a robot the wide shot had lost at that moment
+    if len(fused_t):
+        i0, i1 = np.searchsorted(fused_t, [t - 0.5, t + 1e-3])
+        for bt, (fx, fy), team, al, gap in fused_at[i0:i1]:
+            col = RED if al == "red" else BLUE if al == "blue" else GREY
+            c = (int(fx * scale), int(fy * scale))
+            if gap:
+                cv2.circle(img, c, 9, col, -1, cv2.LINE_AA)
+                cv2.circle(img, c, 11, (0, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(img, f"{team} via close-up", (c[0] + 12, c[1] + 4), FONT, 0.5, (0, 255, 255), 2, cv2.LINE_AA)
+            else:
+                cv2.circle(img, c, 7, col, 2, cv2.LINE_AA)
     # banner: the last score increase of each alliance and what it was decoded as
     for al, x_ in (("blue", 0.30), ("red", 0.56)):
         last = [e for e in jumps if e["alliance"] == al and 0 <= t - e["t"] < 2.5]
