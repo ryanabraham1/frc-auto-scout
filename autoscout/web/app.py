@@ -716,6 +716,23 @@ def annotated_list():
     return out
 
 
+@app.get("/api/annotated/{name}.jpg")
+def annotated_thumb(name: str):
+    """A still from 40 s into an annotated video, cut once and cached next to it: a gallery of live
+    <video> thumbnails makes the browser run one HD decoder per card, and Firefox-based browsers stall."""
+    video = DEMOS / f"{name}.mp4"
+    if not re.fullmatch(r"[\w-]+_annotated", name) or not video.exists():
+        raise HTTPException(404, "no such video")
+    thumb = DEMOS / "thumbs" / f"{name}.jpg"
+    if not thumb.exists() or thumb.stat().st_mtime < video.stat().st_mtime:
+        thumb.parent.mkdir(exist_ok=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "40", "-i", str(video), "-frames:v", "1",
+                        "-vf", "scale=640:-2", str(thumb)], check=False, timeout=60)
+    if not thumb.exists():
+        raise HTTPException(404, "no thumbnail")
+    return FileResponse(thumb, media_type="image/jpeg")
+
+
 @app.get("/api/annotated/{name}")
 def annotated_file(name: str, download: bool = False):
     if not re.fullmatch(r"[\w-]+_annotated\.mp4", name) or not (DEMOS / name).exists():
