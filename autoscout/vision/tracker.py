@@ -46,6 +46,13 @@ READ_EVERY = 0.5  # s between bumper reads (and appearance crops) of one trackle
 APP_SIZE = 96  # px, appearance crop size
 APP_MARGIN = 0.05  # similarity margin over the next team that counts as a confident match
 APP_WEIGHT = 4.0  # cost scale of appearance evidence for a long tracklet
+# Within-match appearance: robots whose bumper was read (or that a person labelled) show what each
+# team looks like in this very match, lighting and camera included. Same-alliance robots are told
+# apart this way about 6 times in 7, which motion alone can't do when they meet.
+MATCH_APP_MARGIN = 0.02  # similarity margin over the next teammate that counts as a confident match
+MATCH_APP_WEIGHT = 8.0
+MATCH_APP_CAP = 30  # observations at which the evidence stops growing
+MATCH_APP_TOP = 3  # a team's similarity: mean of its closest anchors
 NOT_ROBOT = 0  # manual label: the tracklet is not a robot (a person, a cart...)
 NEAR = 0.8  # m: two robots this close can be confused, so their tracklets are cut
 LINK_GAP = 0.3  # s: longest miss a tracklet continues across
@@ -78,6 +85,7 @@ class Tracklet:
     thumb_area: int = 0
     emb: np.ndarray | None = field(default=None, repr=False)  # appearance feature (unit length)
     app: dict = field(default_factory=dict)  # team -> appearance evidence from the event bank
+    mapp: dict = field(default_factory=dict)  # team -> appearance evidence from this match's anchors
 
     @property
     def t0(self):
@@ -284,6 +292,7 @@ class RobotTracker:
         c -= 3.0 * tr.reads.get(team, 0.0)
         c += 1.5 * sum(v for k, v in tr.reads.items() if k != team)  # it read as someone else
         c -= APP_WEIGHT * min(n, 30) / 30 * tr.app.get(team, 0.0)  # looks like that team's robot
+        c -= MATCH_APP_WEIGHT * min(n, MATCH_APP_CAP) / 30 * tr.mapp.get(team, 0.0)  # ... as seen in this match
         return c
 
     @staticmethod
@@ -317,25 +326,69 @@ class RobotTracker:
         return all(o is tr or not _overlap(o, tr) for o in chain)
 
     def label(self, iters: int = 6) -> None:
+        """Label every tracklet with a team (or none). Local search from one start often settles in a
+        labelling a few swaps from the best, so it starts from several (time order, evidence first,
+        longest first) and keeps the cheapest."""
         self._uc, self._lc = {}, {}  # unary / link cost caches (tracklets don't change while labelling)
         trs = sorted([t for t in self.done + self.active if len(t.obs) >= 2], key=lambda t: t.t0)
-        chains: dict[int, list[Tracklet]] = {team: [] for team in self.all_teams}
-        last: dict[int, Tracklet | None] = {team: None for team in self.all_teams}
-        # greedy forward pass: each tracklet to the team that continues it best
+
+        def evidence(t):
+            a = self._anchor_team(t)
+            return (a is None, -(t.reads.get(a, 0.0) if a is not None else 0.0), -len(t.obs))
+
+        best, best_c, best_swaps = None, float("inf"), 0
+        for order in (trs, sorted(trs, key=evidence), sorted(trs, key=lambda t: -len(t.obs))):
+            chains = self._greedy(order)
+            self._local_search(trs, chains, iters)
+            self._swap_suffixes(chains)
+            c = self._total(trs, chains)
+            if c < best_c - 1e-9:
+                best, best_c, best_swaps = {k: list(v) for k, v in chains.items()}, c, self.stats["identity_swaps"]
+        chains = best
         for tr in trs:
-            best, best_c = None, self._unary(tr, None)
+            tr.team = None
+        for team, chain in chains.items():
+            for x in chain:
+                x.team = team
+        self.chains = chains
+        n_read = {team: sum(1 for x in chains[team] if x.reads.get(team, 0) > 0) for team in chains}
+        self.stats.update(tracklets=len(trs), dropped=sum(t.team is None for t in trs), anchored=n_read,
+                          identity_swaps=best_swaps, label_cost=round(best_c, 2))
+
+    def _total(self, trs: list[Tracklet], chains: dict) -> float:
+        on = {x.id for chain in chains.values() for x in chain}
+        return (sum(self._chain_cost(chain) + sum(self._unary(x, team) for x in chain) for team, chain in chains.items())
+                + sum(self._unary(t, None) for t in trs if t.id not in on))
+
+    def _greedy(self, order: list[Tracklet]) -> dict[int, list[Tracklet]]:
+        """Insert tracklets one by one (in `order`) into the team whose chain they extend most cheaply."""
+        chains: dict[int, list[Tracklet]] = {team: [] for team in self.all_teams}
+        for tr in order:
+            best, best_c, best_i = None, self._unary(tr, None), 0
             for team in self.all_teams:
-                if not self._fits(chains[team][-3:], tr):
+                ch = chains[team]
+                if not self._fits(ch, tr):
                     continue
-                c = self._unary(tr, team) + (self._link(last[team], tr) if last[team] else self._birth(tr))
+                i = bisect.bisect_left([x.t0 for x in ch], tr.t0)
+                prev, nxt = (ch[i - 1] if i else None), (ch[i] if i < len(ch) else None)
+                c = self._unary(tr, team) + (self._link(prev, tr) if prev else self._birth(tr))
+                if nxt is not None:  # tr goes between prev and nxt (or becomes the chain's first)
+                    c += self._link(tr, nxt) - (self._link(prev, nxt) if prev else self._birth(nxt))
                 if c < best_c:
-                    best, best_c = team, c
+                    best, best_c, best_i = team, c, i
             tr.team = best
             if best is not None:
-                chains[best].append(tr)
-                last[best] = tr
-        # local search: move a tracklet to another team (or none), or swap it with the tracklets
-        # that team has at the same time, whenever that lowers the total cost
+                chains[best].insert(best_i, tr)
+        return chains
+
+    def _local_search(self, trs: list[Tracklet], chains: dict, iters: int) -> None:
+        """Move a tracklet to another team (or none), or swap it with the tracklets that team has at the
+        same time, whenever that lowers the total cost."""
+        for tr in trs:
+            tr.team = None
+        for team, chain in chains.items():
+            for x in chain:
+                x.team = team
         for _ in range(iters):
             changed = 0
             for tr in trs:
@@ -382,10 +435,6 @@ class RobotTracker:
                 changed += 1
             if not changed:
                 break
-        self._swap_suffixes(chains)
-        self.chains = chains
-        n_read = {team: sum(1 for x in chains[team] if x.reads.get(team, 0) > 0) for team in chains}
-        self.stats.update(tracklets=len(trs), dropped=sum(t.team is None for t in trs), anchored=n_read)
 
     def embed(self, model=None) -> None:
         """Appearance feature of every tracklet (mean over its crops); frees the crops."""
@@ -422,6 +471,49 @@ class RobotTracker:
                     tr.app[t] = float(np.clip((v - other) / APP_MARGIN, -1.0, 1.0))
                 n += 1
         self.stats["appearance_scored"] = n
+
+    def _anchor_team(self, tr: Tracklet) -> int | None:
+        """The team a tracklet surely is: a person's label, or a clear bumper read."""
+        if tr.manual is not None:
+            return None if tr.manual == NOT_ROBOT else tr.manual
+        if not tr.reads:
+            return None
+        top = max(tr.reads, key=tr.reads.get)
+        rest = sum(v for k, v in tr.reads.items() if k != top)
+        return top if tr.reads[top] >= 1.0 and rest <= 0.3 * tr.reads[top] and top in self.alliance_of else None
+
+    def add_match_appearance(self) -> None:
+        """Evidence from what each team's surely-identified tracklets look like in this match: how much
+        closer a tracklet is to one team's anchors than to the best teammate's (never to itself)."""
+        trs = [t for t in self.done + self.active if t.emb is not None]
+        anchors: dict[int, list] = {}
+        for t in trs:
+            team = self._anchor_team(t)
+            if team is not None:
+                anchors.setdefault(team, []).append(t)
+        mats = {team: (np.array([x.emb for x in xs]), [x.id for x in xs]) for team, xs in anchors.items()}
+        n = 0
+        for tr in self.done + self.active:
+            tr.mapp = {}
+            if tr.emb is None:
+                continue
+            for a in ("red", "blue"):
+                sims = {}
+                for team in self.teams[a]:
+                    if team not in mats:
+                        continue
+                    E, ids = mats[team]
+                    s = E @ tr.emb
+                    s = s[[i != tr.id for i in ids]]
+                    if len(s):
+                        sims[team] = float(np.sort(s)[-MATCH_APP_TOP:].mean())
+                if len(sims) < 2:
+                    continue
+                for team, v in sims.items():
+                    other = max(u for k, u in sims.items() if k != team)
+                    tr.mapp[team] = float(np.clip((v - other) / MATCH_APP_MARGIN, -1.0, 1.0))
+                n += 1
+        self.stats["match_appearance_scored"] = n
 
     def _swap_suffixes(self, chains: dict, max_rounds: int = 30, max_span: float = 45.0) -> None:
         """Repair identity switches: the tracker sometimes hands robot A's track to robot B from
@@ -519,6 +611,7 @@ class RobotTracker:
             tr.manual = (manual or {}).get(tr.id)
         if bank:
             self.add_appearance(bank)
+        self.add_match_appearance()
         self.label()
         for a in ("red", "blue"):
             for i, team in enumerate(self.teams[a]):

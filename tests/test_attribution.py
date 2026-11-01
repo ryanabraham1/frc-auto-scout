@@ -126,3 +126,29 @@ def test_weak_detection_extends_a_tracked_robot_but_never_starts_one():
     tr.update(0.1, frame, [Det(box[0] + 2, box[1], box[2] + 2, box[3], 0.15, "red"),
                            Det(300, 600, 360, 650, 0.15, "blue")])
     assert len(tr.active) == 1 and len(tr.active[0].obs) == 2
+
+
+def test_unread_robot_is_named_by_how_its_read_teammates_look_in_the_match():
+    """Two red robots cross paths unread; each looks like a different read anchor earlier in the
+    match, so appearance (not the ambiguous motion) decides who is who."""
+    tr = RobotTracker(houston_cal(), FieldModel.load(2026), {"red": [1, 2, 3], "blue": [4, 5, 6]})
+    rng = np.random.default_rng(0)
+    look = {1: rng.normal(size=16), 2: rng.normal(size=16)}
+
+    def emb(team):
+        v = look[team] + 0.05 * rng.normal(size=16)
+        return (v / np.linalg.norm(v)).astype(np.float32)
+
+    def trk(i, t0, t1, x, team, read):
+        t = Tracklet(i, obs=[(t, x, 4.0, (0, 0, 50, 50), "red") for t in np.arange(t0, t1, 0.1)])
+        t.reads, t.emb = ({team: 3.0} if read else {}), emb(team)
+        return t
+
+    # anchors: 1 on the left, 2 on the right; then both stand still side by side (a coin flip
+    # for motion) and the unread tracklets swap places by appearance only
+    tr.done = [trk(0, 0, 3, 5.0, 1, True), trk(1, 0, 3, 5.5, 2, True),
+               trk(2, 3.2, 8, 5.25, 2, False), trk(3, 3.2, 8, 5.25, 1, False)]
+    tr.times = list(np.arange(0, 8, 0.1))
+    tr.relabel()
+    assert tr.done[2].team == 2 and tr.done[3].team == 1
+    assert tr.done[2].mapp[2] > 0 > tr.done[2].mapp[1]
