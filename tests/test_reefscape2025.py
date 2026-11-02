@@ -231,3 +231,39 @@ def test_closeup_fit_uses_the_corrected_wide_calibration(tmp_path, monkeypatch):
     pipeline.calibrate_closeups('2025casj')
     assert np.allclose(seen[0]['raw_tracks']['blue0'][0][1:3], cal.to_field([(530, 460)])[0])
     assert json.loads(path.read_text()) == saved
+
+
+def test_robot_centre_sits_behind_its_nearest_bumper():
+    from types import SimpleNamespace
+    from autoscout.field import Calibration
+    from autoscout import games
+
+    plugin = games.get(2025)
+    ctx = SimpleNamespace(cal=Calibration.load("2025casj"))
+    # the broadcast camera is on the low-y side of the field: a robot's middle is further up the field
+    x, y = plugin._centre(ctx, 3.0, 2.5)
+    assert abs(x - 3.0) < 0.2 and 0.4 < y - 2.5 < 0.6
+
+
+def test_event_prior_favours_the_teams_that_score_and_skips_this_match(monkeypatch):
+    from types import SimpleNamespace
+    from autoscout import games
+
+    plugin = games.get(2025)
+    monkeypatch.setattr(plugin, 'official_counts', lambda bd: {
+        'auto': dict.fromkeys(('L1', 'L2', 'L3', 'L4'), 0), 'teleop': {'L1': 0, 'L2': 0, 'L3': 0, 'L4': bd}})
+    teams = [1, 2, 3, 4, 5, 6]
+    rates = {1: 20, 2: 2, 3: 2, 4: 8, 5: 8, 6: 8}
+    rows = []
+    for i in range(16):
+        red = [teams[i % 6], teams[(i + 1) % 6], teams[(i + 3) % 6]]
+        blue = [t for t in teams if t not in red]
+        rows.append(SimpleNamespace(key=f"qm{i}", red=red, blue=blue,
+                                    breakdown={a: sum(rates[t] for t in tm) for a, tm in (("red", red), ("blue", blue))},
+                                    teams=lambda a, red=red, blue=blue: red if a == "red" else blue))
+    # this match's own result says team 2 is the star; the prior must not see it
+    rows[0].breakdown = {"red": 99, "blue": 99}
+    prior = plugin.event_prior("qm0", rows)
+    w = {t: v["L4"] for a in prior for t, v in prior[a].items()}
+    assert w[1] > 2 * w[rows[0].red[1]] and w[2] < 1
+    assert plugin.event_prior("qm0", rows[:5]) is None  # too few other matches

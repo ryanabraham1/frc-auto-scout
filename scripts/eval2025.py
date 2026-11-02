@@ -17,6 +17,7 @@ import numpy as np
 
 from autoscout.evaluation import load_results
 from autoscout.games.reefscape2025 import CATS, Reefscape2025
+from autoscout import pipeline
 from autoscout.pipeline import RESULTS_DIR, reanalyze
 from autoscout.tba import TBA, MatchInfo
 
@@ -65,6 +66,8 @@ def main(event, saved=False, matches=None, results_dir=RESULTS_DIR):
     if not saved:
         if Path(results_dir).resolve() != RESULTS_DIR.resolve():
             raise ValueError("--results-dir requires --saved; reanalysis reads the live results directory")
+        # team priors may use only the evaluated matches' official totals, never the OPR reference matches
+        pipeline.PRIOR_MATCH_KEYS = {r["match_key"] for r in results}
         results = [reanalyze(r["match_key"], tba, save=False) for r in results]
     done = {r["match_key"] for r in results}
     o = heldout_opr(ms, done)

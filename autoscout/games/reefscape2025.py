@@ -59,6 +59,19 @@ DECODE = "joint"  # "joint": all jumps decoded together against official counts 
 SHARE_MODE = "hybrid"  # "nearest" | "soft" | "dwell" | "hybrid" (dwell for coral, soft for algae): see _shares
 SOFT_SCALE = 1.0  # m
 DWELL_SLACK = 0.5  # m added to an element's reach when timing how long a robot stayed there
+# A track's position is its box's bottom centre: the bumper nearest the camera, not the robot's middle.
+# A robot scoring on a REEF face toward the camera then looks a robot-depth away from it (confirmed
+# scorers there measured ~0.35 m farther than on the side faces; some past the reach cutoff), while one
+# behind the REEF, its bumpers hidden, looks on top of it. Distances to elements use the point
+# ROBOT_HALF m further along the camera's line of sight instead.
+ROBOT_HALF = 0.55
+# Who an alliance's coral most likely came from also depends on how much each robot scores: video credit
+# for one coral is soft, and a fast cycler's short REEF visits lose to a partner lingering there, so top
+# scorers were credited well under their OPR every match (1323: 15.6 vs 25.3). Each team's coral OPR from
+# the event's OTHER matches' official totals ((OPR + PRIOR_K) ** PRIOR_ALPHA, never this match) weighs
+# the per-coral video likelihoods (assign_actions' prior).
+PRIOR_ALPHA, PRIOR_K = 1.0, 3.0
+PRIOR_MIN_MATCHES = 12  # other matches with official breakdowns needed before the prior is used
 
 
 CORAL = ("L1", "L2", "L3", "L4")
@@ -116,6 +129,37 @@ class Reefscape2025(GamePlugin):
     ]
 
     @staticmethod
+    def _centre(ctx: MatchContext, x: float, y: float) -> tuple[float, float]:
+        """A robot's middle from its track position (its nearest bumper): ROBOT_HALF m away from the camera."""
+        if ROBOT_HALF <= 0 or getattr(ctx.cal, "H", None) is None:
+            return x, y
+        u, v = ctx.cal.to_image([(x, y)])[0]
+        q = ctx.cal.to_field([(u, v - 10.0)])[0]  # up the image = away from the camera on the carpet
+        d = np.hypot(q[0] - x, q[1] - y)
+        return (x, y) if d <= 0 else (x + ROBOT_HALF * (q[0] - x) / d, y + ROBOT_HALF * (q[1] - y) / d)
+
+    def event_prior(self, match_key: str, matches: list) -> dict | None:
+        """assign_actions' prior for one match: {alliance: {team: {coral level: weight}}} from coral OPR over
+        the other `matches` (MatchInfo with official breakdowns); None if too few of them."""
+        rows = [m for m in matches if m.key != match_key and m.breakdown]
+        teams = sorted({t for m in rows for t in m.red + m.blue})
+        mine = next((m for m in matches if m.key == match_key), None)
+        if PRIOR_ALPHA <= 0 or len(rows) < PRIOR_MIN_MATCHES or mine is None:
+            return None
+        idx = {t: i for i, t in enumerate(teams)}
+        A, b = np.zeros((2 * len(rows), len(teams))), np.zeros(2 * len(rows))
+        for i, m in enumerate(rows):
+            for j, a in enumerate(("red", "blue")):
+                for t in m.teams(a):
+                    A[2 * i + j, idx[t]] = 1
+                c = self.official_counts(m.breakdown[a])
+                b[2 * i + j] = sum(c[ph][k] for ph in c for k in CORAL)
+        opr = dict(zip(teams, np.linalg.lstsq(A, b, rcond=None)[0]))
+        mean = float(np.mean(list(opr.values())))
+        w = lambda t: ((max(opr.get(t, mean), 0.0) + PRIOR_K) / (mean + PRIOR_K)) ** PRIOR_ALPHA  # noqa: E731
+        return {a: {t: {c: w(t) for c in CORAL} for t in mine.teams(a)} for a in ("red", "blue")}
+
+    @staticmethod
     def _fresh(ctx: MatchContext, slot: str) -> list:
         """A slot's track rows whose position is worth something: seen, or coasted from a sighting less than
         STALE_S ago. A robot the camera hasn't seen for a while keeps its last position in the tracker,
@@ -127,13 +171,13 @@ class Reefscape2025(GamePlugin):
             for r in tr:
                 if r[3]:
                     seen.append(r[0])
-                    out.append(r)
+                    out.append((r[0], *Reefscape2025._centre(ctx, r[1], r[2]), *r[3:]))
                     continue
                 while seen and r[0] - seen[0] > STALE_S + 2.0:
                     seen.pop(0)
                 # coast only from a real stretch of sightings, not a one-frame blip (often a false box)
                 if seen and r[0] - seen[-1] <= STALE_S and len(seen) >= COAST_MIN_SEEN:
-                    out.append(r)
+                    out.append((r[0], *Reefscape2025._centre(ctx, r[1], r[2]), *r[3:]))
             cache[slot] = (len(tr), out)
         return cache[slot][1]
 
@@ -504,7 +548,7 @@ class Reefscape2025(GamePlugin):
                 (x0, _y0, x1, _y1), obs = rb
                 dx = max(x0 - pl["x"], 0, pl["x"] - x1)
                 r = ctx.robot_at(slot, pl["t"] + dt)
-                at = r is not None and self.field.dist_to_element(r[:2], f"{a}_reef") < NEAR["reef"] + DWELL_SLACK
+                at = r is not None and self.field.dist_to_element(self._centre(ctx, *r[:2]), f"{a}_reef") < NEAR["reef"] + DWELL_SLACK
                 # a coasting (guessed) position must not claim a placement only a seen robot could have made
                 best = max(best, np.exp(-dx / PLACE_PX) * (1.0 if at else 0.25) * (1.0 if obs else 0.15))
             w[team] = best
@@ -699,7 +743,8 @@ class Reefscape2025(GamePlugin):
                                "level_guess": lvl, "team": max(pc, key=pc.get),
                                "shares": {str(k): round(v, 2) for k, v in pc.items() if v >= 0.01}, "placed": pl})
         if JOINT_CREDIT:
-            credit = self.assign_actions(actions, teams, (self.prior or {}).get(a))
+            prior = self.prior if self.prior is not None else self.event_prior(ctx.match.key, getattr(ctx, "event_matches", []))
+            credit = self.assign_actions(actions, teams, (prior or {}).get(a))
         else:
             credit = [A["p"] for A in actions]
         for A, cr in zip(actions, credit):

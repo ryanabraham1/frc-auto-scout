@@ -148,6 +148,20 @@ def reference_frame(cal: Calibration) -> np.ndarray | None:
     return None
 
 
+# Matches whose official totals may inform a team's prior (2025 event_prior); None = all the event's
+# qualification matches. Evaluation pins it so the reference matches never leak into what it checks.
+PRIOR_MATCH_KEYS: set | None = None
+
+
+def _event_matches(tba: TBA, m: MatchInfo) -> list[MatchInfo]:
+    """The event's qualification matches (official results), for priors over a team's other matches."""
+    try:
+        ms = [MatchInfo.from_tba(x) for x in tba.event_matches(m.event_key) if x["comp_level"] == "qm"]
+    except Exception:  # offline without a cached schedule: no prior
+        return []
+    return [x for x in ms if PRIOR_MATCH_KEYS is None or x.key in PRIOR_MATCH_KEYS or x.key == m.key]
+
+
 def process_match(match_key: str, opts: Options | None = None, tba: TBA | None = None,
                   video_path: str | None = None, detector: RobotDetector | None = None) -> dict:
     opts = opts or Options()
@@ -350,6 +364,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
             Video(video_path), {"clock": clock.to_dict(), "aux_boxes": aux_boxes, **_track_fields(tracks)}, cal.view,
             _scaled_views(base_cal, video))
     fused = fuse_closeups(ctx, m.event_key)
+    ctx.event_matches = _event_matches(tba, m)
     res = plugin.analyze(ctx)
     result = {
         "match_key": match_key, "event_key": m.event_key, "year": m.year, "label": m.label,
@@ -464,6 +479,7 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     solved = _solve_identity(ctx, evidence, m, clock, ov)
     old["fused_sightings"] = fuse_closeups(ctx, m.event_key)
     old["fused_rows"] = getattr(ctx, "fused_rows", [])
+    ctx.event_matches = _event_matches(tba, m)
     res = plugin.analyze(ctx)
     old["identity_timeline"] = ctx.identity_tl
     old.update(res)
