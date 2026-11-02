@@ -10,12 +10,32 @@ import traceback
 from . import config
 
 
+def render_demo(match_key: str, video_path: str | None = None) -> None:
+    """The match's demo video (scripts/render_demo.py): robots labelled with teams, ball flights and the
+    live per-robot scoreboard. This is what "debug video" means on the dashboard."""
+    import subprocess
+
+    from .pipeline import Options, RESULTS_DIR
+    from .video import download
+
+    if video_path is None:
+        r = json.loads((RESULTS_DIR / f"{match_key}.json").read_text())
+        video_path = download(r["video"], height=Options().video_height)
+    out = config.ROOT / "demos" / f"{match_key}_annotated.mp4"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    p = subprocess.run([sys.executable, str(config.ROOT / "scripts" / "render_demo.py"), match_key, str(video_path),
+                        str(out)], cwd=config.ROOT)
+    print(f"[{match_key}] demo video {'written: ' + str(out) if p.returncode == 0 else 'failed'}", flush=True)
+
+
 def cmd_run_match(a):
     from . import db
     from .pipeline import Options, RESULTS_DIR, process_match
 
-    r = process_match(a.match_key, Options(debug_video=a.debug_video, weights=a.weights), video_path=a.video)
+    r = process_match(a.match_key, Options(weights=a.weights), video_path=a.video)
     db.save_result(db.connect(), r, str(RESULTS_DIR / f"{a.match_key}.json"))
+    if a.debug_video:
+        render_demo(a.match_key, a.video)
     print(json.dumps({t: {k: v for k, v in m.items() if not isinstance(v, dict)} for t, m in r["teams"].items()}, indent=1))
 
 
@@ -71,12 +91,14 @@ def cmd_run_event(a):
     workers = max(1, min(a.workers, len(todo) or 1))
     print(f"{a.event_key}: {len(todo)} to process, {workers} at a time"
           f"{', with debug videos' if a.debug_video else ''}", flush=True)
-    opts = Options(weights=a.weights, debug_video=a.debug_video)
+    opts = Options(weights=a.weights)
     info = {m.key: m for m in todo}
+    videos = {}
     # Downloads run ahead of processing (network-bound), and up to `workers` matches process at once
     # (each frame loop is sequential, but separate matches share nothing until they are saved).
-    with ThreadPoolExecutor(2) as dl, ProcessPoolExecutor(workers, initializer=_init_worker,
-                                                          initargs=(a.weights, int(a.event_key[:4]))) as pool:
+    # Demo videos render one at a time from saved results while the next matches process.
+    with ThreadPoolExecutor(2) as dl, ThreadPoolExecutor(1) as demos, ProcessPoolExecutor(
+            workers, initializer=_init_worker, initargs=(a.weights, int(a.event_key[:4]))) as pool:
         fetch = {dl.submit(download, m.videos[0], height=opts.video_height): m for m in todo}
         pending = set(fetch)
         while pending:
@@ -85,7 +107,8 @@ def cmd_run_event(a):
                 if f in fetch:  # a download finished: queue the match
                     m = fetch[f]
                     try:
-                        nxt = pool.submit(_work, m.key, str(f.result()), opts)
+                        videos[m.key] = str(f.result())
+                        nxt = pool.submit(_work, m.key, videos[m.key], opts)
                         pending.add(nxt)
                     except Exception as e:
                         print(f"[{m.key}] download failed: {e}", flush=True)
@@ -95,6 +118,8 @@ def cmd_run_event(a):
                 m = info[key]
                 if err is None:
                     db.save_result(con, r, str(RESULTS_DIR / f"{key}.json"))
+                    if a.debug_video:
+                        demos.submit(render_demo, key, videos[key])
                 elif err[0] == "calibration":
                     print(err[1])
                     dl.shutdown(cancel_futures=True)
@@ -289,7 +314,7 @@ def main(argv=None):
     s = sub.add_parser("run-event"); s.add_argument("event_key"); s.add_argument("--levels", default="qm,sf,f")
     s.add_argument("--force", action="store_true"); s.add_argument("--limit", type=int, default=0)
     s.add_argument("--matches", help="comma-separated match keys (or qm12-style suffixes) to process, even if done")
-    s.add_argument("--debug-video", action="store_true", help="also write each match's debug video")
+    s.add_argument("--debug-video", action="store_true", help="also render each match's demo video (teams, ball flights, live scoreboard)")
     s.add_argument("--workers", type=int, default=1, help="matches processed at the same time")
     s.add_argument("--weights"); s.set_defaults(f=cmd_run_event)
     s = sub.add_parser("reanalyze", help="recompute stats from saved observations (match or event key)")
