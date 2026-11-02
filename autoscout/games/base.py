@@ -203,18 +203,35 @@ class GamePlugin:
         return (best, best_d) if best_d < max_d else (None, best_d)
 
     @staticmethod
-    def trace_back(ctx: MatchContext, launch, alliances=("red", "blue"), max_back: float = 1.6):
-        """Shooter of a flight first seen already in the air (ascent hidden in a dense volley or
-        behind the goal): run its fitted arc backward in time and take the robot whose shooter it
-        passes through. Returns (slot | None, distance in box widths)."""
+    def trace_back(ctx: MatchContext, launch, alliances=("red", "blue"), max_back: float = 1.6,
+                   with_time: bool = False):
+        """Shooter of a flight whose release wasn't seen (ascent hidden in a dense volley, behind the
+        goal, or the track picked up mid-air): run its fitted arc backward in time and take the robot
+        whose shooter it comes out of. Only the rising part of the arc can be a release: a ball
+        flying over a robot on its way down never came out of it. Returns (slot | None, distance in
+        box widths), plus the release time with `with_time`."""
+        ds = GamePlugin.trace_distances(ctx, launch, alliances, max_back)
+        best = min(ds, key=lambda s: ds[s][0]) if ds else None
+        best_d, best_t = ds[best] if best else (9.0, None)
+        if best_d >= 0.6:
+            best = best_t = None
+        return (best, best_d, best_t) if with_time else (best, best_d)
+
+    @staticmethod
+    def trace_distances(ctx: MatchContext, launch, alliances=("red", "blue"), max_back: float = 1.6):
+        """{slot: (closest approach in box widths, time)} of a flight's arc, run backward, to each robot's
+        shooter (box penalty included), over the rising part of the arc only (see trace_back)."""
         from ..vision.launches import fit_flight
 
         P = np.asarray(launch.pts, dtype=float)
         if len(P) < 4:
-            return None, 9.0
+            return {}
         cx, cy, _ = fit_flight(P)
-        best, best_d = None, 9.0
-        for dt in np.arange(-0.1, -max_back, -0.1):
+        dvy = np.polyder(cy)
+        out = {}
+        for dt in np.arange(0.0, -max_back, -0.05):
+            if np.polyval(dvy, dt) >= 0:
+                continue  # falling here: not where it left a shooter
             sx, sy = np.polyval(cx, dt), np.polyval(cy, dt)
             for slot in ctx.tracks:
                 if slot[:-1] not in alliances:
@@ -225,9 +242,9 @@ class GamePlugin:
                 box, observed = rb
                 d = (GamePlugin._release_distance(box, (sx, sy))
                      + GamePlugin._box_penalty(ctx, slot, P[0, 0] + dt, observed))
-                if d < best_d:
-                    best, best_d = slot, d
-        return (best, best_d) if best_d < 0.6 else (None, best_d)
+                if d < out.get(slot, (9.0,))[0]:
+                    out[slot] = (d, P[0, 0] + dt)
+        return out
 
     @staticmethod
     def proportional_split(total: float, weights: dict[str, float], fallback: dict[str, float] | None = None):

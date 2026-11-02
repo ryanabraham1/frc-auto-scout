@@ -89,6 +89,13 @@ class LaunchDetector:
         # to appear as a whole new blob, but sampling every frame makes linking unambiguous.
         self.lag = max(1, lag)
         self.history: list = []
+        # bg_frames > 0: a piece is "moving" where the colour is now but not in the background, the
+        # pixels piece-coloured in most of the last bg_frames frames. In a stream every ball fills the
+        # spot the ball ahead just left, so a short-lag difference erases most of the stream; a pixel a
+        # stream passes through is only piece-coloured part of the time, so it never joins the background.
+        self.bg_frames = 0
+        self.bg_count = None
+        self.bg_hist: list = []
         # live ball tracks are only drawn in the debug video (launches come from the offline
         # LaunchExtractor over self.blobs), and linking every frame costs more than finding blobs
         self.online = True
@@ -97,11 +104,24 @@ class LaunchDetector:
         m = cv2.inRange(cv2.cvtColor(frame_view, cv2.COLOR_BGR2HSV), self.lo, self.hi)
         if self.prev is None:  # reset (start or after a camera cut)
             self.history = []
-        self.history.append(m)
+            self.bg_hist, self.bg_count = [], None
         self.prev = m
-        if len(self.history) <= self.lag:
-            return
-        ref = self.history.pop(0)
+        if self.bg_frames:
+            bit = (m > 0).astype(np.uint8)
+            if self.bg_count is None:
+                self.bg_count = np.zeros(m.shape, np.uint8)
+            self.bg_hist.append(bit)
+            self.bg_count += bit
+            if len(self.bg_hist) > self.bg_frames:
+                self.bg_count -= self.bg_hist.pop(0)
+            if len(self.bg_hist) < self.bg_frames:
+                return
+            ref = np.where(self.bg_count * 2 > self.bg_frames, 255, 0).astype(np.uint8)
+        else:
+            self.history.append(m)
+            if len(self.history) <= self.lag:
+                return
+            ref = self.history.pop(0)
         mv = cv2.bitwise_and(m, cv2.bitwise_not(cv2.dilate(ref, self.kernel)))
         mv = cv2.morphologyEx(mv, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
         if self.ignore is not None:

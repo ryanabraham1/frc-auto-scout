@@ -38,7 +38,23 @@ VOLLEY_WINDOW = 8.0  # s looked back for shooters when nobody released just befo
 TRACE_BACK = 4  # blob frames kept for tracing a ball back to its shooter
 RELEASE_SPEED = 3.0  # m/s upward: launched FUEL leaves a shooter at ~8-12 m/s; crowd and hopper motion is slower
 SHOT_WINDOW = 3.0  # s before a score increase in which the scoring shot was released
+# How much FUEL each robot scores also says who most likely scored an increase the video can't settle:
+# each team's fuel OPR from the event's OTHER matches' official totals ((OPR + PRIOR_K) ** PRIOR_ALPHA,
+# never this match) weighs its share of every increase. A lone seen shooter keeps the whole increase.
+# Off (0), like 2025: attribution stays vision only; scripts/eval2026.py measures what it would change.
+PRIOR_ALPHA, PRIOR_K = 0.0, 20.0
+PRIOR_MIN_MATCHES = 12  # other matches with official breakdowns needed before the prior is used
 COUNT_LAG = 1.0  # s between release and the hub sensor counting the FUEL
+TRACE_ARCS = True  # every flight without a seen release is run back along its arc to its shooter
+SPLIT_BY = "live"  # "live": each score increase by who fired just before it | "made": tracked makes per period
+# An increase nobody was seen firing before used to go to robots in their zone, weighted toward the HUB.
+# Robots shoot from anywhere in their zone, so that is a guess: now the increase is left out of the
+# live weights and the period's official count is split by the FUEL actually seen leaving robots.
+POSITION_FALLBACK = False
+HUB_LINK = True  # FUEL into a HUB is linked among that HUB's alliance only (hub_shooter)
+LINK_LOOSE, LINK_MARGIN = 1.5, 0.5  # box widths: a clearly-closest robot's stale box may be this far off
+SIGHTING_S = 5.0  # s: an undetected shooter is the robot seen at the release spot within this long
+STREAM_S, STREAM_PX, STREAM_MAJORITY = 1.0, 40.0, 0.6  # a stream: releases this close; its robot: this share
 
 
 def period_of(ctx: MatchContext, vt: float) -> str | None:
@@ -178,24 +194,29 @@ class Rebuilt2026(GamePlugin):
         shot_log = []  # (t0, team or "HP", alliance, pieces, made) for time-local attribution
         hub_zone = self.hub_top_zone(ctx)
         shooter_of = self.history_shooters(ctx, ctx.launches.get("fuel", []), hub_zone)
+        hub_links = self.link_hub_flights(ctx, ctx.launches.get("fuel", []), shooter_of, hub_zone) if HUB_LINK else {}
         for L in ctx.launches.get("fuel", []):
             period = period_of(ctx, L.t0 + COUNT_LAG)
             if period is None:
                 continue
-            if hub_zone(np.array([L.start[0]]), np.array([L.start[1]]))[0]:
-                continue  # first seen at a HUB's top: FUEL dropping in or bouncing off, not a release
-            if getattr(L, "rising", True):
+            into_hub = bool(L.target and L.target.endswith("_hub"))
+            at_hub = hub_zone(np.array([L.start[0]]), np.array([L.start[1]]))[0]
+            if at_hub and not (TRACE_ARCS and into_hub):
+                continue  # first seen at a HUB's top: FUEL bouncing off or dropping in, not a release
+            rising = getattr(L, "rising", True)
+            if into_hub and HUB_LINK:
+                # only the HUB's own alliance can have shot FUEL into it
+                slot = hub_links.get(id(L))
+            else:
                 # a release must be right at a robot's top: looser matches pick up crowd motion
                 # and the overlay above far-side robots; ties go to whoever was already firing
-                slot = shooter_of.get(id(L))
-            elif L.target and L.target.endswith("_hub"):
-                # descent-only (ascent hidden, typical inside a volley) but dropping into a HUB:
-                # trace the arc back to the shooter of that HUB's alliance
-                slot, _ = self.trace_back(ctx, L, alliances=(L.target[:-4],))
-                if slot is None:
-                    continue
-            else:
-                continue  # descent-only and not into a goal: release not seen, can't attribute
+                slot = shooter_of.get(id(L)) if rising and not at_hub else None
+                if slot is None and (TRACE_ARCS or (into_hub and not rising)):
+                    # release not seen (ascent hidden inside a volley, or first seen mid-air): run the
+                    # arc back to the robot it came out of
+                    slot, _ = self.trace_back(ctx, L, alliances=(L.target[:-4],) if into_hub else ("red", "blue"))
+            if slot is None and (at_hub or not rising):
+                continue  # release not seen and nobody's arc: crowd motion, a bounce, FUEL knocked off a HUB
             ev = {"t": round(L.t0, 2), "period": period, "n": round(L.n_pieces, 2),
                   "start": [round(v) for v in L.start], "end": [round(v) for v in L.end]}
             if slot is None:
@@ -267,8 +288,9 @@ class Rebuilt2026(GamePlugin):
         # Split official per-period hub counts among robots (+ human player).
         live = {}
         columns = self.column_activity(ctx)
+        prior = self.event_prior(ctx.match.key, getattr(ctx, "event_matches", [])) if PRIOR_ALPHA > 0 else None
         for a in ("red", "blue"):
-            live[a], credit = self.live_weights(ctx, a, teams[a], shot_log, columns)
+            live[a], credit = self.live_weights(ctx, a, teams[a], shot_log, columns, prior)
             events += credit
         scored = defaultdict(lambda: defaultdict(int))
         source = "breakdown" if bd else "overlay"
@@ -283,7 +305,7 @@ class Rebuilt2026(GamePlugin):
                     official = self._overlay_count(ctx, a, per)
                 # Evidence: pieces seen dropping into the hub count fully; other shots partially
                 # (make detection misses some, e.g. when the opening is occluded).
-                if live[a] is not None:
+                if live[a] is not None and SPLIT_BY != "made":
                     weights = {t: live[a][t][per] for t in teams[a]}
                     weights["HP"] = live[a]["HP"][per]
                 elif have_targets:
@@ -587,7 +609,114 @@ class Rebuilt2026(GamePlugin):
         x0, _, x1, _ = self.field.zones[f"{alliance}_alliance"]
         return float(max(x0 - p[0], 0.0, p[0] - x1))
 
-    def live_weights(self, ctx: MatchContext, alliance: str, teams: list[int], shot_log: list, columns=None):
+    def hub_shooter(self, ctx: MatchContext, L, alliance: str, shooter_of: dict, at_hub: bool) -> str | None:
+        """Which of an alliance's robots shot FUEL that dropped into its HUB. Robots are detected only
+        part of the time, so the shooter's box is often a stale estimate a little off the release: of
+        the three, take the one the release (or the arc run backward) comes out of, when it is clearly
+        closer than its partners even if it isn't right on top (LINK_LOOSE, LINK_MARGIN)."""
+        rising = getattr(L, "rising", True)
+        s = shooter_of.get(id(L)) if rising and not at_hub else None
+        if s is not None and s[:-1] == alliance:
+            return s
+        d = {}
+        if rising and not at_hub:
+            for slot, (dist, observed) in self.launch_distances(ctx, L, (alliance,)).items():
+                d[slot] = dist + self._box_penalty(ctx, slot, L.t0, observed)
+        if TRACE_ARCS or not rising:
+            for slot, (dist, _t) in self.trace_distances(ctx, L, (alliance,)).items():
+                d[slot] = min(d.get(slot, 9.0), dist)
+        if d:
+            ranked = sorted(d.items(), key=lambda kv: kv[1])
+            (best, d0), d1 = ranked[0], (ranked[1][1] if len(ranked) > 1 else 9.0)
+            if d0 < 0.6 or (d0 < LINK_LOOSE and d1 - d0 >= LINK_MARGIN):
+                return best
+        if SIGHTING_S and rising and not at_hub:
+            return self.sighted_shooter(ctx, L, alliance)
+        return None
+
+    def link_hub_flights(self, ctx: MatchContext, launches, shooter_of: dict, hub_zone) -> dict[int, str | None]:
+        """Shooter of every flight into a HUB (hub_shooter), then streams made consistent: FUEL rising
+        from one spot in quick succession is one robot emptying its hopper, so a stream goes to the robot
+        most of its linked flights point to (STREAM_MAJORITY), including the flights no robot fitted."""
+        out, rel = {}, []
+        for L in launches:
+            if not (L.target and L.target.endswith("_hub")):
+                continue
+            at_hub = bool(hub_zone(np.array([L.start[0]]), np.array([L.start[1]]))[0])
+            a = L.target[:-4]
+            out[id(L)] = self.hub_shooter(ctx, L, a, shooter_of, at_hub)
+            if getattr(L, "rising", True) and not at_hub:
+                rel.append((L.t0, L.start[0], L.start[1], a, id(L), L.n_pieces))
+        if not STREAM_PX:
+            return out
+        rel.sort()
+        streams = []  # chains of releases: each within STREAM_S s and STREAM_PX px of the previous one
+        for r in rel:
+            for s in reversed(streams[-12:]):
+                q = s[-1]
+                if q[3] == r[3] and r[0] - q[0] <= STREAM_S and np.hypot(r[1] - q[1], r[2] - q[2]) <= STREAM_PX:
+                    s.append(r)
+                    break
+            else:
+                streams.append([r])
+        for s in streams:
+            if len(s) < 3:
+                continue
+            votes = defaultdict(float)
+            for r in s:
+                if out[r[4]] is not None:
+                    votes[out[r[4]]] += r[5]
+            if not votes:
+                continue
+            best = max(votes, key=votes.get)
+            if votes[best] >= STREAM_MAJORITY * sum(votes.values()):
+                for r in s:
+                    out[r[4]] = best
+        return out
+
+    def sighted_shooter(self, ctx: MatchContext, L, alliance: str) -> str | None:
+        """FUEL rising from a spot where no robot box is: the shooter is there but not detected (behind
+        a referee, half out of frame at the field's edge). The robot of the alliance that was actually
+        seen (not estimated) at that spot within SIGHTING_S s, clearly nearer than its partners' sightings."""
+        sx, sy = L.start
+        d = {}
+        for slot, tr in ctx.tracks.items():
+            if slot[:-1] != alliance:
+                continue
+            ctx.robot_at(slot, L.t0)  # fills ctx._ts
+            ts = ctx._ts[slot]
+            lo, hi = np.searchsorted(ts, [L.t0 - SIGHTING_S, L.t0 + SIGHTING_S])
+            for r in tr[lo:hi]:
+                if not (r[3] and r[4] is not None):
+                    continue
+                dist = self._release_distance(r[4], (sx, sy)) + 0.1 * abs(r[0] - L.t0)
+                d[slot] = min(d.get(slot, 9.0), dist)
+        if not d:
+            return None
+        ranked = sorted(d.items(), key=lambda kv: kv[1])
+        (best, d0), d1 = ranked[0], (ranked[1][1] if len(ranked) > 1 else 9.0)
+        return best if d0 < LINK_LOOSE and d1 - d0 >= LINK_MARGIN else None
+
+    def event_prior(self, match_key: str, matches: list) -> dict[int, float] | None:
+        """{team: weight} from fuel OPR (official hub totals) over the other `matches`; None when off or
+        too few of them."""
+        rows = [m for m in matches if m.key != match_key and m.breakdown]
+        if PRIOR_ALPHA <= 0 or len(rows) < PRIOR_MIN_MATCHES:
+            return None
+        teams = sorted({t for m in rows for t in m.red + m.blue})
+        idx = {t: i for i, t in enumerate(teams)}
+        A, b = np.zeros((2 * len(rows), len(teams))), np.zeros(2 * len(rows))
+        for i, m in enumerate(rows):
+            for j, a in enumerate(("red", "blue")):
+                for t in m.teams(a):
+                    A[2 * i + j, idx[t]] = 1
+                b[2 * i + j] = m.breakdown[a]["hubScore"]["totalCount"]
+        opr = dict(zip(teams, np.linalg.lstsq(A, b, rcond=None)[0]))
+        mean = float(np.mean(list(opr.values())))
+        return {t: ((max(v, 0.0) + PRIOR_K) / (mean + PRIOR_K)) ** PRIOR_ALPHA for t, v in opr.items()}
+
+    def live_weights(self, ctx: MatchContext, alliance: str, teams: list[int], shot_log: list, columns=None,
+                     prior: dict[int, float] | None = None):
         """Credit every live score increase to whoever was shooting just before it.
 
         The broadcast score rises ball by ball as the HUB counts FUEL, so it says *when* each
@@ -658,13 +787,17 @@ class Rebuilt2026(GamePlugin):
                         w[who] += n * (2.0 if is_made else 1.0)
                 if w and src == "position":
                     src = "volley"
-            if not w:
+            if not w and POSITION_FALLBACK:
                 for team in teams:
                     slot = ctx.slot_of(team, t)
                     pos = [ctx.robot_at(slot, x) for x in np.linspace(lo, hi, 5)] if slot else []
                     pos = [q for q in pos if q is not None and self.zone_for(alliance, q[:2]) == "own"]
                     for q in pos:
                         w[team] += 1.0 / (1.0 + self.field.dist_to_element(q[:2], hub) / 2.0)
+            if prior:
+                for who in w:
+                    if who != "HP":
+                        w[who] *= prior.get(who, 1.0)
             tot = sum(w.values())
             for who, v in w.items():
                 out[who][per] += d * v / tot
