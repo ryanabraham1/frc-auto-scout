@@ -182,6 +182,15 @@ def process_match(match_key: str, opts: Options | None = None, tba: TBA | None =
 
 
 def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin, fm, prog):
+    stage_timings = {}
+    stage_started = time.perf_counter()
+
+    def finish_stage(name):
+        nonlocal stage_started
+        now = time.perf_counter()
+        stage_timings[name] = round(now - stage_started, 3)
+        stage_started = now
+
     # ---- video ------------------------------------------------------------------------
     if video_path is None:
         if not m.videos:
@@ -201,6 +210,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     if ref is not None and ref.shape[1] != video.width:
         ref = cv2.resize(ref, (video.width, video.height))
 
+    finish_stage("video_and_calibration")
     # ---- overlay: score timeline + match clock ----------------------------------------
     layout = None
     if base_cal.overlay and tuple(base_cal.overlay.get("frame_size", ())) == (video.width, video.height):
@@ -218,6 +228,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     log(f"match clock: auto {clock.start_vt:.1f}-{clock.auto_end_vt:.1f}s, teleop ends {clock.teleop_end_vt:.1f}s; "
         f"overlay final blue {int(tl.blue[-1])} red {int(tl.red[-1])}")
 
+    finish_stage("scoreboard")
     # ---- per-video alignment ----------------------------------------------------------
     mid = video.frame_at(clock.teleop_start_vt + 20)
     if ref is not None and mid is not None:
@@ -262,6 +273,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     watcher = element_watcher(cal, fm, plugin, (video.width, video.height), _aux_watch(base_cal, video))
     cut = False
     n_frames = n_cut = 0
+    finish_stage("model_and_tracking_setup")
     with video.prefetched_frames(t0, t1, step=launch_step) as frames:
         for i, (t, frame) in enumerate(frames):
             n_frames += 1
@@ -300,6 +312,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
                 ph, rem = clock.phase(t)
                 cv2.putText(vis, f"{ph} {rem:5.1f}", (10, 30), 0, 1.0, (255, 255, 255), 2)
                 writer.write(vis)
+    finish_stage("frames")
     if writer is not None:
         writer.release()
         _to_h264(out)
@@ -315,12 +328,14 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         ", ".join(f"{k}={len(v)} ({sum(l.n_pieces for l in v):.0f} pieces)" for k, v in launches.items()) +
         "; rejected ground-rolling " + ", ".join(f"{k}={L.rejected_ground}" for k, L in launchers.items()))
 
+    finish_stage("launch_extraction_and_debug_video")
     # ---- identity ------------------------------------------------------------------------
     # The tracker read bumpers while tracking; close-up reads join them, then every tracklet is
     # labelled with a team and slot "red0" is red's first team (bumper reads decide, not order).
     prog.update("close-ups", 0.0, "reading close-up camera views", force=True)
     aux_reads = aux_job.result()
     aux_pool.shutdown()
+    finish_stage("closeup_wait")
     if aux_reads:
         log(f"close-up views: {len(aux_reads)} team reads")
     prog.update("identity", 0.5, "labelling robots with teams", force=True)
@@ -353,6 +368,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     solved = _solve_identity(ctx, evidence, m, clock, ov)
     log("identity " + ", ".join(f"{k}={v}" for k, v in ctx.identity.items()) + f" conf {ctx.identity_conf}")
 
+    finish_stage("identity")
     # ---- game analysis -------------------------------------------------------------------
     prog.update("analysis", 0.5, "attributing scoring to robots", force=True)
     if plugin.measure_reach:
@@ -366,6 +382,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     fused = fuse_closeups(ctx, m.event_key)
     ctx.event_matches = _event_matches(tba, m)
     res = plugin.analyze(ctx)
+    finish_stage("analysis")
     result = {
         "match_key": match_key, "event_key": m.event_key, "year": m.year, "label": m.label,
         "comp_level": m.comp_level, "match_number": m.match_number, "set_number": m.set_number,
@@ -394,12 +411,14 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
                               "scales": list(getattr(det, "sizes", [])), "device": config.device(),
                               "weak_conf": WEAK_CONF, "robot_hz": robot_hz},
         "processing_s": round(time.time() - t_start, 1),
+        "processing_stages_s": stage_timings,
         **res,
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     (RESULTS_DIR / f"{match_key}.json").write_text(json.dumps(result, default=_json_default))
     prog.done()
     log(f"done in {result['processing_s']}s")
+    log("stage seconds: " + ", ".join(f"{k}={v:.1f}" for k, v in stage_timings.items()))
     return result
 
 

@@ -91,3 +91,21 @@ def test_annotate_accepts_quarterfinal_keys(monkeypatch, tmp_path):
     with pytest.raises(HTTPException) as error:
         web.annotate('2026test_qf1m1')
     assert error.value.status_code == 404  # passed key validation, no result yet
+
+
+def test_cancel_clears_stale_progress_without_a_running_process(tmp_path, monkeypatch):
+    from autoscout import progress
+
+    monkeypatch.setattr(web, '_orphan_runs', lambda ek: [])
+    monkeypatch.setattr(web, 'JOBS', {})
+    monkeypatch.setattr(progress, 'DIR', tmp_path)
+    monkeypatch.setattr(web.config, 'DATA_DIR', tmp_path)
+    for key in ('2025test_qm8', '2026other_qm1'):
+        job = progress.Progress(key)
+        job.update('frames', .33, force=True)
+    assert web.cancel_run('2025test') == {'cancelled': True}
+    cancelled = json.loads((tmp_path / '2025test_qm8.json').read_text())
+    assert cancelled['stage'] == 'error' and cancelled['error'] == 'cancelled'
+    assert cancelled['eta_s'] is None
+    assert json.loads((tmp_path / '2026other_qm1.json').read_text())['stage'] == 'frames'
+    assert web.cancel_run('2025test')['cancelled'] is False

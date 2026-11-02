@@ -595,16 +595,43 @@ class RobotTracker:
                 A, B = chains[ta], chains[tb]
                 base = cost(ta, A) + cost(tb, B)
                 ts = sorted({x.t0 for x in A + B}) + [float("inf")]
+                # Every candidate consists of three already sorted slices. Index the
+                # boundaries once, rather than scanning and sorting both chains for
+                # every interval. Prefix counts retain the exact overlap predicate,
+                # including short tracklets at shared boundaries.
+                def index(chain):
+                    starts = [x.t0 for x in chain]
+                    bounds = [bisect.bisect_left(starts, t) for t in ts]
+                    bad = [0]
+                    for a, b in zip(chain, chain[1:]):
+                        bad.append(bad[-1] + int(_overlap(a, b)))
+                    return bounds, bad
+
+                ai, abad = index(A)
+                bi, bbad = index(B)
+
+                def disjoint_parts(parts):
+                    last = None
+                    for chain, bad, lo, hi in parts:
+                        if lo == hi:
+                            continue
+                        if bad[hi - 1] != bad[lo]:
+                            return False
+                        if last is not None and _overlap(last, chain[lo]):
+                            return False
+                        last = chain[hi - 1]
+                    return True
+
                 # swap the stretch [T1, T2): T2 = inf is a swap of the whole future
                 for i, T1 in enumerate(ts[:-1]):
                     j = bisect.bisect_right(ts, T1 + max_span, i + 1)
-                    for T2 in ts[i + 1: j] + ([ts[-1]] if j < len(ts) else []):
-                        na = [x for x in A if not T1 <= x.t0 < T2] + [x for x in B if T1 <= x.t0 < T2]
-                        nb = [x for x in B if not T1 <= x.t0 < T2] + [x for x in A if T1 <= x.t0 < T2]
-                        na.sort(key=lambda x: x.t0)
-                        nb.sort(key=lambda x: x.t0)
-                        if not (self._disjoint(na) and self._disjoint(nb)):
+                    for k in itertools.chain(range(i + 1, j), [len(ts) - 1] if j < len(ts) else []):
+                        a1, a2, b1, b2 = ai[i], ai[k], bi[i], bi[k]
+                        if not (disjoint_parts(((A, abad, 0, a1), (B, bbad, b1, b2), (A, abad, a2, len(A))))
+                                and disjoint_parts(((B, bbad, 0, b1), (A, abad, a1, a2), (B, bbad, b2, len(B))))):
                             continue
+                        na = A[:a1] + B[b1:b2] + A[a2:]
+                        nb = B[:b1] + A[a1:a2] + B[b2:]
                         gain = base - cost(ta, na) - cost(tb, nb)
                         if gain > best_gain:
                             best, best_gain = (ta, tb, na, nb), gain

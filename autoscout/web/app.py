@@ -262,15 +262,17 @@ def cancel_run(event_key: str):
     p = JOBS.get(event_key)
     if p is not None and p.poll() is None:
         pids.append(p.pid)
-    if not pids:
-        return {"cancelled": False, "reason": "nothing is running for this event"}
     for pid in pids:
         _kill_tree(pid)
     # matches it was in the middle of would otherwise look stuck on the Overview page
+    cleared = 0
     for d in all_progress():
         if d["match_key"].startswith(event_key + "_") and d["stage"] not in ("done", "error"):
             d.update(stage="error", error="cancelled", detail="cancelled", eta_s=None)
             (DIR / f"{d['match_key']}.json").write_text(json.dumps({k: v for k, v in d.items() if k != "stale"}))
+            cleared += 1
+    if not pids and not cleared:
+        return {"cancelled": False, "reason": "nothing is running for this event"}
     with open(config.DATA_DIR / f"run_{event_key}.log", "a") as log:
         log.write("\n--- cancelled from the dashboard ---\n")
     return {"cancelled": True}

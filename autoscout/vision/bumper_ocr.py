@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import functools
 import os
+import threading
 
 import cv2
 import numpy as np
@@ -49,6 +50,16 @@ def _prep(img: np.ndarray):
     img = cv2.cvtColor(cv2.resize(img, (W_IN, H_IN), interpolation=cv2.INTER_CUBIC), cv2.COLOR_BGR2RGB)
     x = torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1).float() / 255.0
     return (x - 0.5) / 0.5
+
+
+def _prep_many(crops: list[np.ndarray]):
+    """Apply the same resize and float32 normalization in one tensor batch."""
+    import torch
+
+    images = np.stack([cv2.cvtColor(cv2.resize(c, (W_IN, H_IN), interpolation=cv2.INTER_CUBIC),
+                                  cv2.COLOR_BGR2RGB) for c in crops])
+    x = torch.from_numpy(images).permute(0, 3, 1, 2).float() / 255.0
+    return ((x - 0.5) / 0.5).contiguous()
 
 
 def bumper_windows(frame: np.ndarray, box, min_h: int = 7) -> list[np.ndarray]:
@@ -94,6 +105,46 @@ def bumper_windows(frame: np.ndarray, box, min_h: int = 7) -> list[np.ndarray]:
     return out
 
 
+def _greedy_logprobs(greedy, eos_id: int) -> list[float]:
+    """Keep the original per-crop reductions, with two transfers per batch.
+
+    Calling nonzero() and float() on CUDA inside the crop loop synchronizes
+    the GPU hundreds of times. Locate EOS on the CPU, then transfer all the
+    unchanged scalar sums together. No probability or precision changes.
+    """
+    import torch
+
+    g = greedy.max(-1)
+    ids = g.indices.cpu().numpy()
+    sums = []
+    for b in range(len(ids)):
+        e = np.flatnonzero(ids[b] == eos_id)
+        n = int(e[0]) + 1 if len(e) else ids.shape[1]
+        sums.append(g.values[b, :n].sum())
+    return torch.stack(sums).cpu().tolist() if sums else []
+
+
+def _recognize_with_memory(m, x):
+    """Reuse the encoder output from the unmodified greedy forward pass.
+
+    Wide-shot and close-up reads share a model, so only capture this thread's
+    output. Remove the observation hook even if recognition fails.
+    """
+    encoded = []
+    owner = threading.get_ident()
+
+    def capture(module, args, output):
+        if threading.get_ident() == owner:
+            encoded.append(output)
+
+    hook = m.model.encoder.register_forward_hook(capture)
+    try:
+        greedy = m(x)
+    finally:
+        hook.remove()
+    return greedy, encoded[0] if encoded else m.model.encode(x)
+
+
 class BumperReader:
     def __init__(self, batch: int = 256):
         self.batch = batch
@@ -116,18 +167,11 @@ class BumperReader:
         S, G = [], []
         with torch.no_grad():
             for i in range(0, len(crops), self.batch):
-                x = torch.stack([_prep(c) for c in crops[i: i + self.batch]]).to(dev)
-                greedy = m(x).log_softmax(-1)  # (B, T, C)
-                g = greedy.max(-1)
-                ids = g.indices
+                x = _prep_many(crops[i: i + self.batch]).to(dev)
+                greedy, mem = _recognize_with_memory(m, x)
+                greedy = greedy.log_softmax(-1)  # (B, T, C)
                 # greedy read's log-prob up to and including its EOS
-                lp = []
-                for b in range(len(x)):
-                    e = (ids[b] == tok.eos_id).nonzero()
-                    n = int(e[0]) + 1 if len(e) else ids.shape[1]
-                    lp.append(float(g.values[b, :n].sum()))
-                G += lp
-                mem = m.model.encode(x)  # (B, N, D)
+                G += _greedy_logprobs(greedy, tok.eos_id)
                 B = mem.shape[0]
                 memk = mem.repeat_interleave(K, 0)
                 tin = tgt_in.repeat(B, 1)
