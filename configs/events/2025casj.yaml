@@ -25,7 +25,7 @@ points:
   center_line_y0:
   - 958.0
   - 628.0
-reference: null
+reference: configs/events/2025casj_ref.jpg
 overlay:
   timer:
   - 888

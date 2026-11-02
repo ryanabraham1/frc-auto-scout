@@ -388,7 +388,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "fused_rows": getattr(ctx, "fused_rows", []),
         "element_changes": ctx.element_changes,
         "identity_timeline": ctx.identity_tl,
-        "calibration": {"view": list(cal.view), "points": {k: list(map(float, v)) for k, v in cal.points.items()}},
+        "calibration": _cal_dict(cal, base_cal.scaled((video.width, video.height))),
         "detector": str(det.weights.name),
         "detector_settings": {"weights": str(det.weights), "imgsz": getattr(det, "imgsz", None),
                               "scales": list(getattr(det, "sizes", [])), "device": config.device(),
@@ -442,8 +442,7 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
                        counters={k: np.array(v, float) for k, v in tl_d.get("counters", {}).items()})
     tracks = {k: [tuple(r) for r in v] for k, v in old["raw_tracks"].items()}
     base = Cal.load(m.event_key)
-    if (base is not None and tuple(base.view) == tuple(cal.view)
-            and base.points != cal.points):
+    if _stale_calibration(c, base):
         # the event was re-calibrated since this match was processed: re-map its positions from the boxes
         tracks = remap_tracks(tracks, base)
         cal = base
@@ -526,6 +525,25 @@ def save_labels(match_key: str, labels: dict[int, int | None]) -> dict:
             cur[int(k)] = int(v)
     (RESULTS_DIR / f"{match_key}_labels.json").write_text(json.dumps({str(k): v for k, v in cur.items()}))
     return relabel(match_key)
+
+
+def _cal_dict(cal: Calibration, base: Calibration | None) -> dict:
+    """A result's saved calibration; aligned_from records the event calibration a per-video alignment
+    moved (align_to_reference), so reanalysis keeps the alignment until the event is re-calibrated."""
+    out = {"view": list(cal.view), "points": {k: list(map(float, v)) for k, v in cal.points.items()}}
+    if base is not None and cal.points != base.points:
+        out["aligned_from"] = {k: list(map(float, v)) for k, v in base.points.items()}
+    return out
+
+
+def _stale_calibration(saved: dict, base: Calibration | None) -> bool:
+    """Was this result mapped with an event calibration that has since changed (its positions need
+    re-mapping from the boxes)? A per-video alignment of the current calibration is not stale."""
+    if base is None or tuple(saved.get("view", ())) != tuple(base.view):
+        return False
+    pts = {k: tuple(v) for k, v in saved.get("points", {}).items()}
+    src = saved.get("aligned_from")
+    return pts != base.points and (src is None or {k: tuple(v) for k, v in src.items()} != base.points)
 
 
 def remap_tracks(tracks: dict, cal: Calibration) -> dict:
@@ -795,8 +813,7 @@ def calibrate_closeups(event_key: str) -> dict:
     base = Calibration.load(event_key)
     for result in results:
         saved = result.get("calibration", {})
-        if (base is not None and tuple(saved.get("view", ())) == tuple(base.view)
-                and {k: tuple(v) for k, v in saved.get("points", {}).items()} != base.points):
+        if _stale_calibration(saved, base):
             result["raw_tracks"] = remap_tracks(result["raw_tracks"], base)
     views = calibrate_views(results)
     (CAMS_DIR / f"{event_key}_cams.json").write_text(json.dumps(views, indent=1))

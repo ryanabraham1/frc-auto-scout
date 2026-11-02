@@ -55,16 +55,18 @@ PLACE_MIX = 0.7  # weight of "whose robot was over the spot where the coral appe
 PLACE_WINDOW = (-1.0, 4.5)  # s: a post comes this long after the coral was seen placed
 PLACE_LAG = 1.0  # s: typical delay from placement to post
 PLACE_PX = 25.0  # px: falloff of placement credit with horizontal distance from the robot's box
+# Face credit (vision/reef_model.py): a wide-shot placement at a decoded level maps to the REEF face it went
+# on, and the robot that placed it is the one in front of that face, by its angle around the REEF.
+FACE_MODE = "mix"  # "off": robot box over the spot (_placement_credit) | "face": face only | "mix": average both
+FACE_SIGMA = 30.0  # deg: spread of a scoring robot's angle around the REEF from its face's
+FACE_REACH = 2.0  # m from the REEF edge within which a robot can be scoring
+FACE_UNSEEN = 0.5  # weight of a coasting (not detected) position next to a seen one
+FACE_LEVEL_COST = 0.5  # pairing cost per FACE_PX of a placement's distance from its action's level tips
+FACE_MIN = 0.2  # the best robot's weight below which the face says nothing (no robot in front of it)
 DECODE = "joint"  # "joint": all jumps decoded together against official counts | "each": one at a time
 SHARE_MODE = "hybrid"  # "nearest" | "soft" | "dwell" | "hybrid" (dwell for coral, soft for algae): see _shares
 SOFT_SCALE = 1.0  # m
 DWELL_SLACK = 0.5  # m added to an element's reach when timing how long a robot stayed there
-# A track's position is its box's bottom centre: the bumper nearest the camera, not the robot's middle.
-# A robot scoring on a REEF face toward the camera then looks a robot-depth away from it (confirmed
-# scorers there measured ~0.35 m farther than on the side faces; some past the reach cutoff), while one
-# behind the REEF, its bumpers hidden, looks on top of it. Distances to elements use the point
-# ROBOT_HALF m further along the camera's line of sight instead.
-ROBOT_HALF = 0.55
 # Who an alliance's coral most likely came from also depends on how much each robot scores: video credit
 # for one coral is soft, and a fast cycler's short REEF visits lose to a partner lingering there, so top
 # scorers were credited well under their OPR every match (1323: 15.6 vs 25.3). Each team's coral OPR from
@@ -75,6 +77,8 @@ PRIOR_MIN_MATCHES = 12  # other matches with official breakdowns needed before t
 
 
 CORAL = ("L1", "L2", "L3", "L4")
+LEVEL_Z_KEYS = CORAL
+FACE_PX_REF = 22.0  # px (vision/reef_model.FACE_PX)
 BARGE_TOKENS = {"park": 2, "shallow": 6, "deep": 12}
 COUNT_SLACK = 2.0  # objective cost of each action the decoded jumps leave over/under an official count
 FOUL_SLACK = 0.3  # per point of foul points not matched by decoded foul jumps (fouls often post late)
@@ -128,16 +132,6 @@ class Reefscape2025(GamePlugin):
         {"key": "points_contributed", "label": "Points contributed", "group": "Summary"},
     ]
 
-    @staticmethod
-    def _centre(ctx: MatchContext, x: float, y: float) -> tuple[float, float]:
-        """A robot's middle from its track position (its nearest bumper): ROBOT_HALF m away from the camera."""
-        if ROBOT_HALF <= 0 or getattr(ctx.cal, "H", None) is None:
-            return x, y
-        u, v = ctx.cal.to_image([(x, y)])[0]
-        q = ctx.cal.to_field([(u, v - 10.0)])[0]  # up the image = away from the camera on the carpet
-        d = np.hypot(q[0] - x, q[1] - y)
-        return (x, y) if d <= 0 else (x + ROBOT_HALF * (q[0] - x) / d, y + ROBOT_HALF * (q[1] - y) / d)
-
     def event_prior(self, match_key: str, matches: list) -> dict | None:
         """assign_actions' prior for one match: {alliance: {team: {coral level: weight}}} from coral OPR over
         the other `matches` (MatchInfo with official breakdowns); None if too few of them."""
@@ -171,13 +165,13 @@ class Reefscape2025(GamePlugin):
             for r in tr:
                 if r[3]:
                     seen.append(r[0])
-                    out.append((r[0], *Reefscape2025._centre(ctx, r[1], r[2]), *r[3:]))
+                    out.append(r)
                     continue
                 while seen and r[0] - seen[0] > STALE_S + 2.0:
                     seen.pop(0)
                 # coast only from a real stretch of sightings, not a one-frame blip (often a false box)
                 if seen and r[0] - seen[-1] <= STALE_S and len(seen) >= COAST_MIN_SEEN:
-                    out.append((r[0], *Reefscape2025._centre(ctx, r[1], r[2]), *r[3:]))
+                    out.append(r)
             cache[slot] = (len(tr), out)
         return cache[slot][1]
 
@@ -548,7 +542,7 @@ class Reefscape2025(GamePlugin):
                 (x0, _y0, x1, _y1), obs = rb
                 dx = max(x0 - pl["x"], 0, pl["x"] - x1)
                 r = ctx.robot_at(slot, pl["t"] + dt)
-                at = r is not None and self.field.dist_to_element(self._centre(ctx, *r[:2]), f"{a}_reef") < NEAR["reef"] + DWELL_SLACK
+                at = r is not None and self.field.dist_to_element(r[:2], f"{a}_reef") < NEAR["reef"] + DWELL_SLACK
                 # a coasting (guessed) position must not claim a placement only a seen robot could have made
                 best = max(best, np.exp(-dx / PLACE_PX) * (1.0 if at else 0.25) * (1.0 if obs else 0.15))
             w[team] = best
@@ -556,6 +550,56 @@ class Reefscape2025(GamePlugin):
             return {}  # no robot we can see is at that spot: the placement doesn't say who
         tot = sum(w.values())
         return {tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}
+
+    def _reef_model(self, ctx: MatchContext) -> dict:
+        cache = ctx.__dict__.setdefault("_reef_model", {})
+        if "m" not in cache:
+            from ..vision.reef_model import load_reef_model
+
+            ev = getattr(ctx.cal, "event_key", None)
+            cache["m"] = (load_reef_model(ev) or {}) if ev and FACE_MODE != "off" else {}
+        return cache["m"]
+
+    def _level_px(self, ctx: MatchContext, pl: dict, level: str) -> float | None:
+        """px from a wide-shot placement to the nearest tip of `level` on its REEF (None: no model)."""
+        from ..vision.reef_model import face_probs
+
+        m = self._reef_model(ctx).get(pl["elem"])
+        if not m or level not in LEVEL_Z_KEYS:
+            return None
+        return face_probs(ctx.cal, self.field.elements[pl["elem"]]["center"], m["params"], pl["x"], pl["y"], level)[1]
+
+    def _face_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict, level: str) -> dict[int, float]:
+        """Which robot put a coral seen on the REEF at that level there: the one in front of the face it went
+        on (vision/reef_model.py) when it appeared."""
+        from ..vision.reef_model import face_normals, face_probs
+
+        m = self._reef_model(ctx).get(pl["elem"])
+        if not m or level not in LEVEL_Z_KEYS:
+            return {}
+        centre = np.array(self.field.elements[pl["elem"]]["center"], float)
+        faces, _ = face_probs(ctx.cal, centre, m["params"], pl["x"], pl["y"], level)
+        normals = face_normals()
+        w = {}
+        for team in teams:
+            slot = ctx.slot_of(team, pl["t"])
+            best = 0.0
+            for dt in (-1.0, -0.5, 0.0):
+                r = ctx.robot_at(slot, pl["t"] + dt) if slot else None
+                if r is None:
+                    continue
+                v = np.array(r[:2], float) - centre
+                if self.field.dist_to_element(r[:2], pl["elem"]) > FACE_REACH:
+                    continue
+                ang = np.arctan2(v[1], v[0])
+                fit = sum(pk * np.exp(-0.5 * (np.degrees(np.angle(np.exp(1j * (ang - np.arctan2(normals[k][1], normals[k][0]))))) / FACE_SIGMA) ** 2)
+                          for k, pk in faces.items())
+                best = max(best, fit * (1.0 if r[2] else FACE_UNSEEN))
+            w[team] = best
+        if max(w.values(), default=0.0) < FACE_MIN:
+            return {}
+        tot = sum(w.values())
+        return {tm: v / tot for tm, v in w.items() if v > 0}
 
     def _cam_placement_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict) -> dict[int, float]:
         """Which robot put a coral seen appearing on the reef in the close-up camera there: the robot box
@@ -577,8 +621,9 @@ class Reefscape2025(GamePlugin):
         tot = sum(w.values())
         return {tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}
 
-    def _pair(self, actions: list[dict], idx: list[int], pls: list[dict]) -> list[tuple[int, dict]]:
-        """One-to-one pairs (action index, placement) with the placement up to PLACE_WINDOW before the post."""
+    def _pair(self, actions: list[dict], idx: list[int], pls: list[dict], level_px=None) -> list[tuple[int, dict]]:
+        """One-to-one pairs (action index, placement) with the placement up to PLACE_WINDOW before the post
+        (level_px(placement, level): how far it sits from that level's tips, preferring matching heights)."""
         from scipy.optimize import linear_sum_assignment
 
         if not pls or not idx:
@@ -590,6 +635,9 @@ class Reefscape2025(GamePlugin):
                 lag = actions[i]["t"] - p["t"]
                 if PLACE_WINDOW[0] <= lag <= PLACE_WINDOW[1]:
                     cost[r, c] = abs(lag - PLACE_LAG)
+                    d = level_px(p, actions[i]["cat"]) if level_px else None
+                    if d is not None:
+                        cost[r, c] += FACE_LEVEL_COST * min(d / FACE_PX_REF, 4.0)
         rows, cols = linear_sum_assignment(cost)
         return [(idx[r], pls[c]) for r, c in zip(rows, cols) if cost[r, c] < big]
 
@@ -602,8 +650,14 @@ class Reefscape2025(GamePlugin):
         idx = [i for i, A in enumerate(actions) if A["piece"] == "coral"]
         teams = list(ctx.match.teams(a))
         found: dict[int, list] = {}
-        for i, pl in self._pair(actions, idx, [p for p in ctx.element_changes if p["elem"] == f"{a}_reef"]):
-            pc = self._placement_credit(ctx, a, teams, pl)
+        wide = [p for p in ctx.element_changes if p["elem"] == f"{a}_reef"]
+        level_px = (lambda p, L: self._level_px(ctx, p, L)) if self._reef_model(ctx) else None
+        for i, pl in self._pair(actions, idx, wide, level_px):
+            pc = self._placement_credit(ctx, a, teams, pl) if FACE_MODE != "face" else {}
+            fc = self._face_credit(ctx, a, teams, pl, actions[i]["cat"]) if FACE_MODE != "off" else {}
+            if pc and fc:
+                pc = {tm: (pc.get(tm, 0) + fc.get(tm, 0)) / 2 for tm in teams}
+            pc = pc or fc
             if pc:
                 found.setdefault(i, []).append((pl, pc, 1.0))
         if CAM_PLACE_W > 0:

@@ -233,18 +233,6 @@ def test_closeup_fit_uses_the_corrected_wide_calibration(tmp_path, monkeypatch):
     assert json.loads(path.read_text()) == saved
 
 
-def test_robot_centre_sits_behind_its_nearest_bumper():
-    from types import SimpleNamespace
-    from autoscout.field import Calibration
-    from autoscout import games
-
-    plugin = games.get(2025)
-    ctx = SimpleNamespace(cal=Calibration.load("2025casj"))
-    # the broadcast camera is on the low-y side of the field: a robot's middle is further up the field
-    x, y = plugin._centre(ctx, 3.0, 2.5)
-    assert abs(x - 3.0) < 0.2 and 0.4 < y - 2.5 < 0.6
-
-
 def test_event_prior_favours_the_teams_that_score_and_skips_this_match(monkeypatch):
     from types import SimpleNamespace
     from autoscout import games
