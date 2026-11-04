@@ -136,7 +136,7 @@ def merge_scales(predictions: list[list[Det]], threshold: float = 0.3) -> list[D
 
 
 class MultiScaleDetector:
-    """Reuse one model at two scales to recover small/occluded robots on CUDA."""
+    """Reuse one model at two scales to recover small/occluded robots on a GPU."""
     def __init__(self, detector: RobotDetector, sizes=(1280, 1600)):
         self.detector = detector
         self.weights = detector.weights
@@ -158,7 +158,7 @@ def _robot_detector(weights, conf, imgsz=None, multiscale=None):
     if multiscale is None:
         import os
         multiscale = os.environ.get("AUTOSCOUT_MULTISCALE", "1") != "0"
-    if multiscale and detector.device == "cuda" and detector.weights.suffix == ".pt" and detector.imgsz > 1280:
+    if multiscale and detector.device in ("cuda", "mps") and detector.weights.suffix == ".pt" and detector.imgsz > 1280:
         return MultiScaleDetector(detector, sizes=(1280, detector.imgsz))
     return detector
 

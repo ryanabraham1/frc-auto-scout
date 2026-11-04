@@ -35,9 +35,11 @@ HISTORY_BONUS = 0.25  # box widths
 SURE_D, SURE_MARGIN = 0.15, 0.5  # a launch is certain when it starts at a detected robot and no other is near
 MIN_EVIDENCE = 1.0  # evidence (~ one detected shot) below which the longer volley window is added
 VOLLEY_WINDOW = 8.0  # s looked back for shooters when nobody released just before a score
+VOLLEY_MIN_EVIDENCE = 3.0  # evidence (~ detected shots) over that window for it to count as a volley
 TRACE_BACK = 4  # blob frames kept for tracing a ball back to its shooter
 RELEASE_SPEED = 3.0  # m/s upward: launched FUEL leaves a shooter at ~8-12 m/s; crowd and hopper motion is slower
 SHOT_WINDOW = 3.0  # s before a score increase in which the scoring shot was released
+MIN_RISE_M = 0.5  # m a release with no target must climb to count as evidence that its robot is firing
 # How much FUEL each robot scores also says who most likely scored an increase the video can't settle:
 # each team's fuel OPR from the event's OTHER matches' official totals ((OPR + PRIOR_K) ** PRIOR_ALPHA,
 # never this match) weighs its share of every increase. A lone seen shooter keeps the whole increase.
@@ -53,6 +55,8 @@ SPLIT_BY = "live"  # "live": each score increase by who fired just before it | "
 POSITION_FALLBACK = False
 HUB_LINK = True  # FUEL into a HUB is linked among that HUB's alliance only (hub_shooter)
 LINK_LOOSE, LINK_MARGIN = 1.5, 0.5  # box widths: a clearly-closest robot's stale box may be this far off
+HIDDEN_MIN_S = 1.0  # s a robot must be unseen on both sides of a moment to count as hidden then
+HIDDEN_REACH_M = 3.5  # m from a HUB within which a robot that drops out of sight went behind it
 SIGHTING_S = 5.0  # s: an undetected shooter is the robot seen at the release spot within this long
 STREAM_S, STREAM_PX, STREAM_MAJORITY = 1.0, 40.0, 0.6  # a stream: releases this close; its robot: this share
 
@@ -268,7 +272,8 @@ class Rebuilt2026(GamePlugin):
                     if is_made:
                         made[team][period] += L.n_pieces
                         ev["made"] = True
-                    shot_log.append((release_t, team, alliance, L.n_pieces, is_made, L.entry_t))
+                    if is_made or self._climbed(ctx, L, r):
+                        shot_log.append((release_t, team, alliance, L.n_pieces, is_made, L.entry_t))
             else:
                 # A FEED is a piece *shot* from the neutral/opponent zone that lands in the robot's
                 # own ALLIANCE ZONE. Pieces knocked up while a robot drives through a pile land
@@ -618,6 +623,15 @@ class Rebuilt2026(GamePlugin):
             return m
         return inside
 
+    @staticmethod
+    def _climbed(ctx: MatchContext, L, r) -> bool:
+        """Whether a release that reached no target really left a shooter upward. FUEL rolling or bouncing past
+        a robot also starts next to its box, but it says nothing about who is firing: left in as evidence, one
+        such blip beside a parked robot takes whole score increases from a teammate's volley."""
+        if r is None:
+            return True
+        return L.start[1] - L.apex[1] >= MIN_RISE_M * ctx.cal.px_per_meter_x(r[:2])
+
     def _home_dir(self, ctx: MatchContext, alliance: str, p, box) -> float:
         """+1 / -1: the image-x direction (at this robot) that leads toward its ALLIANCE ZONE."""
         foot = ((box[0] + box[2]) / 2, box[3])
@@ -668,6 +682,8 @@ class Rebuilt2026(GamePlugin):
             at_hub = bool(hub_zone(np.array([L.start[0]]), np.array([L.start[1]]))[0])
             a = L.target[:-4]
             out[id(L)] = self.hub_shooter(ctx, L, a, shooter_of, at_hub)
+            if out[id(L)] is None and at_hub:
+                out[id(L)] = self.hidden_shooter(ctx, L, a)
             if getattr(L, "rising", True) and not at_hub:
                 rel.append((L.t0, L.start[0], L.start[1], a, id(L), L.n_pieces))
         if not STREAM_PX:
@@ -697,6 +713,29 @@ class Rebuilt2026(GamePlugin):
                     if out[r[4]] is None:
                         out[r[4]] = best  # stream context must not overwrite individual evidence
         return out
+
+    def hidden_shooter(self, ctx: MatchContext, L, alliance: str) -> str | None:
+        """FUEL seen only around a HUB, with no release in view: it was shot from behind that HUB, out of the
+        camera's sight. The shooter is the one robot of the alliance the camera lost in the HUB's shadow and
+        has not seen since. A robot still in view is not hidden, however close to the HUB it stands."""
+        hidden = [slot for slot in ctx.tracks if slot[:-1] == alliance and self._in_hub_shadow(ctx, slot, L.t0)]
+        return hidden[0] if len(hidden) == 1 else None
+
+    def _in_hub_shadow(self, ctx: MatchContext, slot: str, t: float) -> bool:
+        """Whether a robot is unseen at t, having last been seen near its HUB on the side away from the camera."""
+        ctx.robot_at(slot, t)  # fills ctx._ts
+        tr = ctx.tracks[slot]
+        i = int(np.searchsorted(ctx._ts[slot], t))
+        before = next((r for r in reversed(tr[max(0, i - 600):i]) if r[3]), None)
+        after = next((r for r in tr[i:i + 600] if r[3]), None)
+        if before is None or t - before[0] < HIDDEN_MIN_S or (after is not None and after[0] - t < HIDDEN_MIN_S):
+            return False
+        hub = self.field.elements[f"{slot[:-1]}_hub"]["center"]
+        pix = ctx.cal.points.get(f"{slot[:-1]}_hub_center")
+        if pix is None or np.hypot(before[1] - hub[0], before[2] - hub[1]) > HIDDEN_REACH_M:
+            return False
+        far = ctx.cal.to_field([tuple(pix), (pix[0], pix[1] - 50.0)])  # up the image is away from the camera
+        return (before[2] - hub[1]) * (far[1][1] - far[0][1]) > 0
 
     def sighted_shooter(self, ctx: MatchContext, L, alliance: str) -> str | None:
         """FUEL rising from a spot where no robot box is: the shooter is there but not detected (behind
@@ -839,6 +878,8 @@ class Rebuilt2026(GamePlugin):
                         continue
                     if a == alliance and lo2 <= t0 < lo:
                         w[who] += n * (2.0 if is_made else 1.0)
+                if sum(w.values()) < VOLLEY_MIN_EVIDENCE:
+                    w.clear()  # a few stray blobs are not a volley: leave the increase unattributed
                 if w and src == "position":
                     src = "volley"
             if not w and POSITION_FALLBACK:

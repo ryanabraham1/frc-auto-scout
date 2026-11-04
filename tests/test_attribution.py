@@ -1,4 +1,6 @@
 """Tests for the attribution upgrades: pseudo-label filtering, release counting, person veto."""
+from types import SimpleNamespace
+
 import numpy as np
 
 from autoscout import games
@@ -197,10 +199,26 @@ def test_release_credit_uses_identity_at_release_not_score_post():
 def test_extended_volley_does_not_count_short_window_twice():
     ctx = _live_ctx()
     times = np.array([3., 6., 8., 10.])
-    cols = (times, {"red0": np.array([0., 0., 1., 1.]),
-                    "red1": np.array([0., 1., 1., 1.])})
+    cols = (times, {"red0": np.array([0., 7., 10., 10.]),
+                    "red1": np.array([0., 10., 10., 10.])})
     weights, _ = Rebuilt2026().live_weights(ctx, "red", [1, 2], [], cols)
     assert weights[1]["auto"] == weights[2]["auto"] == 7.5
+
+
+def test_a_few_stray_blobs_are_not_a_volley():
+    ctx = _live_ctx()
+    times = np.array([3., 6., 8., 10.])
+    cols = (times, {"red0": np.array([0., 3., 3., 3.]), "red1": np.zeros(4)})
+    weights, events = Rebuilt2026().live_weights(ctx, "red", [1, 2], [], cols)
+    assert not weights and not events
+
+
+def test_a_release_that_never_climbed_is_not_firing_evidence():
+    ctx = SimpleNamespace(cal=SimpleNamespace(px_per_meter_x=lambda p: 50.))
+    flat = SimpleNamespace(start=(100., 300.), apex=(130., 295.))
+    arc = SimpleNamespace(start=(100., 300.), apex=(130., 200.))
+    assert not Rebuilt2026._climbed(ctx, flat, (1., 1.))
+    assert Rebuilt2026._climbed(ctx, arc, (1., 1.))
 
 
 def test_overlapping_release_regions_do_not_favor_first_slot():

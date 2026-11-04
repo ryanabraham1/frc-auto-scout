@@ -765,9 +765,11 @@ def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict
     for t, frame in video.iter_frames(t0, t1, step=max(1, int(round(video.fps * every)))):
         for name, rect in views.items():
             x, y, w, h = [int(v) for v in (rect[0] * sx, rect[1] * sy, rect[2] * sx, rect[3] * sy)]
-            if not ocr.has_vision():
+            if boxes_out is not None or not ocr.has_vision():
                 # robots in the close-up are found with the robot detector and each bumper is scored
-                # against the match's teams (EasyOCR's text finder misses most bumper numbers here)
+                # against the match's teams (EasyOCR's text finder misses most bumper numbers here).
+                # Asking for boxes takes this path on every platform: Apple Vision reads text, not robots,
+                # and without boxes the close-up lift, tracks and placement credit all go quiet.
                 pane = np.ascontiguousarray(frame[y: y + h, x: x + w])
                 if not pane.size:
                     continue

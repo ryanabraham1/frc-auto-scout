@@ -99,3 +99,16 @@ python scripts/render_demo.py 2026cosp_qm1 data/videos/qvK9pHMQIFI.mp4 docs/demo
   at one face placed which coral when score posts lag placements unevenly.
 - Planned later, not now: replace the hand-tuned evidence weights with a model trained on scouting-app
   per-robot counts or Review-credit labels (the user asked to defer this).
+
+## 6. Update after the re-runs (same day, on a Mac)
+
+- Macs took the Apple Vision branch of `collect_aux_reads`, which produced no close-up boxes, so items 3-4 had
+  no effect there. Asking for boxes now takes the detector path on every platform.
+- Set `AUTOSCOUT_IMGSZ=1600` on Apple silicon to get the same two-scale detector as CUDA.
+- **Correction to section 3:** the near-corner shooter in 2026cosp qm1 auto is 9134, not 2996 (its bumper reads at
+  t=12 and t=15). 2996 goes behind the red HUB at about t=15 and stays hidden until about t=32.
+- 3648's auto credit came from the residual split: flat blips beside it, and FUEL stirring in its hopper taken as
+  a volley. Credit now needs a release that climbed, and a volley needs real evidence. There is no preload cap.
+- Most unlinked FUEL is seen only around a HUB. `hidden_shooter` links it to a robot lost in that HUB's shadow,
+  which doubles red auto's linked flights, but that does not yet reach auto credit (2996 still 1).
+- Do not run six matches at once on a 24 GB Mac: it swaps. Two workers takes about 3 minutes a match.
