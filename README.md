@@ -38,6 +38,11 @@ improved from 91.1% to 97.1%; this is not an end-to-end scoring-accuracy measure
 [the attribution benchmark](docs/ATTRIBUTION_BENCHMARK.md) for validation splits and limitations. In 2026,
 official fuel with no usable robot or fallback evidence is reported separately as `unattributed_fuel`.
 
+**Measuring who scored.** The dashboard's **Review credit** page shows a short clip of each credited action
+and asks a person which robot did it, without showing the system's answer. `autoscout review-eval` scores saved
+results against those labels. This is the main accuracy measure for attribution; see
+[scorer review](docs/SCORER_REVIEW.md).
+
 **2026 rules encoded.** A launch from the robot's own Alliance Zone is a *shot*, because scoring is only legal from
 there. A launch from the Neutral Zone or the opponent's zone is a *feed*. A launch from off-field at an Outpost is a
 *human player* throw. The Hub schedule follows the rules: both Hubs are active in auto, the transition shift and

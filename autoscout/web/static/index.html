@@ -177,6 +177,26 @@ dialog.modal video { display: block; width: 100%; max-height: 78vh; background: 
 .canvaswrap canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 pre { background: var(--surface-2); padding: 12px; border-radius: var(--radius-sm); max-height: 260px; overflow: auto; font-size: 12px; }
 
+/* review: who scored */
+.rv { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; align-items: start; }
+.rv .stage { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; aspect-ratio: 16 / 9; }
+.rv .stage video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.rv .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.rv .stage .tick { position: absolute; left: 10px; top: 10px; background: rgba(0,0,0,.65); color: #fff; padding: 3px 8px; border-radius: 6px; font: 500 12px var(--mono); }
+.rv .answers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.rv .answers button { min-height: 46px; padding: 8px 16px; font-size: 15px; font-weight: 600; }
+.rv .answers button.team.red { color: var(--red); border-color: var(--red); } .rv .answers button.team.blue { color: var(--blue); border-color: var(--blue); }
+.rv .answers button.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.rv .answers kbd, .rv .keys kbd { font: 500 11px var(--mono); padding: 1px 5px; border-radius: 4px; background: var(--surface-2); color: var(--muted); }
+.rv .queue { max-height: 70vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.rv .queue a { display: flex; gap: 8px; align-items: center; padding: 5px 8px; border-radius: 6px; text-decoration: none; color: var(--ink-2); font-size: 12.5px; }
+.rv .queue a:hover { background: var(--surface-2); } .rv .queue a.cur { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+.rv .queue .d { width: 8px; height: 8px; border-radius: 50%; background: var(--line-2); flex: none; }
+.rv .queue .d.ok { background: var(--good); } .rv .queue .d.miss { background: var(--bad); } .rv .queue .d.skip { background: var(--warn); }
+.reveal { margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-2); font-size: 13px; }
+.reveal.good { background: var(--good-soft); } .reveal.bad { background: var(--bad-soft); }
+@media (max-width: 900px) { .rv { grid-template-columns: 1fr; } .rv .queue { max-height: 240px; } }
+
 /* toast, skeleton */
 .notice { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); padding: 12px 18px; background: var(--ink); color: var(--surface); border-radius: 10px; z-index: 50; max-width: 90vw; box-shadow: 0 10px 30px rgba(0,0,0,.25); font-weight: 500; }
 .skel { background: linear-gradient(90deg, var(--surface-2), var(--line), var(--surface-2)); background-size: 200% 100%; animation: sh 1.2s infinite; border-radius: 6px; height: 14px; }
@@ -209,6 +229,7 @@ pre { background: var(--surface-2); padding: 12px; border-radius: var(--radius-s
       <a href="#/events" data-r="events"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>Events</a>
       <a href="#/videos" data-r="videos"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 10l5-3v10l-5-3z"/></svg>Videos</a>
       <a href="#/label" data-r="label"><svg viewBox="0 0 24 24"><path d="M4 4h7l9 9-7 7-9-9z"/><circle cx="8.5" cy="8.5" r="1.5"/></svg>Label robots</a>
+      <a href="#/review" data-r="review"><svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>Review credit</a>
     </nav>
     <div class="side-foot">
       <span class="live-pill"><span class="dot" id="livedot"></span><span id="livetxt">Idle</span></span>
@@ -217,7 +238,7 @@ pre { background: var(--surface-2); padding: 12px; border-radius: var(--radius-s
   </aside>
   <div style="min-width:0">
     <div class="topbar"><div class="brand"><span class="logo"></span></div><nav id="nav2">
-      <a href="#/" data-r="">Overview</a><a href="#/events" data-r="events">Events</a><a href="#/videos" data-r="videos">Videos</a><a href="#/label" data-r="label">Label</a></nav></div>
+      <a href="#/" data-r="">Overview</a><a href="#/events" data-r="events">Events</a><a href="#/videos" data-r="videos">Videos</a><a href="#/label" data-r="label">Label</a><a href="#/review" data-r="review">Review</a></nav></div>
     <main id="app" aria-live="polite"><div class="skel" style="width:40%;height:26px"></div></main>
   </div>
 </div>
@@ -451,7 +472,7 @@ async function viewMatch(mk) {
   const yt = t => `https://www.youtube.com/watch?v=${r.video}&t=${Math.max(0, Math.floor(t - 2))}s`;
   const av = r.annotated_video, seekable = av && av.offset != null;
   app.innerHTML = head(esc(r.label), teamsInline(r.red, r.blue),
-    `${av && av.downloadable ? `<a class="btn" href="/api/annotated/${mk}_annotated.mp4?download=1" download>Download video</a>` : ''}<a class="btn" href="#/robots/${mk}">Who is this?</a><a class="btn" target="_blank" href="https://www.youtube.com/watch?v=${r.video}">YouTube</a>${av ? '' : `<button class="primary" data-render="${mk}">Render annotated video</button>`}`,
+    `${av && av.downloadable ? `<a class="btn" href="/api/annotated/${mk}_annotated.mp4?download=1" download>Download video</a>` : ''}<a class="btn" href="#/review/${mk}">Review credit</a><a class="btn" href="#/robots/${mk}">Who is this?</a><a class="btn" target="_blank" href="https://www.youtube.com/watch?v=${r.video}">YouTube</a>${av ? '' : `<button class="primary" data-render="${mk}">Render annotated video</button>`}`,
     `<a href="#/events">Events</a> / <a href="#/event/${r.event_key}">${esc(r.event_key)}</a> / ${esc(mk)}`) +
   `${av ? `<div class="player" style="margin-bottom:16px"><video id="av" controls preload="metadata" src="/api/match/${mk}/video.mp4"></video></div>` : ''}
   <div class="card"><div class="card-head"><h2>Score over time</h2><div class="legend"><span><i style="background:var(--red)"></i>red</span><span><i style="background:var(--blue)"></i>blue</span></div></div>${timelineSVG(r.timeline, r.clock)}</div>
@@ -608,6 +629,141 @@ async function viewRobots(mk) {
   draw(await api(`/api/match/${mk}/robots`));
 }
 
+// ---------------------------------------------------------------- review: who scored (ground truth)
+const pct = x => x == null ? '–' : `${Math.round(100 * x)}%`;
+const RV_LEAD = {launch: [2.0, 2.0], score: [4.0, 1.0]};  // seconds shown before / after the action
+const rvName = () => { try { return localStorage.getItem('reviewer') || ''; } catch { return ''; } };
+
+async function viewReviewIndex() {
+  const [list, sum] = await Promise.all([api('/api/review'), api('/api/review/summary')]);
+  const byEvent = {};
+  list.forEach(m => (byEvent[m.event_key] ||= []).push(m));
+  const p = sum.primary;
+  app.innerHTML = head('Review credit', 'Watch a short clip of each scoring action and click the robot that did it. The system\'s answer stays hidden until you answer. These labels are the ground truth for attribution accuracy: <span class="mono">autoscout review-eval</span> scores saved results against them.') +
+  `<div class="kpis">
+    <div class="kpi"><div class="label">Correct scorer</div><div class="value">${pct(p.accuracy)}</div><div class="sub">${p.correct} of ${p.accepted} reviewed actions</div></div>
+    <div class="kpi"><div class="label">Mean credit to the right robot</div><div class="value">${pct(p.mean_credit_to_reviewed_team)}</div><div class="sub">share of the action given to the reviewed team</div></div>
+    <div class="kpi"><div class="label">Actions that didn't happen</div><div class="value">${pct(sum.false_candidate_rate)}</div><div class="sub">${sum.rejected} marked not real · ${sum.uncertain} unsure</div></div>
+    <div class="kpi"><div class="label">Matches reviewed</div><div class="value">${sum.matches.filter(m => !m.error).length}</div><div class="sub">aim for 300–500 actions across several events</div></div></div>
+  ${Object.keys(sum.by_action).length ? `<div class="card"><div class="card-head"><h2>By action</h2></div><div class="table-wrap"><table><thead><tr><th>Action</th><th>Reviewed</th><th>Correct</th><th>Mean credit</th><th>Why wrong</th></tr></thead><tbody>
+    ${Object.entries({...sum.by_action, ...Object.fromEntries(Object.entries(sum.by_kind).map(([k, v]) => [`· ${k}`, v]))}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v.accepted}</td><td>${pct(v.accuracy)}</td><td>${pct(v.mean_credit_to_reviewed_team)}</td><td class="small muted">${esc(Object.entries(v.reasons).filter(([r]) => r !== 'correct').map(([r, n]) => `${r.replaceAll('_', ' ')} ${n}`).join(' · '))}</td></tr>`).join('')}
+  </tbody></table></div></div>` : ''}
+  ${sum.rows.length ? `<div class="card"><div class="card-head"><h2>Wrong credit to look at</h2><span class="chip">${sum.rows.length}</span></div><div class="table-wrap"><table><thead><tr><th>Match</th><th>Action</th><th>Time</th><th>Reviewed</th><th>System</th><th>Credit to reviewed</th></tr></thead><tbody>
+    ${sum.rows.map(r => `<tr><td><a href="#/review/${r.match_key}/${encodeURIComponent(r.id)}">${esc(r.match_key)}</a></td><td>${esc(r.action)} ${esc(r.kind ?? '')}</td><td>${(+r.t).toFixed(1)}s</td><td><span class="chip ${r.alliance}">${esc(r.reviewed_team)}</span></td><td>${esc(r.predicted_team ?? r.reason.replaceAll('_', ' '))}</td><td>${pct(r.credit_to_reviewed_team)}</td></tr>`).join('')}
+  </tbody></table></div></div>` : ''}
+  ${Object.entries(byEvent).sort().reverse().map(([ek, ms]) => `<div class="card"><div class="card-head"><h2>${esc(ek)}</h2><span class="chip">${ms.filter(m => m.labelled).length} of ${ms.length} matches started</span></div>
+    <div class="row">${ms.map(m => `<a class="btn" href="#/review/${m.match_key}">${esc(m.match_key.split('_')[1])}${m.labelled ? ` <span class="chip good">${m.labelled}</span>` : ''}</a>`).join('')}</div></div>`).join('') || '<div class="card empty">No processed matches yet.</div>'}`;
+}
+
+async function viewReview(mk, startId) {
+  let d = await api(`/api/review/${mk}`);
+  let filter = '', idx = 0, slow = false;
+  const list = () => d.candidates.filter(c => !filter || c.action === filter);
+  const firstOpen = () => Math.max(0, list().findIndex(c => !d.labels[c.id]));
+  idx = startId ? Math.max(0, list().findIndex(c => c.id === startId)) : firstOpen();
+  const dot = c => { const l = d.labels[c.id]; if (!l) return ''; if (l.status !== 'accepted') return 'skip';
+    return c.reveal && c.reveal.predicted != null && String(c.reveal.predicted) === String(l.team) ? 'ok' : 'miss'; };
+  const what = c => c.action === 'launch'
+    ? `${c.alliance} ${esc(c.kind.replace('_', ' '))} · one tracked FUEL flight released at the ring (${(+c.n || 1).toFixed(1)} balls)`
+    : `${c.alliance} score post${c.kind ? ` · ${esc(c.kind)}` : ''}${c.points ? ` (+${c.points})` : ''} · watch the seconds before it`;
+  const revealHTML = (c, l) => {
+    if (!c.reveal || !l) return '';
+    if (l.status !== 'accepted') return `<div class="reveal">Saved as <b>${l.status === 'rejected' ? "didn't happen" : 'unsure'}</b>. System credited <b>${esc(c.reveal.predicted ?? 'nobody clearly')}</b>.</div>`;
+    const ok = c.reveal.predicted != null && String(c.reveal.predicted) === String(l.team);
+    const sh = Object.entries(c.reveal.shares).sort((a, b) => b[1] - a[1]).map(([t, v]) => `${esc(t)} ${pct(v)}`).join(' · ');
+    return `<div class="reveal ${ok ? 'good' : 'bad'}">You: <b>${esc(l.team)}</b> · System: <b>${esc(c.reveal.predicted ?? 'tie / none')}</b> ${ok ? '✓' : '✗'}<span class="muted"> — ${sh || 'no credit'}</span></div>`;
+  };
+  const draw = () => {
+    const L = list(); idx = Math.min(idx, Math.max(0, L.length - 1));
+    const c = L[idx], l = c && d.labels[c.id];
+    const teams = c ? d.teams[c.alliance] : [];
+    const done = L.filter(x => d.labels[x.id]).length;
+    app.innerHTML = head(`Review ${esc(d.label || mk)}`, `${done} of ${L.length} actions labelled. Pick the robot that did it; your answer is saved before the system's is shown.`,
+      `${d.actions.length > 1 ? `<div class="seg">${['', ...d.actions].map(a => `<button data-f="${a}" class="${filter === a ? 'on' : ''}">${{'': 'All', launch: 'Launches', score: 'Scores'}[a] ?? a}</button>`).join('')}</div>` : ''}
+       <input id="who" placeholder="Your name" value="${esc(rvName())}" style="width:130px">`,
+      `<a href="#/review">Review</a> / ${esc(d.event_key)} / <a href="#/match/${mk}">${esc(mk)}</a>`) +
+    (!L.length ? '<div class="card empty">No reviewable actions in this match.</div>' : !d.video ? `<div class="card empty">The match video isn't downloaded on this computer, so clips can't be cut. Process the match here first.</div>` :
+    `<div class="rv"><div class="card" style="margin:0">
+      <div class="row" style="margin-bottom:10px"><span class="chip ${c.alliance}">${c.alliance}</span><span>${what(c)}</span><span class="spacer"></span><span class="muted small mono">${idx + 1}/${L.length} · ${c.t.toFixed(2)} s</span></div>
+      <div class="stage"><video id="clip" muted playsinline preload="auto"></video><canvas id="ov"></canvas><span class="tick" id="tick"></span></div>
+      <div class="row small" style="margin-top:8px"><button id="replay">Replay <kbd>space</kbd></button><button id="slow">${slow ? 'Normal speed' : '½ speed'} <kbd>s</kbd></button>
+        <a class="btn" target="_blank" href="https://www.youtube.com/watch?v=${esc(d.youtube)}&t=${Math.max(0, Math.floor(c.t - 4))}s">YouTube</a>
+        <span class="spacer"></span><button id="prev">← Prev</button><button id="next">Next →</button></div>
+      <div class="answers">${teams.map((t, i) => `<button class="team ${c.alliance} ${l && l.team === t ? 'on' : ''}" data-team="${t}">${t} <kbd>${i + 1}</kbd></button>`).join('')}
+        ${c.action === 'launch' ? `<button data-team="HP" class="${l && l.team === 'HP' ? 'on' : ''}">Human player <kbd>h</kbd></button>` : ''}
+        <button data-status="uncertain" class="${l && l.status === 'uncertain' ? 'on' : ''}">Can't tell <kbd>u</kbd></button>
+        <button data-status="rejected" class="${l && l.status === 'rejected' ? 'on' : ''}">Didn't happen <kbd>x</kbd></button>
+        ${l ? '<button data-status="clear" class="ghost">Clear</button>' : ''}</div>
+      <input id="note" placeholder="Optional note: what you saw (bumper read, mechanism, where)" value="${esc(l ? l.evidence : '')}" style="width:100%;margin-top:10px">
+      ${revealHTML(c, l)}
+      <div class="small muted keys" style="margin-top:10px">${c.action === 'launch' ? 'The ring marks where the ball was first seen leaving a robot; the dashed line is where it went.' : 'Score posts appear on the overlay a moment after the piece goes in.'} Arrow keys move between actions.</div>
+    </div>
+    <div class="card" style="margin:0"><div class="card-head"><h2>Queue</h2><span class="chip">${done}/${L.length}</span></div>
+      <div class="queue">${L.map((x, i) => `<a href="javascript:void 0" data-i="${i}" class="${i === idx ? 'cur' : ''}"><span class="d ${dot(x)}"></span><span class="chip ${x.alliance}" style="padding:0 6px">${x.alliance[0].toUpperCase()}</span>${x.action} ${esc(x.kind ?? '')}<span class="spacer"></span><span class="mono muted">${x.t.toFixed(1)}</span></a>`).join('')}</div></div></div>`);
+    app.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; idx = firstOpen(); draw(); });
+    const who = $('#who'); if (who) who.onchange = () => { try { localStorage.setItem('reviewer', who.value.trim()); } catch {} };
+    if (!c || !d.video) { window.reviewKey = null; return; }
+    app.querySelectorAll('.queue a').forEach(a => a.onclick = () => { idx = +a.dataset.i; draw(); });
+    app.querySelector('.queue a.cur')?.scrollIntoView({block: 'nearest'});
+    const [lead, tail] = RV_LEAD[c.action] || RV_LEAD.score;
+    const t0 = Math.max(0, c.t - lead), t1 = c.t + tail;
+    const v = $('#clip'), cv = $('#ov');
+    v.src = `/api/review/${mk}/clip.mp4?t0=${t0.toFixed(2)}&t1=${t1.toFixed(2)}`;
+    v.playbackRate = slow ? 0.5 : 1;
+    v.oncanplay = () => { v.playbackRate = slow ? 0.5 : 1; v.play().catch(() => {}); };
+    const tick = $('#tick');
+    const paint = () => {
+      if (!cv.isConnected) { v.pause(); return; }  // a newer action replaced this clip
+      const g = cv.getContext('2d'), W = cv.clientWidth, Hh = cv.clientHeight;
+      cv.width = W * devicePixelRatio; cv.height = Hh * devicePixelRatio; g.scale(devicePixelRatio, devicePixelRatio);
+      const at = t0 + (v.currentTime || 0);
+      tick.textContent = `${at >= c.t ? '+' : '−'}${Math.abs(at - c.t).toFixed(1)} s`;
+      if (c.action !== 'launch' || !c.start || !d.frame_size) return;
+      // the clip keeps the frame's aspect inside a 16:9 box (object-fit: contain)
+      const [fw, fh] = d.frame_size, s = Math.min(W / fw, Hh / fh), ox = (W - fw * s) / 2, oy = (Hh - fh * s) / 2;
+      const P = ([x, y]) => [ox + x * s, oy + y * s];
+      const hot = at > c.t - 0.4 && at < c.t + 1.5;
+      g.strokeStyle = hot ? '#facc15' : 'rgba(250,204,21,.45)'; g.lineWidth = hot ? 3 : 2;
+      const [sx, sy] = P(c.start); g.beginPath(); g.arc(sx, sy, 16, 0, 7); g.stroke();
+      if (c.end) { const [ex, ey] = P(c.end); g.setLineDash([6, 6]); g.beginPath(); g.moveTo(sx, sy); g.lineTo(ex, ey); g.stroke(); g.setLineDash([]); }
+    };
+    v.ontimeupdate = paint; v.onloadeddata = paint; paint();
+    const go = i => { idx = Math.max(0, Math.min(L.length - 1, i)); draw(); };
+    const answer = async (team, status) => {
+      const r = await api(`/api/review/${mk}`, {method: 'POST', headers: H, body: JSON.stringify({id: c.id, team, status,
+        note: $('#note').value, reviewer: ($('#who').value || '').trim()})});
+      if (r.label) d.labels[c.id] = r.label; else delete d.labels[c.id];
+      c.reveal = r.reveal;
+      if (r.label && idx < L.length - 1) {
+        const prev = c, prevLabel = r.label;
+        idx += 1; draw();
+        app.querySelector('.rv .card').insertAdjacentHTML('beforeend', revealHTML(prev, prevLabel).replace('class="reveal', 'class="reveal small" data-prev="1"').replace('You:', `Previous (${prev.t.toFixed(1)} s) — you:`));
+      } else draw();
+    };
+    app.querySelectorAll('.answers [data-team]').forEach(b => b.onclick = () => answer(b.dataset.team === 'HP' ? 'HP' : +b.dataset.team, 'accepted'));
+    app.querySelectorAll('.answers [data-status]').forEach(b => b.onclick = () => answer(null, b.dataset.status));
+    $('#replay').onclick = () => { v.currentTime = 0; v.play(); };
+    $('#slow').onclick = () => { slow = !slow; v.playbackRate = slow ? 0.5 : 1; $('#slow').innerHTML = `${slow ? 'Normal speed' : '½ speed'} <kbd>s</kbd>`; };
+    $('#prev').onclick = () => go(idx - 1); $('#next').onclick = () => go(idx + 1);
+    window.reviewKey = e => {
+      if (e.target.matches('input, textarea, select') || e.ctrlKey || e.metaKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (/^[1-3]$/.test(k) && teams[+k - 1] != null) answer(teams[+k - 1], 'accepted');
+      else if (k === 'h' && c.action === 'launch') answer('HP', 'accepted');
+      else if (k === 'u') answer(null, 'uncertain');
+      else if (k === 'x') answer(null, 'rejected');
+      else if (k === 's') $('#slow').click();
+      else if (k === ' ') { e.preventDefault(); $('#replay').click(); }
+      else if (k === 'arrowleft') go(idx - 1);
+      else if (k === 'arrowright') go(idx + 1);
+      else return;
+      e.preventDefault();
+    };
+  };
+  draw();
+}
+document.addEventListener('keydown', e => window.reviewKey?.(e));
+
 // ---------------------------------------------------------------- shell
 async function sidebarLive() {
   try { const d = await api('/api/runs'); const n = d.progress.filter(j => !['done', 'error'].includes(j.stage)).length;
@@ -617,6 +773,7 @@ setInterval(sidebarLive, 5000); sidebarLive();
 
 async function route() {
   clearInterval(timer);
+  window.reviewKey = null;
   if ($('#modal').open) $('#modal').close();
   const h = location.hash.replace(/^#\/?/, '').split('/');
   const top = {event: 'events', match: 'events', team: 'events', calibrate: 'events', robots: 'events', jobs: ''}[h[0]] ?? h[0];
@@ -629,6 +786,8 @@ async function route() {
     else if (h[0] === 'team') await viewTeam(h[1], h[2]);
     else if (h[0] === 'calibrate') await viewCalibrate(h[1]);
     else if (h[0] === 'label') await viewLabel();
+    else if (h[0] === 'review' && h[1]) await viewReview(h[1], h[2] ? decodeURIComponent(h[2]) : '');
+    else if (h[0] === 'review') await viewReviewIndex();
     else if (h[0] === 'videos') await viewVideos();
     else await viewOverview();
   } catch (e) { app.innerHTML = `<div class="card"><h2>Something went wrong</h2><p class="muted">${esc(e.message)}</p></div>`; }

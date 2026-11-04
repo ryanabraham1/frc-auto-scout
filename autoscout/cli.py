@@ -6,6 +6,7 @@ import csv
 import json
 import sys
 import traceback
+from pathlib import Path
 
 from . import config
 
@@ -294,6 +295,19 @@ def cmd_report(a):
     print(event_report(db.connect(), a.event_key))
 
 
+def cmd_review_eval(a):
+    import json
+
+    from .pipeline import RESULTS_DIR
+    from .review import evaluate_all
+
+    rep = evaluate_all(RESULTS_DIR, a.event_key, include_ai=a.include_ai)
+    if a.out:
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(a.out).write_text(json.dumps(rep, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({k: v for k, v in rep.items() if k != "rows"}, indent=2))
+
+
 def cmd_export(a):
     from . import db
     from .aggregate import team_table
@@ -349,6 +363,10 @@ def main(argv=None):
     s.add_argument("--lr0", type=float, default=0.0003)
     s.add_argument("--imgsz", type=int, default=1280); s.add_argument("--batch", type=int, default=8); s.set_defaults(f=cmd_train)
     s = sub.add_parser("report"); s.add_argument("event_key"); s.set_defaults(f=cmd_report)
+    s = sub.add_parser("review-eval", help="score saved results against dashboard-reviewed scorer labels")
+    s.add_argument("event_key", nargs="?"); s.add_argument("--out")
+    s.add_argument("--include-ai", action="store_true", help="also score the AI-reviewed pilot label files")
+    s.set_defaults(f=cmd_review_eval)
     s = sub.add_parser("export"); s.add_argument("event_key"); s.add_argument("--out", default="scouting.csv")
     s.set_defaults(f=cmd_export)
     a = p.parse_args(argv)
