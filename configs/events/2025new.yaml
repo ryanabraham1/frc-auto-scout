@@ -1,0 +1,57 @@
+event_key: 2025new
+year: 2025
+# Wide shot of the 2025 Championship Newton Division broadcast (taller than 2025casj's: the reef
+# close-ups start lower). Landmarks marked on 2025new_f1m1 at 60 s.
+view:
+- 0
+- 195
+- 1920
+- 530
+frame_size:
+- 1920
+- 1080
+# REEF centres are the floor point under each REEF (its base's top-rim centre moved down by the base's
+# height in the image); the centre line ends are the barge trusses' feet at the far and near field edges.
+points:
+  blue_reef_center:
+  - 420.0
+  - 470.0
+  red_reef_center:
+  - 1460.0
+  - 475.0
+  center_line_yW:
+  - 935.0
+  - 298.0
+  center_line_y0:
+  - 935.0
+  - 722.0
+reference: null
+# Same broadcast graphics package as 2025casj (playoff names replace team logos, numbers sit in place).
+overlay:
+  timer:
+  - 888
+  - 66
+  - 143
+  - 55
+  blue_score:
+  - 775
+  - 63
+  - 111
+  - 62
+  red_score:
+  - 1033
+  - 63
+  - 112
+  - 62
+  frame_size:
+  - 1920
+  - 1080
+  counters:
+    blue_algae: [230, 78, 56, 34]
+    red_algae: [1636, 78, 56, 34]
+aux_watch:
+  blue_reef: [320, 760, 660, 1080]
+  red_reef: [1280, 760, 1610, 1080]
+aux_views:
+  blue_reef: [0, 735, 960, 345]
+  red_reef: [965, 735, 955, 345]
