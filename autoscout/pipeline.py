@@ -238,10 +238,11 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
 
     # ---- frame loop ---------------------------------------------------------------------
     det = detector or default_detector(opts.weights, ensemble=plugin.detector_ensemble)
-    static = StaticSuppressor(frac=plugin.static_frac)
     veto = PersonVeto()
     gpu = config.has_gpu()
     robot_hz = opts.robot_hz or (10.0 if gpu else 4.0)
+    static = StaticSuppressor(frac=plugin.static_frac, expected_frames=int(
+        (clock.teleop_end_vt + 3.5 - max(0.0, clock.start_vt - PRE_MATCH_S)) * robot_hz))
     x, y, w, h = cal.view
     fps = video.fps
     launch_step = max(1, int(round(fps / opts.launch_fps)))

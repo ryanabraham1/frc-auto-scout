@@ -64,6 +64,7 @@ FACE_MODE = "mix"  # "off": robot box over the spot (_placement_credit) | "face"
 FACE_SIGMA = 30.0  # deg: spread of a scoring robot's angle around the REEF from its face's
 FACE_REACH = 2.0  # m from the REEF edge within which a robot can be scoring
 FACE_UNSEEN = 0.5  # weight of a coasting (not detected) position next to a seen one
+LEVEL_PX_MAX = 4.0  # FACE_PX_REFs from every tip of a level beyond which a placement can't be that level
 FACE_LEVEL_COST = 0.5  # pairing cost per FACE_PX of a placement's distance from its action's level tips
 FACE_MIN = 0.2  # the best robot's weight below which the face says nothing (no robot in front of it)
 DECODE = "joint"  # "joint": all jumps decoded together against official counts | "each": one at a time
@@ -127,7 +128,7 @@ class Reefscape2025(GamePlugin):
     static_frac = 0.5
     launch_pieces = {"algae": ((78, 60, 80), (100, 255, 255))}
     measure_reach = True  # L2-L4 coral means lifting a mechanism: who reached up before a score
-    aux_every = 0.5  # the reef close-ups see robots the wide shot loses behind the REEF: read them often
+    aux_every = 0.25  # the reef close-ups see robots the wide shot loses behind the REEF: read and track them often
     watch_elements = ("blue_reef", "red_reef")  # coral placed on the reefs (vision/element_changes.py)
     metric_defs = [
         {"key": "coral_total", "label": "Coral", "group": "Coral"},
@@ -419,9 +420,10 @@ class Reefscape2025(GamePlugin):
         # Count only intervals bracketed by reads, never extrapolate an isolated read,
         # and take the better view's dwell rather than counting the same time twice.
         sightings = defaultdict(set)
-        for bt, view, *box in ctx.aux_boxes:
-            team, conf = box[-2:]
-            if view == f"{a}_reef" and team in near and conf >= 0.5:
+        named = self._aux_teams(ctx)
+        for i, (bt, view, *box) in enumerate(ctx.aux_boxes):
+            team = named[i]
+            if view == f"{a}_reef" and team in near:
                 region = (getattr(ctx.cal, "aux_watch", None) or {}).get(view)
                 if region and (box[2] < region[0] or box[0] > region[2]):
                     continue  # a readable robot at the loading wall is not reef dwell
@@ -500,13 +502,13 @@ class Reefscape2025(GamePlugin):
 
         cache = ctx.__dict__.setdefault("_reach_cache", {})
         if "cam" not in cache:  # close-up samples per team: read bumper, or the track fusion matched it to
-            slots = getattr(ctx, "aux_slot", {})
+            named = Reefscape2025._aux_teams(ctx)
             cam: dict = {}
             for i, rv in enumerate(getattr(ctx, "aux_reach", []) or []):
                 if rv is None:
                     continue
                 b = ctx.aux_boxes[i]
-                tm = b[7] if b[7] is not None else (ctx.team_at(slots[i], b[0]) if i in slots else None)
+                tm = named[i]
                 if tm is not None:
                     cam.setdefault(tm, []).append((b[0], rv))
             cache["cam"] = {k: sorted(v) for k, v in cam.items()}
@@ -525,6 +527,20 @@ class Reefscape2025(GamePlugin):
             if v is not None:
                 scores.append(v)
         return max(scores) if scores else None
+
+    @staticmethod
+    def _aux_teams(ctx: MatchContext) -> list:
+        """Team of every close-up box: its own bumper read, else the nearest read on its close-up track,
+        else the wide-shot robot it was fused with (vision/closeup_tracks.py)."""
+        cache = ctx.__dict__.setdefault("_aux_teams", {})
+        if len(cache.get("boxes", ())) != len(ctx.aux_boxes) or cache.get("ref") is not ctx.aux_boxes:
+            from ..vision.closeup_tracks import label
+
+            slots = getattr(ctx, "aux_slot", {})
+            boxes = ctx.aux_boxes
+            cache.update(ref=boxes, boxes=boxes, teams=label(
+                boxes, lambda i: ctx.team_at(slots[i], boxes[i][0]) if i in slots else None))
+        return cache["teams"]
 
     def _lift(self, ctx: MatchContext, team: int, t0: float, t1: float) -> float:
         """How far a robot raised its elevator in [t0, t1]: its tallest box (height / width) then over
@@ -618,13 +634,13 @@ class Reefscape2025(GamePlugin):
         in the same close-up under that spot around that moment, named by its bumper read or by the
         wide-shot track it was fused with (vision/fusion.py)."""
         view = pl["elem"].split("@")[0]
-        slots = getattr(ctx, "aux_slot", {})
+        named = self._aux_teams(ctx)
         reach = getattr(ctx, "aux_reach", None) or []
         w: dict[int, float] = {}
         for i, (bt, v, x0, y0, x1, y1, al, team, conf) in enumerate(ctx.aux_boxes):
             if v != view or abs(bt - pl["t"]) > 1.0 or (al and al != a):
                 continue
-            tm = team if team in teams else (ctx.team_at(slots[i], bt) if i in slots else None)
+            tm = named[i]
             if tm not in teams:
                 continue
             dx = max(x0 - pl["x"], 0, pl["x"] - x1)
@@ -658,7 +674,11 @@ class Reefscape2025(GamePlugin):
                 if PLACE_WINDOW[0] <= lag <= PLACE_WINDOW[1]:
                     cost[r, c] = abs(lag - PLACE_LAG)
                     d = level_px(p, actions[i]["cat"]) if level_px else None
-                    if d is not None:
+                    if d is not None and d > LEVEL_PX_MAX * FACE_PX_REF:
+                        # Nowhere near that level's branch tips (often a robot moving at the REEF's base,
+                        # not a coral): pairing it would credit whoever stood over that spot.
+                        cost[r, c] = big
+                    elif d is not None:
                         cost[r, c] += FACE_LEVEL_COST * min(d / FACE_PX_REF, 4.0)
         rows, cols = linear_sum_assignment(cost)
         return [(idx[r], pls[c]) for r, c in zip(rows, cols) if cost[r, c] < big]

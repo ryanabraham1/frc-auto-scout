@@ -21,6 +21,7 @@ from ..tba import MatchInfo
 from ..vision.tracker import slot_position_at
 
 REGISTRY: dict[int, type["GamePlugin"]] = {}
+TRACE_MIN_DX = 25.0  # px of sideways travel a flight needs before its arc is run back to a shooter
 
 
 @dataclass
@@ -230,6 +231,11 @@ class GamePlugin:
         # Short noisy fragments produce explosive backwards extrapolations.
         # Their fit must explain the observed flight before it can name a robot.
         if not np.isfinite(rms) or rms > 6.0 or cy[0] <= 0:
+            return {}
+        # A ball seen only dropping almost straight down (into a HUB's opening) has no sideways travel to
+        # run back along: its "arc" ends just under where it was seen, which named whichever robot stood
+        # beside the HUB for every ball that fell in.
+        if np.ptp(P[:, 1]) < TRACE_MIN_DX:
             return {}
         dvy = np.polyder(cy)
         out = {}

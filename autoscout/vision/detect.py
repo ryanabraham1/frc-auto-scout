@@ -204,12 +204,16 @@ class StaticSuppressor:
     such as alliance-colored ramps or a REEF that look like robots). Robots never park on one spot
     for a quarter of a match (an endgame climb is ~15%)."""
 
-    def __init__(self, cell: int = 24, min_frames: int = 40, frac: float = 0.25):
+    def __init__(self, cell: int = 24, min_frames: int = 40, frac: float = 0.25, expected_frames: int = 0):
         self.cell = cell
         self.counts: dict[tuple, int] = {}
         self.frames = 0
         self.min_frames = min_frames
         self.frac = frac
+        # "A quarter of the match" means of the whole match. Measured against the frames seen so far,
+        # a robot parked for a few seconds near the start (a shooter emptying its preload behind its HUB)
+        # passed for a field element and was dropped for the rest of the match.
+        self.expected_frames = expected_frames
 
     def _key(self, d: Det):
         return (d.alliance, int(d.foot[0] // self.cell), int(d.foot[1] // self.cell), int(d.w // (2 * self.cell)))
@@ -221,7 +225,7 @@ class StaticSuppressor:
             self.counts[k] = self.counts.get(k, 0) + 1
         if self.frames < self.min_frames:
             return dets
-        lim = self.frac * self.frames
+        lim = self.frac * max(self.frames, self.expected_frames)
         return [d for d in dets if self.counts.get(self._key(d), 0) < lim]
 
 
