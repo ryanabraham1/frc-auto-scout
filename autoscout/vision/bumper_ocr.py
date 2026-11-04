@@ -39,7 +39,7 @@ def model():
     from .. import config
 
     _ssl_certs()
-    m = torch.hub.load("baudm/parseq", "parseq", pretrained=True, trust_repo=True, verbose=False).eval()
+    m = torch.hub.load("baudm/parseq:main", "parseq", pretrained=True, trust_repo=True, verbose=False).eval()
     dev = "cuda" if config.device() == "cuda" else "cpu"
     return m.to(dev), dev
 
