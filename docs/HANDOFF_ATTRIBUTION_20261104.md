@@ -112,3 +112,42 @@ python scripts/render_demo.py 2026cosp_qm1 data/videos/qvK9pHMQIFI.mp4 docs/demo
 - Most unlinked FUEL is seen only around a HUB. `hidden_shooter` links it to a robot lost in that HUB's shadow,
   which doubles red auto's linked flights, but that does not yet reach auto credit (2996 still 1).
 - Do not run six matches at once on a 24 GB Mac: it swaps. Two workers takes about 3 minutes a match.
+
+## 7. Trained attribution model: pick up here
+
+The user wants a trained model to replace the hand-tuned credit step, keeping detection and tracking. Nothing has
+been trained yet. `autoscout/train/attribution_model.py` and `scripts/train_attribution.py` are written. Feature
+extraction was smoke-tested on one match; `fit` and `cross_validate` have never been run.
+
+**Design:** one row per flight per candidate robot, softmax over the alliance's three robots, trained so each robot's
+predicted share of a period matches its scouted share. Matches are held out in the cross-validation.
+
+**Labels, in order of trust**
+1. The user's verified calls (section 3). Keep these and any human Review credit labels as the test set.
+2. Scouting app shares, which the user approved using for now. Use shares, not counts. Over 91 full alliances at
+   2026cc: auto mean 68 vs 92 official, error 34, r 0.69; teleop mean 397 vs 426, error 101, r 0.74.
+3. Haiku subagents are not reliable enough as labellers. On the seven verified 2025 actions, two runs disagreed on 4
+   of 7 and neither reproduced the auto split, and agreement between runs was not a safe filter. Use them only to sort
+   clear actions from unclear ones.
+
+**Scouting data** is not in the repo. Get it read-only from the user's Supabase project "Scouting App", table
+`match_scouting_report`, for `event_key='2026cc'`, and take only numeric fields, not scout IDs or notes. Save it
+git-ignored as `data/labels/2026cc_scouting.txt`, rows `match,team,r|b,auto,active,inactive,endgame,reports` joined with `;`
+(match without the event prefix, values are the median across reports for that robot).
+
+**To continue**
+```bash
+AUTOSCOUT_IMGSZ=1600 autoscout run-event 2026cc --matches <scouted matches> --workers 2
+python scripts/train_attribution.py 2026cc data/labels/2026cc_scouting.txt
+```
+54 matches have all of an alliance's robots scouted, 51 of them with video:
+qm2,qm3,qm4,qm5,qm6,qm7,qm9,qm10,qm11,qm12,qm13,qm14,qm15,qm18,qm19,qm21,qm22,qm23,qm24,qm25,qm26,qm29,qm30,qm32,qm33,qm34,qm35,qm36,qm37,qm38,qm39,qm41,qm42,qm43,qm44,qm45,qm46,qm48,qm49,qm51,qm52,qm53,qm58,qm60,qm61,qm63,qm64,qm67,qm68,qm69,qm70.
+Results stay local, so a new machine must process them again. Don't use six workers on 24 GB (section 6).
+
+**Still open**
+- Why HUB-shadow links don't reach auto credit (first check whether those flights have `entry_t`; unconfirmed).
+- 0:53 L4: the L3 post pairs with the 107.51 placement (h 0.29, nearest L1), which leaves the L4 on 1351's 105.91
+  placement. Even unpaired, its evidence before placement favours 1351 at 0.87, because 6418 only arrives about 108 s.
+- 0:15 L3: no placement pairs with it, and the close-ups box neither robot well at that moment.
+- Team totals sum shares while the video shows each action's top robot, so the two can disagree.
+- 2025new f1m1 auto has not been checked by hand.
