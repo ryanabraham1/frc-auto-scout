@@ -166,6 +166,13 @@ correct. macOS still uses Apple Vision. Close-up camera panes (reef cams, hub ca
 
 Check identity by eye with `python scripts/identity_sheet.py MATCH out.jpg`: one row of robot thumbnails per team.
 
+## Scouting app integration
+
+Run `autoscout serve-integration` to let an app backend queue matches on your computer
+and retrieve per-team results. It uses a separate authenticated API and a persistent queue.
+See [the integration setup and app handoff](docs/SCOUTING_APP_INTEGRATION.md) for the
+API secret, HTTPS tunnel, server-side TypeScript client, and remaining scouting-app work.
+
 ## Mac (Apple silicon)
 
 See [docs/SETUP_MAC.md](docs/SETUP_MAC.md). Robot detection and training use the Apple GPU automatically.

@@ -275,6 +275,13 @@ def cmd_serve(a):
     uvicorn.run("autoscout.web.app:app", host=a.host, port=a.port, reload=False)
 
 
+def cmd_serve_integration(a):
+    import uvicorn
+    from .integration import create_app
+
+    uvicorn.run(create_app(), host=a.host, port=a.port, reload=False)
+
+
 def cmd_label_seeds(a):
     from .train.sam_label import main
 
@@ -356,6 +363,9 @@ def main(argv=None):
     s.add_argument("--t", type=float); s.set_defaults(f=cmd_calibrate)
     s = sub.add_parser("serve"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8000)
     s.set_defaults(f=cmd_serve)
+    s = sub.add_parser("serve-integration", help="authenticated job API for the scouting app")
+    s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8001)
+    s.set_defaults(f=cmd_serve_integration)
     s = sub.add_parser("label-seeds"); s.add_argument("seed_file"); s.set_defaults(f=cmd_label_seeds)
     s = sub.add_parser("train-robots"); s.add_argument("--base"); s.add_argument("--epochs", type=int, default=60)
     s.add_argument("--hand-only", action="store_true", help="fine-tune using corrected frames only")
