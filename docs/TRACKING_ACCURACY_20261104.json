@@ -1,0 +1,182 @@
+{
+  "scope": "11 frozen cached 2025 matches; AI-reviewed scorer pilot; no 2026 match footage available",
+  "matches": [
+    {
+      "match_key": "2025casj_qm1",
+      "count_conservation": true,
+      "changed_team_rows": 0
+    },
+    {
+      "match_key": "2025casj_qm10",
+      "count_conservation": true,
+      "changed_team_rows": 0
+    },
+    {
+      "match_key": "2025casj_qm11",
+      "count_conservation": true,
+      "changed_team_rows": 2
+    },
+    {
+      "match_key": "2025casj_qm12",
+      "count_conservation": true,
+      "changed_team_rows": 2
+    },
+    {
+      "match_key": "2025casj_qm13",
+      "count_conservation": true,
+      "changed_team_rows": 0
+    },
+    {
+      "match_key": "2025casj_qm14",
+      "count_conservation": true,
+      "changed_team_rows": 0
+    },
+    {
+      "match_key": "2025casj_qm16",
+      "count_conservation": true,
+      "changed_team_rows": 0
+    },
+    {
+      "match_key": "2025casj_qm17",
+      "count_conservation": true,
+      "changed_team_rows": 0
+    },
+    {
+      "match_key": "2025casj_qm18",
+      "count_conservation": true,
+      "changed_team_rows": 0
+    },
+    {
+      "match_key": "2025casj_qm2",
+      "count_conservation": true,
+      "changed_team_rows": 2
+    },
+    {
+      "match_key": "2025casj_qm20",
+      "count_conservation": true,
+      "changed_team_rows": 2
+    }
+  ],
+  "before_reviewed_pilot": {
+    "accepted": 15,
+    "correct": 5,
+    "accuracy": 0.3333333333333333,
+    "mean_credit_to_reviewed_team": 0.30333333333333334
+  },
+  "after_reviewed_pilot": {
+    "accepted": 15,
+    "correct": 5,
+    "accuracy": 0.3333333333333333,
+    "mean_credit_to_reviewed_team": 0.30333333333333334
+  },
+  "baseline_commit": "05a34de8d94d0faa421486914976b595439d2062",
+  "synthetic_tracking": {
+    "before": {
+      "scope": "synthetic known paths; no claim of real-match scoring accuracy",
+      "cases": {
+        "clean": {
+          "balls": 5,
+          "tracks": 5,
+          "matched_balls": 5,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "centroid_noise": {
+          "balls": 5,
+          "tracks": 5,
+          "matched_balls": 5,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "occlusion": {
+          "balls": 5,
+          "tracks": 5,
+          "matched_balls": 5,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "short_fragments": {
+          "balls": 5,
+          "tracks": 0,
+          "matched_balls": 0,
+          "recall": 0.0,
+          "precision": 0.0
+        },
+        "dense_volley": {
+          "balls": 9,
+          "tracks": 9,
+          "matched_balls": 9,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "crossing": {
+          "balls": 5,
+          "tracks": 5,
+          "matched_balls": 5,
+          "recall": 1.0,
+          "precision": 1.0
+        }
+      }
+    },
+    "after": {
+      "scope": "synthetic known paths; no claim of real-match scoring accuracy",
+      "cases": {
+        "clean": {
+          "balls": 5,
+          "tracks": 5,
+          "matched_balls": 5,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "centroid_noise": {
+          "balls": 5,
+          "tracks": 5,
+          "matched_balls": 5,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "occlusion": {
+          "balls": 5,
+          "tracks": 5,
+          "matched_balls": 5,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "short_fragments": {
+          "balls": 5,
+          "tracks": 5,
+          "matched_balls": 5,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "dense_volley": {
+          "balls": 9,
+          "tracks": 9,
+          "matched_balls": 9,
+          "recall": 1.0,
+          "precision": 1.0
+        },
+        "crossing": {
+          "balls": 5,
+          "tracks": 5,
+          "matched_balls": 5,
+          "recall": 1.0,
+          "precision": 1.0
+        }
+      }
+    }
+  },
+  "source_observations_sha256": {
+    "2025casj_qm1.json": "97138ff9a6f02f5145bdc9836189c8ac4e09bb23219b6095081ffc01ce347a53",
+    "2025casj_qm10.json": "57fe3aed3391bbef80c66259139ee7a607736f6344411876cb61410a7ca1803d",
+    "2025casj_qm11.json": "4838690f1d22cf3604db8e9837882b75ff36872a8666ed8c6c32117c4a2ac22d",
+    "2025casj_qm12.json": "d4d9534b76fbffce0fb1faa55599b1dc08607d08286848c51e20d2536462a71d",
+    "2025casj_qm13.json": "111da8ef5ff6fe476b932d0efe4d76ddbf018549f1b8dfa0cbd3a6c97dbd6873",
+    "2025casj_qm14.json": "93f747d78c79159420780dcc36744b4ef65cfb864662f2c97488dff6cdb9beab",
+    "2025casj_qm16.json": "dbf05721ce7e35dcd954187c8209b74b53210e24b3c858713c6bbf1f58745a41",
+    "2025casj_qm17.json": "07614fb7631eef46c0e2041a033cb375eee1b3006f29bc635f20c56567c73d66",
+    "2025casj_qm18.json": "249d56d859ea91264fe3b2fad1fe0c8ce1540a7ddb50aa37cf5123fd35c585ed",
+    "2025casj_qm2.json": "5028096e46d1e518fe7e611bb4d30b7abbf75db682182688037fbda12c66f3db",
+    "2025casj_qm20.json": "183a07e5a0789cf1e49c761fd3cac39c7eb079b3048c1852b5ed51ccedcc0df3"
+  }
+}

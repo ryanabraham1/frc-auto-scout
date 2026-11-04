@@ -59,12 +59,16 @@ class Launch:
     zone: str = ""
     target: str | None = None  # scoring opening the flight came down into (e.g. "blue_hub")
     rising: bool = True  # first seen moving up (a release); False = only the descent was visible
+    entry_t: float | None = None  # estimated time crossing a scoring opening
+    release_t: float | None = None  # inferred release, possibly before the first sighting
 
     def to_dict(self):
         return {"t0": round(self.t0, 3), "t1": round(self.t1, 3), "start": [round(v, 1) for v in self.start],
                 "end": [round(v, 1) for v in self.end], "apex": [round(v, 1) for v in self.apex],
                 "n": round(self.n_pieces, 2), "robot": self.robot, "kind": self.kind, "zone": self.zone,
-                "target": self.target, "rising": self.rising}
+                "target": self.target, "rising": self.rising,
+                "entry_t": round(self.entry_t, 3) if self.entry_t is not None else None,
+                "release_t": round(self.release_t, 3) if self.release_t is not None else None}
 
 
 class LaunchDetector:
@@ -109,20 +113,30 @@ class LaunchDetector:
         if self.bg_frames:
             bit = (m > 0).astype(np.uint8)
             if self.bg_count is None:
-                self.bg_count = np.zeros(m.shape, np.uint8)
+                self.bg_count = np.zeros(m.shape, np.uint16)
             self.bg_hist.append(bit)
             self.bg_count += bit
             if len(self.bg_hist) > self.bg_frames:
                 self.bg_count -= self.bg_hist.pop(0)
-            if len(self.bg_hist) < self.bg_frames:
-                return
-            ref = np.where(self.bg_count * 2 > self.bg_frames, 255, 0).astype(np.uint8)
+            # Use available history immediately: a full-window warm-up drops
+            # the first auto volley and every volley after a camera cut.
+            ref = np.where(self.bg_count * 2 > len(self.bg_hist), 255, 0).astype(np.uint8)
         else:
             self.history.append(m)
             if len(self.history) <= self.lag:
                 return
             ref = self.history.pop(0)
         mv = cv2.bitwise_and(m, cv2.bitwise_not(cv2.dilate(ref, self.kernel)))
+        # Differencing finds motion, but its centroid is the leading crescent of
+        # an overlapping ball. Recover the whole current component so slow balls
+        # near their apex keep their size and trajectory. Large connected colour
+        # regions (graphics, shirts, piles) cannot grow from a tiny motion seed.
+        _, labels, stats, _ = cv2.connectedComponentsWithStats(m)
+        seeds = np.bincount(labels[mv > 0], minlength=len(stats))
+        area = stats[:, cv2.CC_STAT_AREA]
+        active = (seeds >= 2) & (seeds >= 0.05 * area) & (area <= 4096)
+        active[0] = False
+        mv = np.where(active[labels], 255, 0).astype(np.uint8)
         mv = cv2.morphologyEx(mv, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
         if self.ignore is not None:
             mv[self.ignore > 0] = 0

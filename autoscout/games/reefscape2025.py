@@ -45,7 +45,6 @@ LIFT_BOOST = 3.0  # coral credit multiplier per unit of elevator lift (box talle
 CONF_WEIGHT = True  # weigh each action's credit by how much the video says about it
 CONF_REF = {"reef": 1.5, "net": 1.0, "processor": 1.0}  # evidence (s at the element / closeness) = full confidence
 ALGAE_CREDIT = "near"  # "near": closeness + seen launches | "dwell": time at the element like coral
-LAUNCH_W = 1.0  # added credit for the robot an algae launch is seen leaving just before a NET post
 COAST_MIN_SEEN = 3  # sightings in the seconds before a coast needed for it to count
 STALE_S = 3.0  # s a coasting (unseen) position stays usable after a sighting (a robot lost behind a REEF is usually still there)
 PLACE_MIN = 0.3  # a placement only credits robots near its spot (best robot's weight at least this)
@@ -175,25 +174,28 @@ class Reefscape2025(GamePlugin):
             cache[slot] = (len(tr), out)
         return cache[slot][1]
 
-    def _elem_dists(self, ctx: MatchContext, slot: str, t0: float, t1: float, alliance: str):
+    def _elem_dists(self, ctx: MatchContext, slot: str, t0: float, t1: float, alliance: str, team=None):
         """Min distance of a slot to each of its alliance's scoring elements during [t0, t1]."""
         best = {"reef": 9e9, "net": 9e9, "processor": 9e9}
         tr = self._fresh(ctx, slot)
         for r in tr:
-            if t0 <= r[0] <= t1:
+            if t0 <= r[0] <= t1 and (team is None or ctx.team_at(slot, r[0]) == team):
                 p = (r[1], r[2])
                 best["reef"] = min(best["reef"], self.field.dist_to_element(p, f"{alliance}_reef"))
                 best["net"] = min(best["net"], self.field.dist_to_element(p, f"{alliance}_net_zone"))
                 best["processor"] = min(best["processor"], self.field.dist_to_element(p, f"{alliance}_processor"))
         return best
 
-    def _dwell(self, ctx: MatchContext, slot: str, t0: float, t1: float, alliance: str) -> dict[str, float]:
+    def _dwell(self, ctx: MatchContext, slot: str, t0: float, t1: float, alliance: str, team=None) -> dict[str, float]:
         """Seconds a slot spent within reach of each of its alliance's scoring elements in [t0, t1]."""
         out = {"reef": 0.0, "net": 0.0, "processor": 0.0}
         tr = self._fresh(ctx, slot)
         prev = None
         for r in tr:
             if not t0 <= r[0] <= t1:
+                continue
+            if team is not None and ctx.team_at(slot, r[0]) != team:
+                prev = None
                 continue
             dt = min(r[0] - prev, 0.5) if prev is not None else 0.1
             prev = r[0]
@@ -382,13 +384,18 @@ class Reefscape2025(GamePlugin):
         around a score posted at t (the reef close-up camera puts the teams it reads at the reef)."""
         near, dwell = {}, {}
         for team in teams:
-            slot = ctx.slot_of(team, t)
-            if slot:
-                near[team] = self._elem_dists(ctx, slot, t - pre, t + post, a)
-                dwell[team] = self._dwell(ctx, slot, t - pre, t + post, a)
-            else:
-                near[team] = {"reef": 9e9, "net": 9e9, "processor": 9e9}
-                dwell[team] = {"reef": 0.0, "net": 0.0, "processor": 0.0}
+            near[team] = {"reef": 9e9, "net": 9e9, "processor": 9e9}
+            dwell[team] = {"reef": 0.0, "net": 0.0, "processor": 0.0}
+            # A robot may change tracker slots between placement and score post.
+            # Attribute each observation to its owner then, not the slot's owner now.
+            for slot in ctx.tracks:
+                if slot[:-1] != a:
+                    continue
+                distances = self._elem_dists(ctx, slot, t - pre, t + post, a, team)
+                seconds = self._dwell(ctx, slot, t - pre, t + post, a, team)
+                for elem in near[team]:
+                    near[team][elem] = min(near[team][elem], distances[elem])
+                    dwell[team][elem] += seconds[elem]
         # Seen there = at the reef. Not seen proves nothing (bumper may face away from that camera),
         # so unseen teams keep their wide-shot evidence.
         for team, c in ctx.seen_in_view(f"{a}_reef", t - 3.5, t + 0.5).items():
@@ -431,12 +438,6 @@ class Reefscape2025(GamePlugin):
             for tm in teams:
                 if UNSEEN_W > 0 and not self._seen(ctx, tm, t - 3.0, t + 0.5):
                     w[tm] = max(w.get(tm, 0.0), UNSEEN_W)
-            for L in ctx.launches.get("algae", []):
-                if getattr(L, "rising", True) and t - LOOKBACK <= L.t0 <= t + 0.5:
-                    slot, _ = self.attribute_launch(ctx, L)
-                    tm = ctx.team_at(slot, L.t0) if slot else None
-                    if tm in teams:
-                        w[tm] = w.get(tm, 0.0) + LAUNCH_W
             tot = sum(w.values())
             return ({tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}), min(1.0, tot / CONF_REF[elem])
         near, dwell = self._evidence(ctx, a, teams, t, CREDIT_PRE, CREDIT_POST)
@@ -475,8 +476,8 @@ class Reefscape2025(GamePlugin):
 
     def _seen(self, ctx: MatchContext, team: int, t0: float, t1: float) -> bool:
         """Was this team's robot actually detected (not just coasted) in [t0, t1]?"""
-        slot = ctx.slot_of(team, (t0 + t1) / 2)
-        return bool(slot) and any(t0 <= r[0] <= t1 and r[3] for r in ctx.tracks.get(slot, []))
+        return any(t0 <= r[0] <= t1 and r[3] and ctx.team_at(slot, r[0]) == team
+                   for slot, rows in ctx.tracks.items() for r in rows)
 
     @staticmethod
     def _reach(ctx: MatchContext, team: int, t0: float, t1: float) -> float | None:
@@ -497,8 +498,9 @@ class Reefscape2025(GamePlugin):
                     cam.setdefault(tm, []).append((b[0], rv))
             cache["cam"] = {k: sorted(v) for k, v in cam.items()}
         scores = []
-        slot = ctx.slot_of(team, (t0 + t1) / 2)
-        for key, samples in ((("wide", slot), ctx.lift_obs.get(slot, []) if slot else []),
+        wide = sorted((t, reach) for slot, samples in ctx.lift_obs.items() for t, reach in samples
+                      if ctx.team_at(slot, t) == team)
+        for key, samples in ((("wide", team), wide),
                              (("cam", team), cache["cam"].get(team, []))):
             if key not in cache:
                 cache[key] = float(np.median([r for _, r in samples])) if len(samples) >= 10 else 0.0
@@ -536,6 +538,7 @@ class Reefscape2025(GamePlugin):
             slot = ctx.slot_of(team, pl["t"])
             best = 0.0
             for dt in (-1.0, -0.5, 0.0, 0.5):
+                slot = ctx.slot_of(team, pl["t"] + dt)
                 rb = self.robot_box(ctx, slot, pl["t"] + dt) if slot else None
                 if rb is None:
                     continue
@@ -585,6 +588,7 @@ class Reefscape2025(GamePlugin):
             slot = ctx.slot_of(team, pl["t"])
             best = 0.0
             for dt in (-1.0, -0.5, 0.0):
+                slot = ctx.slot_of(team, pl["t"] + dt)
                 r = ctx.robot_at(slot, pl["t"] + dt) if slot else None
                 if r is None:
                     continue
@@ -691,37 +695,93 @@ class Reefscape2025(GamePlugin):
         """
         if not actions:
             return []
+        from itertools import product
+
         teams = list(teams)
         nt = len(teams)
+        if not nt:
+            return [{} for _ in actions]
         lik = np.zeros((len(actions), nt))
         for i, A in enumerate(actions):
             p = np.array([A["p"].get(tm, 0.0) for tm in teams], float)
             p = p / p.sum() if p.sum() > 0 else np.full(nt, 1 / nt)
             if prior:
-                p = p * np.array([prior.get(tm, {}).get(A["cat"], 1.0) for tm in teams])
+                # A visible placement supplies direct scorer evidence. Event OPR
+                # may break weak ties, but cannot overturn a clear observed placement.
+                strength = float(np.clip((p.max() - 1 / nt) / (1 - 1 / nt), 0, 1)) if nt > 1 else 1.0
+                exponent = 1 - strength if "placed" in A or "launched" in A else 1.0
+                p = p * np.array([prior.get(tm, {}).get(A["cat"], 1.0) for tm in teams]) ** exponent
                 p = p / p.sum() if p.sum() > 0 else np.full(nt, 1 / nt)
             lik[i] = 0.98 * p + 0.02 / nt  # nothing is ever certain
         post = lik.copy()
         tm_of = lambda A: A.get("t_place", A["t"])  # noqa: E731
-        same = np.exp(-REFRACTORY_COST)
         for piece in ("coral", "algae"):
             idx = sorted((i for i, A in enumerate(actions) if A["piece"] == piece), key=lambda i: tm_of(actions[i]))
             if len(idx) < 2:
                 continue
-            T = [np.where(np.eye(nt) > 0, same if tm_of(actions[j]) - tm_of(actions[i]) < REFRACTORY else 1.0, 1.0)
-                 for i, j in zip(idx, idx[1:])]
-            fw = [lik[idx[0]] / lik[idx[0]].sum()]
-            for k in range(1, len(idx)):
-                f = (fw[-1] @ T[k - 1]) * lik[idx[k]]
+            # Scores posted together have no action order. Marginalize joint
+            # assignments of each batch, penalizing repeated use of one robot
+            # symmetrically. Bound states for unusually large overlay jumps.
+            groups = []
+            for i in idx:
+                if groups and abs(tm_of(actions[i]) - tm_of(actions[groups[-1][0]])) < 0.05 and len(groups[-1]) < 5:
+                    groups[-1].append(i)
+                else:
+                    groups.append([i])
+            states, counts, emissions = [], [], []
+            for group in groups:
+                st = np.array(list(product(range(nt), repeat=len(group))))
+                co = np.stack([(st == j).sum(axis=1) for j in range(nt)], axis=1)
+                em = np.prod(lik[np.array(group)[None, :], st], axis=1)
+                em *= np.exp(-REFRACTORY_COST * np.sum(co * (co - 1) / 2, axis=1))
+                states.append(st)
+                counts.append(co)
+                emissions.append(em / em.sum())
+            T = [np.exp(-REFRACTORY_COST * (counts[k] @ counts[k + 1].T))
+                 if tm_of(actions[groups[k + 1][0]]) - tm_of(actions[groups[k][-1]]) < REFRACTORY
+                 else np.ones((len(states[k]), len(states[k + 1]))) for k in range(len(groups) - 1)]
+            fw = [emissions[0]]
+            for k in range(1, len(groups)):
+                f = (fw[-1] @ T[k - 1]) * emissions[k]
                 fw.append(f / f.sum())
-            bw = [np.ones(nt)]
-            for k in range(len(idx) - 2, -1, -1):
-                b = T[k] @ (lik[idx[k + 1]] * bw[0])
+            bw = [np.ones(len(states[-1]))]
+            for k in range(len(groups) - 2, -1, -1):
+                b = T[k] @ (emissions[k + 1] * bw[0])
                 bw.insert(0, b / b.sum())
-            for k, i in enumerate(idx):
+            for k, group in enumerate(groups):
                 m = fw[k] * bw[k]
-                post[i] = m / m.sum()
+                m /= m.sum()
+                for j, i in enumerate(group):
+                    post[i] = [m[states[k][:, j] == who].sum() for who in range(nt)]
         return [{tm: float(post[i, k]) for k, tm in enumerate(teams)} for i in range(len(actions))]
+
+    def _match_algae(self, ctx: MatchContext, alliance: str, actions: list[dict]) -> None:
+        """Use each observed net shot for one decoded net score, never a processor."""
+        teams = list(ctx.match.teams(alliance))
+        candidates = []
+        for L in ctx.launches.get("algae", []):
+            slot, distance = self.attribute_launch(ctx, L, alliances=(alliance,))
+            if not getattr(L, "rising", True) or distance >= .6:
+                slot, _ = self.trace_back(ctx, L, alliances=(alliance,))
+            if slot is None:
+                continue
+            release_t = self.release_time(ctx, L, slot)
+            team = ctx.team_at(slot, release_t)
+            robot = ctx.robot_at(slot, release_t)
+            if team not in teams or robot is None:
+                continue
+            if self.field.dist_to_element(robot[:2], f"{alliance}_net_zone") > NEAR["net"] + 1:
+                continue
+            candidates.append({"t": release_t, "team": team, "launch": L})
+        idx = [i for i, action in enumerate(actions) if action["cat"] == "net"]
+        for i, shot in self._pair(actions, idx, candidates):
+            A, team, L = actions[i], shot["team"], shot["launch"]
+            base = A["p"] or {tm: 1 / len(teams) for tm in teams}
+            A["p"] = {tm: .15 * base.get(tm, 0) + .85 * (tm == team) for tm in teams}
+            A["conf"] = 1.0
+            A["t_place"] = shot["t"]
+            A["launched"] = {"t": round(shot["t"], 3), "start": L.start, "end": L.end}
+            L.robot, L.release_t, L.kind = team, shot["t"], "net_shot"
 
     def _decode_alliance(self, ctx: MatchContext, a: str, teams: list[int], weights, events) -> None:
         """Decode an alliance's score jumps jointly against the official counts, then credit each
@@ -779,6 +839,7 @@ class Reefscape2025(GamePlugin):
                 actions.append({"t": t, "cat": cat, "phase": ph, "piece": "coral" if cat in CORAL else "algae",
                                 "p": p, "conf": conf, "jump": d})
         self._match_placements(ctx, a, actions)
+        self._match_algae(ctx, a, actions)
         # Vision first: coral seen going onto the reef with no score jump to pair it with (missed overlay
         # read, batched post) still says which robot scored, and its height roughly which level.
         used = {(A["placed"]["elem"], A["placed"]["t"]) for A in actions if "placed" in A}
@@ -811,6 +872,7 @@ class Reefscape2025(GamePlugin):
                            "jump": A["jump"], "team": max(cr, key=cr.get) if cr else None, "kind": A["cat"],
                            "shares": {str(k): round(v, 2) for k, v in cr.items() if v >= 0.01},
                            "likelihood": {str(k): round(v, 2) for k, v in A["p"].items() if v >= 0.01},
+                           **({"launched": A["launched"]} if "launched" in A else {}),
                            **({"placed": A["placed"], "placed_views": A["placed_views"]} if "placed" in A else {})})
 
     @staticmethod
