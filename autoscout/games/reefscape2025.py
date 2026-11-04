@@ -49,6 +49,10 @@ COAST_MIN_SEEN = 3  # sightings in the seconds before a coast needed for it to c
 STALE_S = 3.0  # s a coasting (unseen) position stays usable after a sighting (a robot lost behind a REEF is usually still there)
 PLACE_MIN = 0.3  # a placement only credits robots near its spot (best robot's weight at least this)
 CAM_PLACE_W = 1.0  # weight of a reef close-up placement next to a wide-shot one
+CAM_LIFT_FLOOR = 0.4  # close-up placement weight of a robot under the spot with its mechanism down
+CAM_LIFT_FULL = 0.6  # close-up reach (box heights above the chassis) that counts as fully raised
+CAM_AWAY_MAX = 0.05  # close-up placement weight below which a boxed robot was clearly elsewhere in that view
+CAM_AWAY_FIT = 0.5  # how far "not the robot shown elsewhere" overrides other evidence for that coral
 CAM_PLACE_PX = 40.0  # px: falloff of close-up placement credit with distance from a robot's box
 PLACE_MIX = 0.7  # weight of "whose robot was over the spot where the coral appeared" in coral credit
 PLACE_WINDOW = (-1.0, 4.5)  # s: a post comes this long after the coral was seen placed
@@ -82,6 +86,15 @@ BARGE_TOKENS = {"park": 2, "shallow": 6, "deep": 12}
 COUNT_SLACK = 2.0  # objective cost of each action the decoded jumps leave over/under an official count
 FOUL_SLACK = 0.3  # per point of foul points not matched by decoded foul jumps (fouls often post late)
 NOTHING = -4.0  # a jump explained by nothing (overlay misread)
+
+
+def _normalized(w: dict, floor: float, strength: bool):
+    """Shares from raw per-team fits; nothing if even the best fit is below `floor`. With `strength`,
+    (shares, best fit clipped to 0..1)."""
+    best = max(w.values(), default=0.0)
+    tot = sum(w.values())
+    shares = {tm: v / tot for tm, v in w.items() if v > 0} if best >= floor and tot > 0 else {}
+    return (shares, float(min(best, 1.0)) if shares else 0.0) if strength else shares
 
 
 def _decompose(points: int, allowed: dict[str, int]) -> list[list[str]]:
@@ -530,9 +543,10 @@ class Reefscape2025(GamePlugin):
             return 1.0
         return float(np.percentile(win, 90)) / base
 
-    def _placement_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict) -> dict[int, float]:
+    def _placement_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict, strength: bool = False):
         """Which robot put a coral seen appearing on the reef there: the alliance robot whose image box
-        is over that spot (horizontally) when it appeared, and that is at the reef."""
+        is over that spot (horizontally) when it appeared, and that is at the reef. With `strength`, also
+        how well the best robot fits (0..1), so a weak fit is not read as a confident answer."""
         w = {}
         for team in teams:
             slot = ctx.slot_of(team, pl["t"])
@@ -549,10 +563,7 @@ class Reefscape2025(GamePlugin):
                 # a coasting (guessed) position must not claim a placement only a seen robot could have made
                 best = max(best, np.exp(-dx / PLACE_PX) * (1.0 if at else 0.25) * (1.0 if obs else 0.15))
             w[team] = best
-        if max(w.values(), default=0.0) < PLACE_MIN:
-            return {}  # no robot we can see is at that spot: the placement doesn't say who
-        tot = sum(w.values())
-        return {tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}
+        return _normalized(w, PLACE_MIN, strength)  # below PLACE_MIN nobody we can see is at that spot
 
     def _reef_model(self, ctx: MatchContext) -> dict:
         cache = ctx.__dict__.setdefault("_reef_model", {})
@@ -572,14 +583,14 @@ class Reefscape2025(GamePlugin):
             return None
         return face_probs(ctx.cal, self.field.elements[pl["elem"]]["center"], m["params"], pl["x"], pl["y"], level)[1]
 
-    def _face_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict, level: str) -> dict[int, float]:
+    def _face_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict, level: str, strength: bool = False):
         """Which robot put a coral seen on the REEF at that level there: the one in front of the face it went
         on (vision/reef_model.py) when it appeared."""
         from ..vision.reef_model import face_normals, face_probs
 
         m = self._reef_model(ctx).get(pl["elem"])
         if not m or level not in LEVEL_Z_KEYS:
-            return {}
+            return ({}, 0.0) if strength else {}
         centre = np.array(self.field.elements[pl["elem"]]["center"], float)
         faces, _ = face_probs(ctx.cal, centre, m["params"], pl["x"], pl["y"], level)
         normals = face_normals()
@@ -600,17 +611,15 @@ class Reefscape2025(GamePlugin):
                           for k, pk in faces.items())
                 best = max(best, fit * (1.0 if r[2] else FACE_UNSEEN))
             w[team] = best
-        if max(w.values(), default=0.0) < FACE_MIN:
-            return {}
-        tot = sum(w.values())
-        return {tm: v / tot for tm, v in w.items() if v > 0}
+        return _normalized(w, FACE_MIN, strength)
 
-    def _cam_placement_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict) -> dict[int, float]:
+    def _cam_placement_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict, strength: bool = False):
         """Which robot put a coral seen appearing on the reef in the close-up camera there: the robot box
         in the same close-up under that spot around that moment, named by its bumper read or by the
         wide-shot track it was fused with (vision/fusion.py)."""
         view = pl["elem"].split("@")[0]
         slots = getattr(ctx, "aux_slot", {})
+        reach = getattr(ctx, "aux_reach", None) or []
         w: dict[int, float] = {}
         for i, (bt, v, x0, y0, x1, y1, al, team, conf) in enumerate(ctx.aux_boxes):
             if v != view or abs(bt - pl["t"]) > 1.0 or (al and al != a):
@@ -619,11 +628,20 @@ class Reefscape2025(GamePlugin):
             if tm not in teams:
                 continue
             dx = max(x0 - pl["x"], 0, pl["x"] - x1)
-            w[tm] = w.get(tm, 0.0) + float(np.exp(-dx / CAM_PLACE_PX)) * (1.0 - abs(bt - pl["t"]) / 1.5)
+            # The robot under the new coral with its elevator up placed it; one standing there with its
+            # mechanism down did not. Unmeasured reach is neutral.
+            rv = reach[i] if i < len(reach) else None
+            lift = 1.0 if rv is None else CAM_LIFT_FLOOR + (1 - CAM_LIFT_FLOOR) * min(max(rv, 0.0) / CAM_LIFT_FULL, 1.0)
+            w[tm] = w.get(tm, 0.0) + float(np.exp(-dx / CAM_PLACE_PX)) * (1.0 - abs(bt - pl["t"]) / 1.5) * lift
         if max(w.values(), default=0.0) < PLACE_MIN:
-            return {}  # the robot under that spot wasn't boxed in the close-up (often cut off at its edge)
-        tot = sum(w.values())
-        return {tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}
+            # Nobody boxed under the spot: the placer is cut off at the close-up's edge or hidden. Robots this
+            # close-up does show clearly elsewhere at that moment did not place it.
+            away = {tm for tm, v in w.items() if v < CAM_AWAY_MAX}
+            rest = [tm for tm in teams if tm not in w]
+            if away and rest:
+                shares = {tm: 1 / len(rest) for tm in rest}
+                return (shares, CAM_AWAY_FIT) if strength else shares
+        return _normalized(w, PLACE_MIN, strength)
 
     def _pair(self, actions: list[dict], idx: list[int], pls: list[dict], level_px=None) -> list[tuple[int, dict]]:
         """One-to-one pairs (action index, placement) with the placement up to PLACE_WINDOW before the post
@@ -657,28 +675,34 @@ class Reefscape2025(GamePlugin):
         wide = [p for p in ctx.element_changes if p["elem"] == f"{a}_reef"]
         level_px = (lambda p, L: self._level_px(ctx, p, L)) if self._reef_model(ctx) else None
         for i, pl in self._pair(actions, idx, wide, level_px):
-            pc = self._placement_credit(ctx, a, teams, pl) if FACE_MODE != "face" else {}
-            fc = self._face_credit(ctx, a, teams, pl, actions[i]["cat"]) if FACE_MODE != "off" else {}
+            pc, ps = self._placement_credit(ctx, a, teams, pl, True) if FACE_MODE != "face" else ({}, 0.0)
+            fc, fs = self._face_credit(ctx, a, teams, pl, actions[i]["cat"], True) if FACE_MODE != "off" else ({}, 0.0)
             if pc and fc:
-                pc = {tm: (pc.get(tm, 0) + fc.get(tm, 0)) / 2 for tm in teams}
-            pc = pc or fc
+                pc, ps = {tm: (pc.get(tm, 0) + fc.get(tm, 0)) / 2 for tm in teams}, (ps + fs) / 2
+            elif fc:
+                pc, ps = fc, fs
             if pc:
-                found.setdefault(i, []).append((pl, pc, 1.0))
+                found.setdefault(i, []).append((pl, pc, 1.0, ps))
         if CAM_PLACE_W > 0:
             for i, pl in self._pair(actions, idx, [p for p in ctx.element_changes if p["elem"] == f"{a}_reef@cam"]):
-                pc = self._cam_placement_credit(ctx, a, teams, pl)
+                pc, cs = self._cam_placement_credit(ctx, a, teams, pl, True)
                 if pc:
-                    found.setdefault(i, []).append((pl, pc, CAM_PLACE_W))
+                    found.setdefault(i, []).append((pl, pc, CAM_PLACE_W, cs))
         for i, got in found.items():
             A = actions[i]
-            wsum = sum(k for _, _, k in got)
-            pc = {tm: sum(k * c.get(tm, 0) for _, c, k in got) / wsum for tm in teams}
+            wsum = sum(k for _, _, k, _ in got)
+            pc = {tm: sum(k * c.get(tm, 0) for _, c, k, _ in got) / wsum for tm in teams}
+            # A placement only overrides the other evidence as far as its geometry is clear. When the robots
+            # that could have placed it are hidden (behind the REEF, off the close-up's edge), the one robot
+            # still in view near the REEF would otherwise get a weak fit normalized into a confident share.
+            fit = sum(k * s for _, _, k, s in got) / wsum
             A["placed"] = got[0][0]
-            A["placed_views"] = [p["elem"] for p, _, _ in got]
-            A["conf"] = 1.0
-            A["t_place"] = min(p["t"] for p, _, _ in got)
+            A["placed_views"] = [p["elem"] for p, _, _, _ in got]
+            A["conf"] = max(A["conf"], fit)
+            A["t_place"] = min(p["t"] for p, _, _, _ in got)
             base = A["p"] or {tm: 1 / 3 for tm in teams}
-            A["p"] = {tm: (1 - PLACE_MIX) * base.get(tm, 0) + PLACE_MIX * pc.get(tm, 0) for tm in teams}
+            mix = PLACE_MIX * fit
+            A["p"] = {tm: (1 - mix) * base.get(tm, 0) + mix * pc.get(tm, 0) for tm in teams}
 
     @staticmethod
     def assign_actions(actions: list[dict], teams: list[int], prior: dict | None = None) -> list[dict[int, float]]:
@@ -848,11 +872,11 @@ class Reefscape2025(GamePlugin):
                 continue
             if not clk.start_vt <= pl["t"] <= clk.teleop_end_vt:
                 continue
-            pc = self._placement_credit(ctx, a, teams, pl)
+            pc, fit = self._placement_credit(ctx, a, teams, pl, True)
             lvl = next(k for k, lo in LEVEL_HEIGHTS if pl["h"] >= lo)
             ph = "auto" if pl["t"] <= clk.auto_end_vt else "teleop"
             for who, share in pc.items():
-                weights[ph][who][lvl] += UNMATCHED_W * share
+                weights[ph][who][lvl] += UNMATCHED_W * fit * share
             if pc:
                 events.append({"t": round(pl["t"], 2), "alliance": a, "phase": ph, "kind": "coral_seen",
                                "level_guess": lvl, "team": max(pc, key=pc.get),
