@@ -114,8 +114,11 @@ def test_feed_needs_depth_and_direction_toward_own_zone():
                                          tracks={}, identity={}, identity_conf={}, launches={}), "blue", None, box) == -1.0
 
 
-def test_weak_detection_extends_a_tracked_robot_but_never_starts_one():
+def test_weak_detection_extends_a_tracked_robot_but_never_starts_one(monkeypatch):
     from autoscout.vision.detect import Det
+
+    # This tests association on black frames, not the remote bumper OCR model.
+    monkeypatch.setattr("autoscout.vision.identity.read_team_numbers_many", lambda frame, boxes, teams: [{} for _ in boxes])
 
     cal = houston_cal()
     tr = RobotTracker(cal, FieldModel.load(2026), {"red": [1, 2, 3], "blue": [4, 5, 6]})

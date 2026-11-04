@@ -30,6 +30,8 @@ ap.add_argument("--fps", type=float, default=30)
 ap.add_argument("--start", type=float, default=None, help="seconds into the match to start (preview)")
 ap.add_argument("--duration", type=float, default=None, help="seconds to render (preview)")
 ap.add_argument("--results-dir", type=Path, default=Path("data/results"), help="saved analysis snapshot to render")
+ap.add_argument("--flight-labels", action="store_true", help="label each ball and its attributed shooter")
+ap.add_argument("--observations-only", action="store_true", help="replay saved observations on a diagram, without match footage (use '-' for VIDEO)")
 a = ap.parse_args()
 
 r = json.loads((a.results_dir / f"{a.match_key}.json").read_text())
@@ -72,7 +74,7 @@ flights = []
 for name, ls in r.get("launches", {}).items():
     for L in ls:
         if L.get("pts"):
-            flights.append((L["t0"], L["pts"][-1][0], np.array([(p[1], p[2]) for p in L["pts"]]), L.get("target")))
+            flights.append((len(flights) + 1, L, np.asarray(L["pts"], float)))
 
 # 2025 debug layers: coral seen placed on the reefs, moving algae, reef close-up reads, decoded jumps
 placements = r.get("element_changes", [])
@@ -126,7 +128,33 @@ jumps = sorted([e for e in r.get("events", []) if e.get("alliance") and e.get("k
 trail = defaultdict(list)  # slot -> recent box bottoms (image px)
 
 teams = {"red": r["red"], "blue": r["blue"]}
-video = Video(a.video)
+if a.observations_only:
+    from autoscout.field import Calibration, FieldModel
+
+    class ObservationReplay:
+        width, height, fps = 1920, 1080, a.fps
+
+        def iter_frames(self, start, end, step=1):
+            c = r["calibration"]
+            cal = Calibration(r["event_key"], year, tuple(c["view"]), c["points"])
+            field = FieldModel.load(year)
+            canvas = np.full((self.height, self.width, 3), (28, 28, 28), np.uint8)
+            for x in np.linspace(0, field.length, 9):
+                line = cal.to_image([(x, 0), (x, field.width)]).astype(np.int32)
+                cv2.polylines(canvas, [line], False, (65, 65, 65), 1, cv2.LINE_AA)
+            for y in np.linspace(0, field.width, 5):
+                line = cal.to_image([(0, y), (field.length, y)]).astype(np.int32)
+                cv2.polylines(canvas, [line], False, (65, 65, 65), 1, cv2.LINE_AA)
+            cv2.putText(canvas, "SAVED OBSERVATION REPLAY - NO MATCH FOOTAGE", (30, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1., (220, 220, 220), 2, cv2.LINE_AA)
+            cv2.putText(canvas, "Robot boxes, ball paths and credit come from the saved match analysis.",
+                        (30, 100), cv2.FONT_HERSHEY_SIMPLEX, .75, (180, 180, 180), 1, cv2.LINE_AA)
+            for t in np.arange(start, end, step / self.fps):
+                yield float(t), canvas.copy()
+
+    video = ObservationReplay()
+else:
+    video = Video(a.video)
 # Layout: the whole broadcast frame (its scoreboard and close-up camera views stay visible) with
 # robots and flights drawn in place, and a sidebar with the clock, the live score and every robot's
 # running credit.
@@ -137,7 +165,10 @@ vh += vh % 2
 SIDE = 520
 H = max(vh, 760)
 tmp = Path(a.out).with_suffix(".tmp.mp4")
+tmp.parent.mkdir(parents=True, exist_ok=True)
 writer = cv2.VideoWriter(str(tmp), cv2.VideoWriter_fourcc(*"mp4v"), a.fps, (W + SIDE, H))
+if not writer.isOpened():
+    raise RuntimeError(f"cannot write demo video: {tmp}")
 step = max(1, int(round(video.fps / a.fps)))
 
 counts = defaultdict(lambda: defaultdict(float))
@@ -322,12 +353,22 @@ def draw_2025(img, t):
 for t, frame in video.iter_frames(t0, t1, step=step):
     img = cv2.resize(frame, (W, vh), interpolation=cv2.INTER_AREA)
     # flights in progress (draw the trail up to now)
-    for ft0, ft1, P, tgt in flights:
+    for flight_id, flight, P in flights:
+        ft0, ft1, tgt = flight["t0"], P[-1, 0], flight.get("target")
         if ft0 <= t <= ft1 + 0.3:
-            n = max(2, int(len(P) * min(1.0, (t - ft0) / max(ft1 - ft0, 1e-3))))
-            pts = (P[:n] * scale).astype(np.int32)
-            cv2.polylines(img, [pts], False, (0, 255, 255) if not tgt else (0, 255, 0), 2, cv2.LINE_AA)
-            cv2.circle(img, tuple(pts[-1]), 3, (0, 255, 255), -1)
+            # Use actual observation times: occlusion leaves irregular gaps.
+            # Indexing by fraction of track duration can draw future ball positions.
+            visible = P[P[:, 0] <= t]
+            if not len(visible):
+                continue
+            pts = (visible[:, 1:3] * scale).astype(np.int32)
+            col = (0, 255, 255) if not tgt else (0, 255, 0)
+            cv2.polylines(img, [pts], False, col, 2, cv2.LINE_AA)
+            cv2.circle(img, tuple(pts[-1]), 3, col, -1)
+            if a.flight_labels:
+                label = f"#{flight_id} " + (str(flight["robot"]) if flight.get("robot") else "unassigned")
+                cv2.putText(img, label, tuple(pts[-1] + [5, -5]), FONT, .4, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, label, tuple(pts[-1] + [5, -5]), FONT, .4, col, 1, cv2.LINE_AA)
     if year == 2025:
         draw_2025(img, t)
     # robots

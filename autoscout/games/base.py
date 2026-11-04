@@ -226,7 +226,11 @@ class GamePlugin:
         P = np.asarray(launch.pts, dtype=float)
         if len(P) < 4:
             return {}
-        cx, cy, _ = fit_flight(P)
+        cx, cy, rms = fit_flight(P)
+        # Short noisy fragments produce explosive backwards extrapolations.
+        # Their fit must explain the observed flight before it can name a robot.
+        if not np.isfinite(rms) or rms > 6.0 or cy[0] <= 0:
+            return {}
         dvy = np.polyder(cy)
         out = {}
         for dt in np.arange(0.0, -max_back, -0.05):
@@ -245,6 +249,19 @@ class GamePlugin:
                 if d < out.get(slot, (9.0,))[0]:
                     out[slot] = (d, P[0, 0] + dt)
         return out
+
+    @staticmethod
+    def release_time(ctx: MatchContext, launch, slot: str) -> float:
+        """Time at the selected shooter, rather than first sighting in mid-air."""
+        direct = GamePlugin.launch_distances(ctx, launch, (slot[:-1],)).get(slot)
+        if getattr(launch, "rising", True) and direct is not None:
+            distance, observed = direct
+            if observed and distance < 0.6:
+                return launch.t0
+        traced = GamePlugin.trace_distances(ctx, launch, (slot[:-1],)).get(slot)
+        if traced is not None and traced[0] < 0.6:
+            return float(traced[1])
+        return launch.t0
 
     @staticmethod
     def proportional_split(total: float, weights: dict[str, float], fallback: dict[str, float] | None = None):

@@ -392,7 +392,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "timeline": tl.to_dict(), "identity": {k: v for k, v in ctx.identity.items()},
         "identity_conf": ctx.identity_conf, "identity_notes": solved.notes[-30:],
         **_track_fields(tracks),
-        "launches": {k: [dict(l.to_dict(), pts=[[round(a, 2), round(b), round(c)] for a, b, c in l.pts[::3]])
+        "launches": {k: [dict(l.to_dict(), pts=[[round(a, 3), round(b, 1), round(c, 1)] for a, b, c in l.pts])
                          for l in v] for k, v in launches.items()},
         "tracker": tracker.stats,
         "identity_scores": {f"{k[0]}:{k[1]}": round(v, 3) for k, v in evidence.score.items()},
@@ -474,7 +474,8 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
         launches[k] = [Launch(t0=d["t0"], t1=d["t1"], start=tuple(d["start"]), end=tuple(d["end"]),
                               apex=tuple(d["apex"]), n_pieces=d["n"], rises=0.0,
                               pts=[tuple(p) for p in d["pts"]], target=d.get("target"),
-                              rising=d.get("rising", True)) for d in v]
+                              rising=d.get("rising", True), entry_t=d.get("entry_t"),
+                              release_t=d.get("release_t")) for d in v]
     ctx = games.MatchContext(match=m, field=plugin.field, cal=cal, clock=clock, timeline=tl, tracks=tracks,
                              identity={}, identity_conf={}, launches=launches)
     ctx.aux_reads = [tuple(x) for x in old.get("aux_reads", [])]
@@ -500,6 +501,9 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     ctx.event_matches = _event_matches(tba, m)
     res = plugin.analyze(ctx)
     old["identity_timeline"] = ctx.identity_tl
+    old["launches"] = {name: [dict(L.to_dict(), pts=[[round(t, 3), round(x, 1), round(y, 1)]
+                                                   for t, x, y in L.pts]) for L in flights]
+                       for name, flights in launches.items()}
     old.update(res)
     old.update(identity=ctx.identity, identity_conf=ctx.identity_conf, identity_notes=solved.notes[-30:],
                red_score=m.red_score, blue_score=m.blue_score)
@@ -648,7 +652,7 @@ def relaunch(match_key: str, tba: TBA | None = None) -> dict:
         if name == "view":
             continue
         L = ex.extract(blobs[name])
-        out[name] = [dict(l.to_dict(), pts=[[round(a, 2), round(b), round(c)] for a, b, c in l.pts[::3]]) for l in L]
+        out[name] = [dict(l.to_dict(), pts=[[round(a, 3), round(b, 1), round(c, 1)] for a, b, c in l.pts]) for l in L]
     old["launches"] = out
     old["launch_stats"] = ex.stats
     path.write_text(json.dumps(old, default=_json_default))

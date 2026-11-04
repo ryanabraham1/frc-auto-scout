@@ -196,7 +196,7 @@ class Rebuilt2026(GamePlugin):
         shooter_of = self.history_shooters(ctx, ctx.launches.get("fuel", []), hub_zone)
         hub_links = self.link_hub_flights(ctx, ctx.launches.get("fuel", []), shooter_of, hub_zone) if HUB_LINK else {}
         for L in ctx.launches.get("fuel", []):
-            period = period_of(ctx, L.t0 + COUNT_LAG)
+            period = period_of(ctx, L.entry_t if L.entry_t is not None else L.t0 + COUNT_LAG)
             if period is None:
                 continue
             into_hub = bool(L.target and L.target.endswith("_hub"))
@@ -215,11 +215,18 @@ class Rebuilt2026(GamePlugin):
                     # release not seen (ascent hidden inside a volley, or first seen mid-air): run the
                     # arc back to the robot it came out of
                     slot, _ = self.trace_back(ctx, L, alliances=(L.target[:-4],) if into_hub else ("red", "blue"))
-            if slot is None and (at_hub or not rising):
-                continue  # release not seen and nobody's arc: crowd motion, a bounce, FUEL knocked off a HUB
             ev = {"t": round(L.t0, 2), "period": period, "n": round(L.n_pieces, 2),
                   "start": [round(v) for v in L.start], "end": [round(v) for v in L.end]}
             if slot is None:
+                if into_hub:
+                    # Keep a real tracked entry visible even when its shooter is
+                    # occluded. Do not silently erase these balls from review.
+                    ev.update(kind="unattributed_shot", alliance=L.target[:-4], made=True)
+                    unattributed += L.n_pieces
+                    events.append(ev)
+                    continue
+                if at_hub or not rising:
+                    continue
                 hp = self.outpost_alliance(ctx, L)
                 if hp:
                     hp_shots[hp][period] += L.n_pieces
@@ -230,8 +237,16 @@ class Rebuilt2026(GamePlugin):
                     unattributed += L.n_pieces
                 continue
             alliance = slot[:-1]
-            team = ctx.team_at(slot, L.t0)
-            r = ctx.robot_at(slot, L.t0)
+            release_t = self.release_time(ctx, L, slot)
+            L.release_t = release_t
+            team = ctx.team_at(slot, release_t)
+            if team not in teams[alliance]:
+                unattributed += L.n_pieces
+                continue
+            L.robot = team
+            r = ctx.robot_at(slot, release_t)
+            ev.update(t=round(release_t, 2), first_seen=round(L.t0, 2),
+                      entry_t=round(L.entry_t, 3) if L.entry_t is not None else None)
             zone = self.zone_for(alliance, r[:2]) if r else "own"
             if zone == "neutral" and getattr(L, "target", None) == f"{alliance}_hub" and r is not None:
                 # a robot at the zone line whose piece drops into its own hub was shooting
@@ -253,7 +268,7 @@ class Rebuilt2026(GamePlugin):
                     if is_made:
                         made[team][period] += L.n_pieces
                         ev["made"] = True
-                    shot_log.append((L.t0, team, alliance, L.n_pieces, is_made))
+                    shot_log.append((release_t, team, alliance, L.n_pieces, is_made, L.entry_t))
             else:
                 # A FEED is a piece *shot* from the neutral/opponent zone that lands in the robot's
                 # own ALLIANCE ZONE. Pieces knocked up while a robot drives through a pile land
@@ -267,6 +282,7 @@ class Rebuilt2026(GamePlugin):
                     knocked[team] += L.n_pieces
                     ev["kind"] = "knocked"
             events.append(ev)
+            L.kind, L.zone = ev["kind"], zone
 
         # Zone occupancy (for positioning stats and as fallback weights).
         zone_time = defaultdict(lambda: defaultdict(float))  # team -> zone -> seconds
@@ -314,8 +330,15 @@ class Rebuilt2026(GamePlugin):
                 else:
                     weights = {t: shots[t][per] for t in teams[a]}
                     weights["HP"] = hp_shots[a][per]
-                fallback = {t: zone_time_period[t][per] for t in teams[a]}
-                split = self.proportional_split(official or 0, weights, fallback)
+                if live[a] is not None and SPLIT_BY != "made":
+                    # Live weights already count credited score increments. Do
+                    # not stretch one observed make to cover every unexplained
+                    # ball in the period during final official reconciliation.
+                    supported = min(official or 0, sum(weights.values()))
+                    split = self.proportional_split(supported, weights)
+                else:
+                    fallback = {t: zone_time_period[t][per] for t in teams[a]}
+                    split = self.proportional_split(official or 0, weights, fallback)
                 unassigned[per] = max(int(official or 0) - sum(split.values()), 0)
                 for k, v in split.items():
                     scored[k][per] = v
@@ -669,9 +692,10 @@ class Rebuilt2026(GamePlugin):
             if not votes:
                 continue
             best = max(votes, key=votes.get)
-            if votes[best] >= STREAM_MAJORITY * sum(votes.values()):
+            if votes[best] >= STREAM_MAJORITY * sum(r[5] for r in s):
                 for r in s:
-                    out[r[4]] = best
+                    if out[r[4]] is None:
+                        out[r[4]] = best  # stream context must not overwrite individual evidence
         return out
 
     def sighted_shooter(self, ctx: MatchContext, L, alliance: str) -> str | None:
@@ -723,8 +747,8 @@ class Rebuilt2026(GamePlugin):
         alliance scored even when a volley is too dense to track ball by ball. Each increase is
         shared among the alliance's robots by their detected shots in the few seconds before it
         (a seen make counts double) and by how much moving FUEL filled the launch column above
-        each of them (what reveals a volley); with neither, among robots in shooting position: in
-        their ALLIANCE ZONE, weighted toward the HUB.
+        each of them (what reveals a volley). A tracked goal entry is matched to
+        one score increase with finite ball capacity before sharing the residual.
         Returns ({team | "HP": {period: points}}, credit events), or (None, []) without a live
         score timeline.
         """
@@ -751,15 +775,42 @@ class Rebuilt2026(GamePlugin):
         out = defaultdict(lambda: defaultdict(float))
         credit = []  # per score increase: who was credited, for the timeline / annotated video
         hub = f"{alliance}_hub"
-        for t, d in deltas:
+        direct = defaultdict(lambda: defaultdict(float))
+        capacity = [float(d) if not (d >= 10 and any(-1.0 < t - e < 4.0 for e in ends))
+                    and period_of(ctx, t - COUNT_LAG) is not None else 0.0 for t, d in deltas]
+        entries = [s for s in shot_log if s[2] == alliance and s[4] and len(s) > 5 and s[5] is not None]
+        for shot in sorted(entries, key=lambda s: s[5]):
+            _, who, _, n, _, arrival = shot
+            remaining = float(n)
+            candidates = sorted((i for i, (t, _) in enumerate(deltas)
+                                 if -0.4 <= t - arrival <= 3.0 and capacity[i] > 0),
+                                key=lambda i: abs(deltas[i][0] - arrival - 0.5))
+            for i in candidates:
+                amount = min(remaining, capacity[i])
+                direct[i][who] += amount
+                capacity[i] -= amount
+                remaining -= amount
+                if remaining <= 0:
+                    break
+        for index, (t, d) in enumerate(deltas):
             if d >= 10 and any(-1.0 < t - e < 4.0 for e in ends):
                 continue  # TOWER points posted at the end of AUTO / the match, not FUEL
             per = period_of(ctx, t - COUNT_LAG)
             if per is None:
                 continue
+            for who, amount in direct[index].items():
+                out[who][per] += amount
+                credit.append({"t": round(t, 2), "kind": "scored", "team": who, "alliance": alliance,
+                               "period": per, "n": round(amount, 2), "by": "tracked_entry"})
+            d = max(0.0, d - sum(direct[index].values()))
+            if not d:
+                continue
             lo, hi = t - SHOT_WINDOW, t - 0.3
             w = defaultdict(float)
-            for t0, who, a, n, is_made in shot_log:
+            for shot in shot_log:
+                t0, who, a, n, is_made = shot[:5]
+                if is_made and len(shot) > 5 and shot[5] is not None:
+                    continue  # this ball has a finite entry budget above
                 if a == alliance and lo <= t0 <= hi:
                     w[who] += n * (2.0 if is_made else 1.0)
             if ctimes is not None:
@@ -782,7 +833,10 @@ class Rebuilt2026(GamePlugin):
                         c = team_sums[team][i1] - (team_sums[team][i0 - 1] if i0 > 0 else 0.0)
                         if c > 0:
                             w[team] += COLUMN_WEIGHT * c
-                for t0, who, a, n, is_made in shot_log:
+                for shot in shot_log:
+                    t0, who, a, n, is_made = shot[:5]
+                    if is_made and len(shot) > 5 and shot[5] is not None:
+                        continue
                     if a == alliance and lo2 <= t0 < lo:
                         w[who] += n * (2.0 if is_made else 1.0)
                 if w and src == "position":

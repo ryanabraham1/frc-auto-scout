@@ -38,6 +38,12 @@ improved from 91.1% to 97.1%; this is not an end-to-end scoring-accuracy measure
 [the attribution benchmark](docs/ATTRIBUTION_BENCHMARK.md) for validation splits and limitations. In 2026,
 official fuel with no usable robot or fallback evidence is reported separately as `unattributed_fuel`.
 
+Ball tracking now recovers short occluded fragments, saves every trajectory observation, and records
+release and goal-entry times. Scoring attribution uses the identity at release, limits each observed
+goal entry to its ball count, and pairs 2025 algae launches with individual net scores. See the
+[tracking validation and diagnostic videos](docs/TRACKING_ACCURACY_20261104.md) for measured results
+and the remaining real-footage validation gap.
+
 **Measuring who scored.** The dashboard's **Review credit** page shows a short clip of each credited action
 and asks a person which robot did it, without showing the system's answer. `autoscout review-eval` scores saved
 results against those labels. This is the main accuracy measure for attribution; see

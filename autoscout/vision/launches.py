@@ -34,6 +34,13 @@ class _Trk:
         P = self.pts
         if len(P) == 1:
             return P[-1][1], P[-1][2]
+        # A three-point acceleration amplifies one-pixel centroid noise at 60 Hz.
+        # Fit several observations, in local time, once there is enough history.
+        if len(P) >= 5:
+            Q = np.asarray(P[-9:], float)
+            cx, cy, _ = fit_flight(Q)
+            h = t - Q[0, 0]
+            return float(np.polyval(cx, h)), float(np.polyval(cy, h))
         (t1, x1, y1), (t2, x2, y2) = P[-2][:3], P[-1][:3]
         dt = max(t2 - t1, 1e-3)
         vx, vy = (x2 - x1) / dt, (y2 - y1) / dt
@@ -73,6 +80,7 @@ class LaunchExtractor:
         self.min_len = 5  # points for a flight
         self.min_dur = None  # s a flight must span (None: 4 frame intervals, at least 0.08 s)
         self.split = True  # cut a track that fails the physics check at its worst kink (a mislink)
+        self.max_gap = 0.15  # elapsed seconds, including frames with no blobs at all
 
     # ---- geometry helpers ---------------------------------------------------------------
     def ppm(self, x, y):
@@ -126,6 +134,11 @@ class LaunchExtractor:
         done: list[_Trk] = []
         for k, t in enumerate(times):
             D = B[idx[k]: idx[k + 1]]
+            # Empty frames aren't represented in B. Expire tracks before assignment,
+            # otherwise a camera cut can join unrelated balls seconds apart.
+            expired = [tr for tr in live if t - tr.pts[-1][0] > self.max_gap]
+            done.extend(expired)
+            live = [tr for tr in live if t - tr.pts[-1][0] <= self.max_gap]
             if live and len(D):
                 cost = np.full((len(live), len(D)), 1e9)
                 flow = self._flow(live) if self.flow else None
@@ -142,7 +155,9 @@ class LaunchExtractor:
                     gate = gate_m * ppm + 6 * (tr.miss + 1)
                     d = np.hypot(D[:, 1] - px, D[:, 2] - py)
                     ok = d < gate
-                    cost[i, ok] = d[ok]
+                    # Similar-sized crossing balls should keep their own trajectories.
+                    ratio = np.maximum(D[:, 3], 1) / max(tr.pts[-1][3], 1)
+                    cost[i, ok] = d[ok] + 3.0 * np.abs(np.log(ratio[ok]))
                 ri, ci = linear_sum_assignment(cost)
                 used_t, used_d = set(), set()
                 for i, j in zip(ri, ci):
@@ -244,21 +259,48 @@ class LaunchExtractor:
         flights = sorted(flights, key=lambda f: f[0][0, 0])
         out = []
         for P, fit in flights:
-            merged = False
+            best = None
+            best_cost = float("inf")
             for k in range(len(out) - 1, max(-1, len(out) - 40), -1):
                 A, (cx, cy, _) = out[k]
                 gap = P[0, 0] - A[-1, 0]
                 if gap <= 0 or gap > 1.5:
                     continue
+                if self.targets and self.made_into(A, (cx, cy, 0)):
+                    continue  # a ball that already entered a goal cannot be the next shot
                 t = P[0, 0] - A[0, 0]
                 px, py = np.polyval(cx, t), np.polyval(cy, t)
                 tol = 12 + 25 * gap
-                if np.hypot(px - P[0, 1], py - P[0, 2]) < tol:
-                    Q = np.vstack([A, P])
-                    out[k] = (Q, fit_flight(Q))
-                    merged = True
-                    break
-            if not merged:
+                span = max(A[-1, 0] - A[0, 0], 1 / 60)
+                short_fit = len(A) < 6 and span < .15
+                if short_fit:
+                    if gap > .4:
+                        continue
+                    # Four quantized centroids cannot measure gravity precisely.
+                    # Propagate that uncertainty, then let the joint observations
+                    # on both sides of the occlusion validate the proposed flight.
+                    tol += min(50.0, 2 * (gap / span) ** 2)
+                distance = np.hypot(px - P[0, 1], py - P[0, 2])
+                if distance >= tol:
+                    continue
+                # Position alone merges successive shots in a volley. Require both
+                # fragments to agree on velocity and on one joint ballistic fit.
+                bx, by, _ = fit
+                av = np.array([np.polyval(np.polyder(cx), t), np.polyval(np.polyder(cy), t)])
+                bv = np.array([bx[1], by[1]])
+                velocity_tol = max(80.0, 0.25 * np.linalg.norm(av))
+                if short_fit:
+                    velocity_tol += min(200.0, 4 * gap / span ** 2)
+                if np.linalg.norm(av - bv) > velocity_tol:
+                    continue
+                Q = np.vstack([A, P])
+                joint = self.ballistic(Q)
+                if joint is not None and distance < best_cost:
+                    best, best_cost = (k, Q, joint), distance
+            if best is not None:
+                k, Q, joint = best
+                out[k] = (Q, joint)
+            else:
                 out.append((P, fit))
         return out
 
@@ -276,7 +318,7 @@ class LaunchExtractor:
         return bool((d < 30).any())
 
     # ---- 6. made ----------------------------------------------------------------------------------
-    def made_into(self, P: np.ndarray, fit) -> str | None:
+    def target_entry(self, P: np.ndarray, fit) -> tuple[str, float] | None:
         """Target opening the piece *disappears into* while descending.
 
         A make ends at the opening: the track stops right after passing through it (the piece
@@ -298,17 +340,24 @@ class LaunchExtractor:
             if th <= dur:
                 # observed passing through: it must vanish there (not keep flying past)
                 if dur - th <= 0.25:
-                    return name
+                    return name, float(P[0, 0] + th)
             elif th - dur <= 0.6:
-                return name  # track lost just before the opening (occluded by the hub/net)
+                return name, float(P[0, 0] + th)  # lost just before the opening
         return None
+
+    def made_into(self, P: np.ndarray, fit) -> str | None:
+        hit = self.target_entry(P, fit)
+        return hit[0] if hit else None
 
     # ---- main ---------------------------------------------------------------------------------------
     def extract(self, blobs: np.ndarray) -> list[Launch]:
+        self.stats = {}
         if blobs is None or len(blobs) == 0:
             return []
         B = np.asarray(blobs, dtype=np.float64)
-        self.stats = {}
+        B = B[np.isfinite(B).all(axis=1)]
+        if not len(B):
+            return []
         ts = np.unique(B[:, 0])
         fps = 1.0 / float(np.median(np.diff(ts))) if len(ts) > 2 else 30.0
         if self.max_miss is None:
@@ -317,6 +366,11 @@ class LaunchExtractor:
             self.min_dur = max(0.08, 4.0 / fps)
         B = self.filter_blobs(B)
         tracks = self.link(B)
+        # Occlusion can leave both halves shorter than the flight minimum. Join
+        # their measured fragments before rejecting them for being too short.
+        fragments = [(tr.arr(), fit_flight(tr.arr())) for tr in tracks if len(tr.pts) >= 3]
+        short = [tr for tr in tracks if len(tr.pts) < 3]
+        tracks = [_Trk(P.tolist()) for P, _ in self.rejoin(fragments)] + short
         flights, ends = [], []
         rej = {"short": 0, "not_ballistic": 0, "bounce": 0, "origin": 0}
         for tr in tracks:
@@ -368,7 +422,8 @@ class LaunchExtractor:
                 pts=[(float(p[0]), float(p[1] + vx), float(p[2] + vy)) for p in P],
                 exited_top=bool(P[-1, 2] < 15),
             )
-            L.target = self.made_into(P, fit) if self.targets else None
+            hit = self.target_entry(P, fit) if self.targets else None
+            L.target, L.entry_t = hit if hit else (None, None)
             # Was the release seen? A launch leaves the robot moving up. Tracks first seen already
             # falling (ascent hidden by graphics/occlusion) are kept for hub counting only.
             cx, cy, _ = fit
