@@ -36,6 +36,7 @@ SURE_D, SURE_MARGIN = 0.15, 0.5  # a launch is certain when it starts at a detec
 MIN_EVIDENCE = 1.0  # evidence (~ one detected shot) below which the longer volley window is added
 VOLLEY_WINDOW = 8.0  # s looked back for shooters when nobody released just before a score
 VOLLEY_MIN_EVIDENCE = 3.0  # evidence (~ detected shots) over that window for it to count as a volley
+VOLLEY_COUNTS_MADE = True  # tracked makes count towards who was firing in that longer window
 TRACE_BACK = 4  # blob frames kept for tracing a ball back to its shooter
 RELEASE_SPEED = 3.0  # m/s upward: launched FUEL leaves a shooter at ~8-12 m/s; crowd and hopper motion is slower
 SHOT_WINDOW = 3.0  # s before a score increase in which the scoring shot was released
@@ -47,6 +48,7 @@ MIN_RISE_M = 0.5  # m a release with no target must climb to count as evidence t
 PRIOR_ALPHA, PRIOR_K = 0.0, 20.0
 PRIOR_MIN_MATCHES = 12  # other matches with official breakdowns needed before the prior is used
 COUNT_LAG = 1.0  # s between release and the hub sensor counting the FUEL
+START_SLACK = 1.0  # s: the start worked out from the broadcast clock runs late; FUEL enters HUBs up to this much before it
 TRACE_ARCS = True  # every flight without a seen release is run back along its arc to its shooter
 SPLIT_BY = "live"  # "live": each score increase by who fired just before it | "made": tracked makes per period
 # An increase nobody was seen firing before used to go to robots in their zone, weighted toward the HUB.
@@ -65,6 +67,8 @@ def period_of(ctx: MatchContext, vt: float) -> str | None:
     phase, rem = ctx.match_time(vt)
     if phase == "auto":
         return "auto"
+    if phase == "pre":
+        return "auto" if ctx.clock.start_vt - vt <= START_SLACK else None
     if phase == "pause":
         return "auto" if vt - ctx.clock.auto_end_vt < 3 else None  # auto FUEL still counting
     if phase in ("teleop", "post"):
@@ -903,9 +907,11 @@ class Rebuilt2026(GamePlugin):
                         c = team_sums[team][i1] - (team_sums[team][i0 - 1] if i0 > 0 else 0.0)
                         if c > 0:
                             w[team] += COLUMN_WEIGHT * c
+                # Balls already matched to an increase can't be counted twice as points, but they are the
+                # clearest sign of who is firing, so here they count as evidence.
                 for shot in shot_log:
                     t0, who, a, n, is_made = shot[:5]
-                    if is_made and len(shot) > 5 and shot[5] is not None:
+                    if is_made and len(shot) > 5 and shot[5] is not None and not VOLLEY_COUNTS_MADE:
                         continue
                     if a == alliance and lo2 <= t0 < lo:
                         w[who] += n * (2.0 if is_made else 1.0)

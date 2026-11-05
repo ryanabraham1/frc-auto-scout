@@ -325,3 +325,12 @@ def test_hub_shadow_requires_image_occlusion_not_just_a_nearby_dropout():
     plugin = Rebuilt2026()
     assert not plugin._in_hub_shadow(ctx, "red0", 12.)
     assert plugin._in_hub_shadow(ctx, "red0", 20.)
+
+
+def test_fuel_just_before_the_computed_start_counts_as_auto():
+    from types import SimpleNamespace as N
+    from autoscout.games.rebuilt2026 import period_of
+
+    ctx = N(clock=N(start_vt=7.0), match_time=lambda vt: ("pre", 20.0))
+    assert period_of(ctx, 6.5) == "auto"
+    assert period_of(ctx, 5.0) is None
