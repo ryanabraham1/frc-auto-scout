@@ -3,81 +3,72 @@
 Target app: [ryanabraham1/scouting-app](https://github.com/ryanabraham1/scouting-app),
 inspected at `ca5b0afd42450906e184e9ffd6a6aa8d9477c105`.
 
-The computer runs the video processing. The app's backend sends a list of matches,
-then polls for progress/results. Closing the phone browser does not stop processing.
-The computer must be awake, online, and running the integration service.
+The computer runs the video processing. The app's **Auto-Scout** tab (team lead area) creates
+jobs in Supabase, and `autoscout bridge` on this computer calls out to collect them and push
+status and results back.
 
 ```text
-Scouting app: select matches → Run Auto-Scout
-        ↓ existing app backend (keeps the API token secret)
-        ↓ HTTPS tunnel → 127.0.0.1:8001
-Computer: persistent queue → video processing → per-team results
-        ↑ backend fetches results → stores them → app displays them
+Auto-Scout tab -> Supabase (autoscout_job)
+                      ^
+                      | outbound HTTPS only, every 5-15 s
+Computer: autoscout bridge -> persistent queue -> clip/record -> processing -> results
 ```
 
-## What is ready
+Nothing on the computer is exposed: no tunnel, no port forwarding. Jobs wait in Supabase while it
+is off, and results land with every browser closed. It holds one worker token, never a Supabase key.
+The computer must be awake and online for work to move.
 
-- `autoscout serve-integration`: separate authenticated API, bound to localhost.
-- SQLite queue survives service restarts; unfinished jobs resume on next startup.
-- One match processes at a time to limit GPU/RAM use. Up to 100 matches per request,
-  20 unfinished jobs in the queue. Jobs may span events.
-- Stable request IDs prevent duplicate submission on a lost network response.
-- Each completed match gets a stable JSON snapshot. Partial results survive a later failure.
-- Cached results are reused unless the app requests `force: true`.
-- [Server-only TypeScript client](../integrations/scouting-app/client.ts) for the app backend.
+## Job types
 
-This repository prepares the processing side. It does **not** change or deploy the
-scouting app, create its buttons, create Supabase tables/functions, configure a tunnel,
-or install a startup task on your computer. The remaining app work is specified below.
+| Type | Footage |
+|---|---|
+| Live stream | Recorded from the live edge in 20 s wall-clock segments; each match is cut once TBA posts its `actual_time`. Only matches after recording starts: YouTube refuses to clip backwards from a stream still live |
+| Ended stream | yt-dlp fetches only the window around `actual_time - stream start`. Other days' matches are skipped with a reason |
+| Match videos | TBA's per-match videos |
+
+Stream links are allow-listed to YouTube and Twitch and rebuilt from their parsed parts
+(`autoscout/streams.py`), so the shared no-login app can't point this computer anywhere else or
+pass yt-dlp options. Each event must be calibrated first with `autoscout serve` on port 8000.
+
+A job refuses to start under 10 GB free. Processed clips are capped at 15 GB, and live segments
+are kept for 3 hours.
 
 ## Set up the computer
 
-Follow [Windows/Linux PC setup](SETUP_PC.md) or [Mac setup](SETUP_MAC.md) first.
-Use Python 3.10+, install the package, configure `TBA_API_KEY` in `.secrets/.env`,
-and confirm `autoscout run-match MATCH_KEY` works locally. Video downloads may
-require YouTube cookies as described in those setup guides.
+Follow [Windows/Linux PC setup](SETUP_PC.md) or [Mac setup](SETUP_MAC.md) first, and confirm
+`autoscout run-match MATCH_KEY` works locally. YouTube blocks anonymous downloads, so set
+`YT_COOKIES_BROWSER` (or `YT_COOKIES`) as described there.
 
-Generate a separate API secret:
+Generate a worker token:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Add the generated value to the git-ignored `.secrets/.env`:
+Add to the git-ignored `.secrets/.env`:
 
 ```dotenv
-AUTOSCOUT_API_TOKEN=YOUR_GENERATED_SECRET
+AUTOSCOUT_BRIDGE_URL=https://YOUR-PROJECT.supabase.co/functions/v1/autoscout-worker
+AUTOSCOUT_WORKER_TOKEN=YOUR_GENERATED_TOKEN
 ```
 
-Start the worker from the project directory, using its virtual environment:
+Store only its SHA-256 in the app's private `autoscout_worker_secret` table (see the app's
+`docs/autoscout.md`), then on Windows install the startup task:
 
-```bash
-autoscout serve-integration
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_bridge_task.ps1 -Python .venv\Scripts\python.exe
 ```
 
-On Windows, after activating `.venv\Scripts\Activate.ps1`, the same command works.
-On Mac/Linux, activate with `source .venv/bin/activate`.
-`python -m autoscout.cli serve-integration` is an alternative if the launcher is unavailable.
+Disable automatic sleep while plugged in. Output goes to `bridge.log`, and full job logs to
+`data/integration/<job-id>.log`. Rotate the token on both sides if it is exposed.
 
-Use `autoscout serve` on port 8000 locally to calibrate each new event's broadcast
-camera. The integration API is on **8001**. Only expose **8001** through an HTTPS
-tunnel, e.g. a named Cloudflare Tunnel whose origin is `http://127.0.0.1:8001`.
-Use a stable tunnel hostname for the app backend. No router port forwarding is needed.
-Do not expose port 8000: that dashboard has local editing/training controls.
-The app backend cannot reach the computer via its own `localhost` address.
+The app side lives in the scouting-app repo: see its `docs/autoscout.md`.
 
-Keep the API token in the app backend's secret store as `AUTOSCOUT_API_TOKEN` and the
-tunnel URL as `AUTOSCOUT_BASE_URL`. Neither belongs in a `VITE_*` variable or browser code.
-No Supabase service-role key is needed on the computer. Rotate the API token on both
-sides if it is exposed. There is deliberately no browser CORS support on the computer API.
+## Local HTTP API
 
-For unattended use, configure **two** startup entries: the integration process and
-the tunnel. Windows Task Scheduler can launch `.venv\Scripts\python.exe` with arguments
-`-m autoscout.cli serve-integration` and the repository as its working directory.
-On Mac, use a LaunchAgent with the virtual environment's Python and the same arguments
-and working directory. Disable automatic sleep while plugged in. Restart services after
-updating the package or credentials. An API health check confirms connectivity, not
-that an event is calibrated or that YouTube will allow a download.
+`autoscout serve-integration` is the older token-protected API on `127.0.0.1:8001`, kept for local
+scripts. The app does not use it. Do not run it together with the bridge (one worker per data
+directory), and do not expose it or the port 8000 dashboard.
 
 ## HTTP contract
 
@@ -134,45 +125,6 @@ timestamped events, video reference, clock, and available processing metadata. L
 tracks and detection arrays are excluded. Optional fields may be absent in older results.
 `source` identifies automated estimates; it is not a claim of verified robot attribution.
 
-## App implementation handoff
-
-The linked app is React/Vite with Supabase Edge Functions and anonymous sessions.
-Keep its existing shared-team authorization model. Its `LocalMatchReport` in
-`src/db/types.ts` and `src/sync/mapReport.ts` describe human capture; `ingest-reports`
-calls `upsert_match_report`, which recomputes aggregates from raw human inputs.
-Posting the envelope above to that endpoint will **not** import it correctly.
-
-Implement these pieces in the scouting-app repository:
-
-1. Add an `autoscout` backend bridge with `start`, `status`, and `results` actions.
-   Use the existing session validation conventions and the server-only client supplied
-   here. Read the tunnel URL and API token from backend secrets, never request parameters.
-   Validate/limit match selection and keep the existing team's shared access model.
-   Return an offline/unavailable state when the tunnel/computer cannot be reached.
-2. Persist request UUID, returned job ID, requested matches, status, and latest progress
-   in app storage so reloads can resume polling. A backend network timeout can happen
-   after the computer accepts a request: retry with the saved request UUID.
-3. Store the versioned envelopes in a **separate automated-results table**, keyed by
-   `match_key`, with `event_key`, source job ID and import time. Enable RLS and explicit
-   grants consistent with the app. Make re-import of the same job/match a no-op; compare
-   job creation time before replacing a match so delayed polling of an older job cannot
-   overwrite a newer result. Persist all completed matches even if the overall job failed.
-4. Add match selection → **Run Auto-Scout**, a progress panel, **Retry unfinished**, and
-   team/match views of the imported estimates. Fetch/persist results on partial progress
-   and terminal status. Later app visits can finish importing a job after the browser closes;
-   immediate import with every browser closed requires a backend scheduled poller.
-5. Keep human scouting reports intact. Display an automated source label and confidence.
-   If merging these estimates into predictions, explicitly define source precedence and
-   avoid counting a human and automated report as two independent observations of a match.
-
-Useful 2026 metrics include `fuel_scored_auto`, `fuel_scored_teleop`,
-`fuel_scored_by_period`, `fuel_fed`, `auto_tower`, and `endgame_tower`.
-Period definitions and units must be checked against the app's `src/scoring/windows.ts`
-before converting them. `inactive_shots` is a shot estimate, not made fuel. Subjective
-ratings, foul reasons, human feeding-slider inputs, intake sources and exact path samples
-cannot be inferred from these aggregate fields; leave them unknown rather than fabricate
-human reports. 2025 uses different metrics and needs a separate display adapter.
-
 ## Operations and verification
 
 Queue state, result snapshots and logs live under `AUTOSCOUT_DATA/integration` (default
@@ -186,6 +138,4 @@ Results/logs remain on disk until manually archived; there is no automatic reten
 Run the isolated contract suite with `python -m pytest tests/test_integration.py` after
 installing `pip install -e '.[dev]'`. It tests auth, validation, duplicate submissions,
 partial failure, snapshots, cache/forced processing and restart recovery without vision models.
-For final live acceptance, start the computer API, run one calibrated match from the app,
-confirm all six team results reach its automated-results table, reload the app during a job,
-and test an offline computer. The live app/tunnel flow is not verified by the contract suite.
+`tests/test_bridge.py` covers the bridge, stream parsing, clipping and live sessions the same way.

@@ -19,3 +19,5 @@ weights/
 /yolo*.pt
 benchmarks/attribution/*.lock
 benchmarks/attribution/*.tmp
+bridge.log
+scripts/run_bridge.cmd

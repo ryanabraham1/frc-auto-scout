@@ -37,6 +37,10 @@ class JobRequest(BaseModel):
         return list(dict.fromkeys(keys))
 
 
+class MatchSkipped(Exception):
+    """One match cannot be done; the job carries on. The message is shown to the team lead."""
+
+
 def export_result(result: dict) -> dict:
     """Versioned evidence envelope; do not fabricate human-report fields."""
     keys = ("match_key", "event_key", "year", "label", "comp_level", "match_number",
@@ -55,6 +59,8 @@ class Queue:
                 id TEXT PRIMARY KEY, request_key TEXT UNIQUE, fingerprint TEXT,
                 request TEXT, status TEXT, completed TEXT, error TEXT,
                 created_at REAL, updated_at REAL)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS match_errors (
+                job_id TEXT, match_key TEXT, error TEXT, PRIMARY KEY (job_id, match_key))""")
             c.commit()
 
     def connect(self):
@@ -63,7 +69,14 @@ class Queue:
         return c
 
     def submit(self, body: JobRequest, key: str):
-        request = body.model_dump_json()
+        return self.enqueue(body.model_dump_json(), key)
+
+    def enqueue(self, request: str, key: str, limit: int | None = 20):
+        """`request` may carry a `source` the public API can't: only the bridge builds those.
+
+        The bridge passes limit=None: the app caps its own queue, and a live event that outruns
+        the GPU must back up here rather than lose matches.
+        """
         fingerprint = hashlib.sha256(request.encode()).hexdigest()
         with closing(self.connect()) as c:
             c.execute("BEGIN IMMEDIATE")
@@ -73,7 +86,8 @@ class Queue:
                     raise HTTPException(409, "Idempotency-Key already used with different matches/options")
                 return self.public(old)
             # Bound disk/GPU backlog independently of request size.
-            if c.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0] >= 20:
+            if limit is not None and c.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0] >= limit:
                 raise HTTPException(429, "Queue full; retry later")
             jid = str(uuid.uuid4())
             now = time.time()
@@ -105,7 +119,32 @@ class Queue:
     def recover(self):
         with closing(self.connect()) as c:
             c.execute("UPDATE jobs SET status='queued' WHERE status='running'")
+            c.execute("UPDATE jobs SET status='cancelled' WHERE status='cancelling'")
             c.commit()
+
+    def cancel(self, jid):
+        """A queued job stops now; a running one stops after the match it is on."""
+        with closing(self.connect()) as c:
+            c.execute("UPDATE jobs SET status='cancelled',updated_at=? WHERE id=? AND status='queued'",
+                      (time.time(), jid))
+            c.execute("UPDATE jobs SET status='cancelling',updated_at=? WHERE id=? AND status='running'",
+                      (time.time(), jid))
+            c.commit()
+
+    def status_of(self, jid):
+        with closing(self.connect()) as c:
+            row = c.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()
+        return row["status"] if row else None
+
+    def skip(self, jid, match_key, error):
+        with closing(self.connect()) as c:
+            c.execute("INSERT OR REPLACE INTO match_errors VALUES (?,?,?)", (jid, match_key, error))
+            c.commit()
+
+    def match_errors(self, jid):
+        with closing(self.connect()) as c:
+            rows = c.execute("SELECT match_key,error FROM match_errors WHERE job_id=?", (jid,)).fetchall()
+        return {r["match_key"]: r["error"] for r in rows}
 
     def run_next(self, runner):
         with closing(self.connect()) as c:
@@ -118,12 +157,21 @@ class Queue:
         jid = row["id"]
         request = json.loads(row["request"])
         completed = json.loads(row["completed"])
+        extra = (request["source"],) if request.get("source") else ()
         try:
             for mk in request["match_keys"]:
+                if self.status_of(jid) == "cancelling":
+                    self.update(jid, "cancelled", completed)
+                    return True
                 target = self.root / f"{jid}_{mk}.json"
                 # Resume the exact job's snapshots, including force jobs, after a restart.
                 if mk not in completed or not target.exists():
-                    result = export_result(runner(mk, request["force"], self.root / f"{jid}.log"))
+                    try:
+                        raw = runner(mk, request["force"], self.root / f"{jid}.log", *extra)
+                    except MatchSkipped as e:
+                        self.skip(jid, mk, str(e))
+                        continue
+                    result = export_result(raw)
                     if result["match"].get("match_key") != mk:
                         raise ValueError("Processor returned the wrong match")
                     tmp = target.with_suffix(".tmp")
@@ -131,8 +179,14 @@ class Queue:
                     tmp.replace(target)
                     if mk not in completed:
                         completed.append(mk)
-                    self.update(jid, "running", completed)
-            self.update(jid, "succeeded", completed)
+                    # A cancel that landed mid-match must survive this progress write.
+                    self.update(jid, "cancelling" if self.status_of(jid) == "cancelling" else "running", completed)
+            if self.status_of(jid) == "cancelling":
+                self.update(jid, "cancelled", completed)
+            elif completed or not self.match_errors(jid):
+                self.update(jid, "succeeded", completed)
+            else:
+                self.update(jid, "failed", completed, "None of the matches could be processed")
         except Exception:
             # Full processing output is local; remote errors never contain paths/secrets.
             with (self.root / f"{jid}.log").open("a", encoding="utf-8") as log:
@@ -142,18 +196,24 @@ class Queue:
         return True
 
 
-def process_match(match_key: str, force: bool, log: Path):
+def cached_result(match_key: str):
     from . import db
 
-    if not force:
-        with closing(db.connect()) as c:
-            row = c.execute("SELECT status FROM matches WHERE match_key=?", (match_key,)).fetchone()
-            cached = db.load_result(c, match_key) if row and row["status"] == "done" else None
-        if cached:
-            return cached
+    with closing(db.connect()) as c:
+        row = c.execute("SELECT status FROM matches WHERE match_key=?", (match_key,)).fetchone()
+        return db.load_result(c, match_key) if row and row["status"] == "done" else None
+
+
+def process_match(match_key: str, force: bool, log: Path, video: Path | None = None):
+    from . import db
+
+    if not force and (cached := cached_result(match_key)):
+        return cached
+    command = [sys.executable, "-m", "autoscout.cli", "run-match", match_key]
+    if video:
+        command += ["--video", str(video)]
     with log.open("a", encoding="utf-8") as out:
-        subprocess.run([sys.executable, "-m", "autoscout.cli", "run-match", match_key],
-                       cwd=config.ROOT, stdout=out, stderr=subprocess.STDOUT,
+        subprocess.run(command, cwd=config.ROOT, stdout=out, stderr=subprocess.STDOUT,
                        check=True, timeout=7200)
     with closing(db.connect()) as c:
         result = db.load_result(c, match_key)
