@@ -1,5 +1,8 @@
 """Tests for the attribution upgrades: pseudo-label filtering, release counting, person veto."""
+from types import SimpleNamespace
+
 import numpy as np
+import pytest
 
 from autoscout import games
 from autoscout.field import FieldModel
@@ -114,8 +117,11 @@ def test_feed_needs_depth_and_direction_toward_own_zone():
                                          tracks={}, identity={}, identity_conf={}, launches={}), "blue", None, box) == -1.0
 
 
-def test_weak_detection_extends_a_tracked_robot_but_never_starts_one():
+def test_weak_detection_extends_a_tracked_robot_but_never_starts_one(monkeypatch):
     from autoscout.vision.detect import Det
+
+    # This tests association on black frames, not the remote bumper OCR model.
+    monkeypatch.setattr("autoscout.vision.identity.read_team_numbers_many", lambda frame, boxes, teams: [{} for _ in boxes])
 
     cal = houston_cal()
     tr = RobotTracker(cal, FieldModel.load(2026), {"red": [1, 2, 3], "blue": [4, 5, 6]})
@@ -194,10 +200,26 @@ def test_release_credit_uses_identity_at_release_not_score_post():
 def test_extended_volley_does_not_count_short_window_twice():
     ctx = _live_ctx()
     times = np.array([3., 6., 8., 10.])
-    cols = (times, {"red0": np.array([0., 0., 1., 1.]),
-                    "red1": np.array([0., 1., 1., 1.])})
+    cols = (times, {"red0": np.array([0., 7., 10., 10.]),
+                    "red1": np.array([0., 10., 10., 10.])})
     weights, _ = Rebuilt2026().live_weights(ctx, "red", [1, 2], [], cols)
     assert weights[1]["auto"] == weights[2]["auto"] == 7.5
+
+
+def test_a_few_stray_blobs_are_not_a_volley():
+    ctx = _live_ctx()
+    times = np.array([3., 6., 8., 10.])
+    cols = (times, {"red0": np.array([0., 3., 3., 3.]), "red1": np.zeros(4)})
+    weights, events = Rebuilt2026().live_weights(ctx, "red", [1, 2], [], cols)
+    assert not weights and not events
+
+
+def test_a_release_that_never_climbed_is_not_firing_evidence():
+    ctx = SimpleNamespace(cal=SimpleNamespace(px_per_meter_x=lambda p: 50.))
+    flat = SimpleNamespace(start=(100., 300.), apex=(130., 295.))
+    arc = SimpleNamespace(start=(100., 300.), apex=(130., 200.))
+    assert not Rebuilt2026._climbed(ctx, flat, (1., 1.))
+    assert Rebuilt2026._climbed(ctx, arc, (1., 1.))
 
 
 def test_overlapping_release_regions_do_not_favor_first_slot():
@@ -256,3 +278,50 @@ def test_measured_release_at_top_beats_neighbors_firing_history(monkeypatch):
     monkeypatch.setattr(plugin,'robot_box',lambda ctx,s,t:(boxes[s],True))
     out=plugin.history_shooters(None,[early,now],lambda x,y:np.zeros(len(x),bool))
     assert out[id(now)]=='red1'
+
+
+@pytest.mark.parametrize("period,arrival", [("auto", 10.), ("shift2", 80.)])
+@pytest.mark.parametrize("has_entry_time", [True, False])
+def test_hub_entry_survives_an_occluded_shooters_bad_floor_position(monkeypatch, period, arrival, has_entry_time):
+    from autoscout.games.rebuilt2026 import PERIODS
+    from autoscout.overlay import MatchClock
+    from autoscout.vision.trajectories import Launch
+
+    teams = {"red": [1, 2, 3], "blue": [4, 5, 6]}
+    breakdown = {a: {"hubScore": {f"{p}Count": int(a == "red" and p == period) for p in PERIODS}}
+                 for a in teams}
+    match = SimpleNamespace(teams=lambda a: teams[a], breakdown=breakdown)
+    # The unseen robot's last box/interpolation puts its foot in neutral.
+    # The measured ball nevertheless disappears into its own HUB.
+    launch = Launch(arrival - .2, arrival, (1400., 250.), (1410., 296.), (1400., 250.),
+                    1., 0., [], target="red_hub", rising=False, entry_t=arrival if has_entry_time else None)
+    ctx = MatchContext(match, FieldModel.load(2026), houston_cal(),
+                       MatchClock(auto_len=20, teleop_len=140, auto_end_vt=20, teleop_end_vt=164),
+                       SimpleNamespace(deltas=lambda a: [(arrival + .5, 1)] + [(120. + i, 0) for i in range(14)]),
+                       {"red0": [(arrival - .2, 10., 6., False, None)]},
+                       {"red0": 1}, {}, {"fuel": [launch]})
+    monkeypatch.setattr(Rebuilt2026, "history_shooters", lambda *a: {})
+    monkeypatch.setattr(Rebuilt2026, "link_hub_flights", lambda *a: {id(launch): "red0"})
+    monkeypatch.setattr(Rebuilt2026, "release_time", lambda *a: arrival - .2)
+    monkeypatch.setattr(Rebuilt2026, "column_activity", lambda *a: (None, {}))
+    result = Rebuilt2026().analyze(ctx)
+    shot = next(e for e in result["events"] if e["kind"] == "shot")
+    assert shot["made"] and shot["zone"] == "neutral"  # retain the estimate for inspection
+    assert result["teams"][1]["fuel_scored_by_period"][period] == 1
+    assert sum(e["n"] for e in result["events"] if e["kind"] == "scored") == 1
+    assert result["alliances"]["red"]["unattributed_fuel_by_period"][period] == 0
+
+
+def test_hub_shadow_requires_image_occlusion_not_just_a_nearby_dropout():
+    from autoscout.field import Calibration
+
+    cal = Calibration.load("2026cosp")
+    # Both disappear on the far side and within the old 3.5 m radius. Only
+    # the second box reaches the HUB silhouette; the first is in open carpet.
+    rows = [(9.337, 9.332, 6.204, True, (1033.5, 323.5, 1117.5, 384.2)),
+            (15.049, 11.337, 6.553, True, (1203., 312., 1326., 374.4)),
+            (32., 13., 6., True, (1450., 320., 1550., 400.))]
+    ctx = MatchContext(None, None, cal, None, None, {"red0": rows}, {}, {}, {})
+    plugin = Rebuilt2026()
+    assert not plugin._in_hub_shadow(ctx, "red0", 12.)
+    assert plugin._in_hub_shadow(ctx, "red0", 20.)

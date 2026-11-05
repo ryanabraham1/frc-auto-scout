@@ -282,3 +282,16 @@ def test_clean_scores_follows_a_score_climbing_ball_by_ball():
     out = clean_scores(raw)
     assert out[3] == 7 and out[8] == 38 and out[-1] == 50
     assert max(out) == 50 and all(np.diff(out) >= 0)
+
+
+def test_a_bumper_box_inside_a_robot_box_is_not_a_second_robot():
+    from autoscout.vision.detect import Det
+    from autoscout.vision.tracker import drop_part_boxes
+
+    robot = Det(314, 386, 402, 482, .7, "blue")
+    bumpers = Det(310, 453, 410, 485, .15, "blue")
+    other_alliance = Det(310, 453, 410, 485, .5, "red")
+    neighbour = Det(420, 386, 508, 482, .7, "blue")
+    assert drop_part_boxes([robot, bumpers, neighbour]) == [robot, neighbour]
+    assert drop_part_boxes([bumpers]) == [bumpers]
+    assert other_alliance in drop_part_boxes([robot, other_alliance])

@@ -1,0 +1,17 @@
+{
+  "match_key": "2025casj_qm1",
+  "reviewer_type": "user_verified_footage",
+  "usage": "test_only; never a training label",
+  "source": "User instructions and docs/HANDOFF_ATTRIBUTION_20261104.md section 3",
+  "teams": {"red": [6059, 10059, 668], "blue": [649, 1351, 6418]},
+  "aggregate_checks": [
+    {"alliance": "blue", "phase": "auto", "kind": "L4", "counts": {"1351": 3, "6418": 1, "649": 0}}
+  ],
+  "labels": [
+    {"id": "teleop_204_net", "status": "accepted", "alliance": "blue", "team": 1351, "kind": "net", "post_t": 37.04},
+    {"id": "teleop_144_L4", "status": "accepted", "alliance": "blue", "team": 6418, "kind": "L4", "post_t": 57.56},
+    {"id": "teleop_055_L3", "status": "accepted", "alliance": "blue", "team": 6418, "kind": "L3", "post_t": 106.61},
+    {"id": "teleop_053_L4", "status": "accepted", "alliance": "blue", "team": 1351, "kind": "L4", "post_t": 108.61},
+    {"id": "teleop_015_L3", "status": "accepted", "alliance": "blue", "team": 1351, "kind": "L3", "post_t": 148.15}
+  ]
+}

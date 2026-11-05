@@ -258,3 +258,92 @@ def test_event_prior_favours_the_teams_that_score_and_skips_this_match(monkeypat
     w = {t: v["L4"] for a in prior for t, v in prior[a].items()}
     assert w[1] > 2 * w[rows[0].red[1]] and w[2] < 1
     assert plugin.event_prior("qm0", rows[:5]) is None  # too few other matches
+
+
+def _cam_ctx(boxes, reach=None):
+    from autoscout import games
+    from autoscout.games.base import MatchContext
+
+    ctx = MatchContext(match=None, field=games.get(2025).field, cal=None, clock=None, timeline=None,
+                       tracks={}, identity={}, identity_conf={}, launches={})
+    ctx.aux_boxes = boxes
+    ctx.aux_reach = reach or [None] * len(boxes)
+    return ctx
+
+
+def test_closeup_placement_favours_the_robot_with_its_elevator_up():
+    from autoscout import games
+
+    plugin = games.get(2025)
+    pl = {"elem": "blue_reef@cam", "t": 10.0, "x": 300.0, "y": 800.0}
+    # two robots both under the new coral; only one has its mechanism raised
+    boxes = [[10.0, "blue_reef", 250, 850, 350, 950, "blue", 1, 1.0],
+             [10.0, "blue_reef", 260, 850, 360, 950, "blue", 2, 1.0]]
+    shares = plugin._cam_placement_credit(_cam_ctx(boxes, [0.9, 0.0]), "blue", [1, 2, 3], pl)
+    assert shares[1] > 2 * shares[2]
+    # unmeasured reach is neutral
+    shares = plugin._cam_placement_credit(_cam_ctx(boxes), "blue", [1, 2, 3], pl)
+    assert abs(shares[1] - shares[2]) < 0.05
+
+
+def test_closeup_robot_shown_elsewhere_did_not_place_the_coral():
+    from autoscout import games
+
+    plugin = games.get(2025)
+    # coral appears at the left of the close-up; the only robot boxed there is far right (2025casj qm1,
+    # where the real placer was cut off at the camera's edge)
+    pl = {"elem": "blue_reef@cam", "t": 12.2, "x": 409.0, "y": 783.0}
+    boxes = [[12.5, "blue_reef", 692, 865, 805, 932, "blue", 1351, 1.0]]
+    shares, fit = plugin._cam_placement_credit(_cam_ctx(boxes), "blue", [649, 1351, 6418], pl, True)
+    assert 1351 not in shares and shares == {649: .5, 6418: .5} and 0 < fit < 1
+    # with nobody boxed at all the close-up says nothing
+    assert plugin._cam_placement_credit(_cam_ctx([]), "blue", [649, 1351, 6418], pl) == {}
+
+
+def test_weak_placement_geometry_does_not_override_other_evidence(monkeypatch):
+    from autoscout import games
+    from autoscout.games.base import MatchContext
+
+    plugin = games.get(2025)
+    ctx = MatchContext(match=None, field=plugin.field, cal=None, clock=None, timeline=None,
+                       tracks={}, identity={}, identity_conf={}, launches={})
+    ctx.element_changes = [{"elem": "blue_reef", "t": 9.0, "x": 0, "y": 0}]
+    ctx.match = type("M", (), {"teams": staticmethod(lambda a: [1, 2, 3])})()
+    monkeypatch.setattr(plugin, "_reef_model", lambda ctx: {})
+    # only robot 1 is visible near the reef, and even it fits the spot poorly
+    monkeypatch.setattr(plugin, "_placement_credit", lambda *a, **k: ({1: 1.0}, 0.35))
+    actions = [{"t": 10.0, "cat": "L4", "piece": "coral", "p": {1: 0.1, 2: 0.8, 3: 0.1}, "conf": 1.0}]
+    plugin._match_placements(ctx, "blue", actions)
+    assert max(actions[0]["p"], key=actions[0]["p"].get) == 2
+
+
+def test_closeup_trough_change_cannot_consume_a_high_coral_post():
+    from types import SimpleNamespace
+    plugin = Reefscape2025()
+    ctx = SimpleNamespace(cal=SimpleNamespace(aux_watch={"blue_reef": [0, 0, 320, 320]}))
+    actions = [{"t": 20., "cat": "L4"}, {"t": 21., "cat": "L4"}]
+    placements = [{"elem": "blue_reef@cam", "t": t, "h": h}
+                  for t, h in [(17.2, .7), (19.1, .71), (19.1, .2)]]
+    paired = plugin._pair(actions, [0, 1], placements, lambda p, level: plugin._cam_level_px(ctx, p, level))
+    assert len(paired) == 2
+    assert all(p["h"] > .6 for _, p in paired)
+
+
+def test_joint_credit_compares_placement_times_with_estimated_placement_times():
+    actions = [{"t": 20., "t_place": 17.5, "piece": "coral", "cat": "L3", "p": {1: .95, 2: .05}},
+               {"t": 21.2, "piece": "coral", "cat": "L4", "p": {1: .6, 2: .4}}]
+    credit = Reefscape2025.assign_actions(actions, [1, 2])
+    assert credit[0][1] > credit[0][2]
+    assert credit[1][2] > credit[1][1]
+
+
+def test_a_robot_across_the_barge_is_not_at_its_own_net():
+    from types import SimpleNamespace
+    from autoscout.games.reefscape2025 import Reefscape2025
+
+    plugin = Reefscape2025()
+    track = [(i / 10, 9.5, 5.0, True, None) for i in range(20)]  # blue, just past midfield
+    plugin._fresh = lambda ctx, slot: track
+    assert plugin._dwell(SimpleNamespace(), "blue0", 0, 2, "blue")["net"] == 0
+    track[:] = [(i / 10, 8.0, 5.0, True, None) for i in range(20)]
+    assert plugin._dwell(SimpleNamespace(), "blue0", 0, 2, "blue")["net"] > 1.5

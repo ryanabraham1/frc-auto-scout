@@ -56,6 +56,7 @@ MATCH_APP_TOP = 3  # a team's similarity: mean of its closest anchors
 ANCHOR_COST = 10.0  # cost per unit of clear bumper read for labelling that tracklet as anyone else
 NOT_ROBOT = 0  # manual label: the tracklet is not a robot (a person, a cart...)
 NEAR = 0.8  # m: two robots this close can be confused, so their tracklets are cut
+PART_HEIGHT, PART_BOTTOM = 0.6, 0.25  # a box under this share of a robot's height, this near its bottom, is its bumpers
 LINK_GAP = 0.3  # s: longest miss a tracklet continues across
 # Track-guided detection: the detector runs at a low threshold, and a detection below STRONG_CONF
 # only extends a robot already tracked, where its motion says it should be (half hidden behind a
@@ -174,6 +175,7 @@ class RobotTracker:
         from .identity import read_team_numbers_many
 
         self.times.append(t)
+        dets = drop_part_boxes(dets)
         foot = self.cal.to_field([d.foot for d in dets]) if dets else np.zeros((0, 2))
         keep = [i for i in range(len(dets)) if self.fm.in_field(foot[i], getattr(self.fm, "robot_margin", 0.6))
                 and not self.fm.inside_solid(foot[i]) and not self._is_solid_skirt(dets[i])
@@ -829,6 +831,17 @@ class RobotTracker:
 
     def all_slots(self) -> list[Slot]:
         return list(self.slots.values())
+
+
+def drop_part_boxes(dets: list[Det]) -> list[Det]:
+    """Remove boxes around just the bottom of a robot that has its own full box (the detector often boxes
+    the bumpers as well). The two share a foot point, so as "two robots" closer than NEAR they would cut
+    each other's tracklets every frame, and a robot in plain view would vanish from its track."""
+    def part_of(s: Det, f: Det) -> bool:
+        return (s.alliance == f.alliance and s.h < PART_HEIGHT * f.h and f.x0 <= (s.x0 + s.x1) / 2 <= f.x1
+                and abs(s.y1 - f.y1) < PART_BOTTOM * f.h)
+
+    return [d for d in dets if not any(part_of(d, f) for f in dets if f is not d)]
 
 
 def _overlap(a: Tracklet, b: Tracklet, tol: float = 0.15) -> bool:

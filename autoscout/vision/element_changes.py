@@ -65,6 +65,7 @@ class ElementWatcher:
             C = np.concatenate([np.zeros((1,) + M.shape[1:], np.float32), np.cumsum(M, 0)])
             best = np.zeros(M.shape[1:], np.float32)
             best_t = np.zeros(M.shape[1:], np.float32)
+            closed = np.zeros(M.shape[1:], bool)
             for i, t in enumerate(T):
                 b0, b1 = np.searchsorted(T, [t + BEFORE[0], t + BEFORE[1]])
                 a0, a1 = np.searchsorted(T, [t + AFTER[0], t + AFTER[1]])
@@ -74,7 +75,12 @@ class ElementWatcher:
                 before = (C[b1] - C[b0]) / (b1 - b0)
                 after = (C[a1] - C[a0]) / (a1 - a0)
                 s = np.where((before <= CLEAR) & (after >= PRESENT), after - before, 0)
-                upd = s > best
+                # Keep the first persistent appearance. A robot can later hide
+                # and uncover an already-scored coral with greater contrast;
+                # choosing the strongest transition over the whole match would
+                # move that original placement to the later robot's visit.
+                closed |= (best > 0) & (s == 0)
+                upd = (s > best) & ~closed
                 best[upd], best_t[upd] = s[upd], t
             on = (best > 0).astype(np.uint8)
             on &= cv2.morphologyEx(on, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))  # (even kernels shift: keep within)

@@ -6,6 +6,7 @@ import csv
 import json
 import sys
 import traceback
+from pathlib import Path
 
 from . import config
 
@@ -64,6 +65,12 @@ def _work(match_key, video_path, opts):
     except Exception as e:
         traceback.print_exc()
         return match_key, None, ("error", str(e))
+
+
+def cmd_coral(a):
+    from .pipeline import coral_pass
+
+    print("coral placements", len(coral_pass(a.key).get("coral_changes", [])))
 
 
 def cmd_run_event(a):
@@ -274,6 +281,13 @@ def cmd_serve(a):
     uvicorn.run("autoscout.web.app:app", host=a.host, port=a.port, reload=False)
 
 
+def cmd_serve_integration(a):
+    import uvicorn
+    from .integration import create_app
+
+    uvicorn.run(create_app(), host=a.host, port=a.port, reload=False)
+
+
 def cmd_label_seeds(a):
     from .train.sam_label import main
 
@@ -292,6 +306,19 @@ def cmd_report(a):
     from .validate import event_report
 
     print(event_report(db.connect(), a.event_key))
+
+
+def cmd_review_eval(a):
+    import json
+
+    from .pipeline import RESULTS_DIR
+    from .review import evaluate_all
+
+    rep = evaluate_all(RESULTS_DIR, a.event_key, include_ai=a.include_ai)
+    if a.out:
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(a.out).write_text(json.dumps(rep, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({k: v for k, v in rep.items() if k != "rows"}, indent=2))
 
 
 def cmd_export(a):
@@ -327,6 +354,8 @@ def main(argv=None):
     s.add_argument("key"); s.set_defaults(f=cmd_rescore)
     s = sub.add_parser("watch-elements", help="find pieces placed on scoring elements (2025 coral) in saved matches")
     s.add_argument("key"); s.set_defaults(f=cmd_watch_elements)
+    s = sub.add_parser("coral-pass", help="find coral on REEF branches in a saved match, then reanalyze")
+    s.add_argument("key"); s.set_defaults(f=cmd_coral)
     s = sub.add_parser("lift-pass", help="measure robots' elevator/arm reach above the chassis in saved matches")
     s.add_argument("key"); s.set_defaults(f=cmd_lift)
     s = sub.add_parser("calibrate-cams", help="fit the close-up cameras from robots seen in them and the wide shot")
@@ -342,6 +371,9 @@ def main(argv=None):
     s.add_argument("--t", type=float); s.set_defaults(f=cmd_calibrate)
     s = sub.add_parser("serve"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8000)
     s.set_defaults(f=cmd_serve)
+    s = sub.add_parser("serve-integration", help="authenticated job API for the scouting app")
+    s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8001)
+    s.set_defaults(f=cmd_serve_integration)
     s = sub.add_parser("label-seeds"); s.add_argument("seed_file"); s.set_defaults(f=cmd_label_seeds)
     s = sub.add_parser("train-robots"); s.add_argument("--base"); s.add_argument("--epochs", type=int, default=60)
     s.add_argument("--hand-only", action="store_true", help="fine-tune using corrected frames only")
@@ -349,6 +381,10 @@ def main(argv=None):
     s.add_argument("--lr0", type=float, default=0.0003)
     s.add_argument("--imgsz", type=int, default=1280); s.add_argument("--batch", type=int, default=8); s.set_defaults(f=cmd_train)
     s = sub.add_parser("report"); s.add_argument("event_key"); s.set_defaults(f=cmd_report)
+    s = sub.add_parser("review-eval", help="score saved results against dashboard-reviewed scorer labels")
+    s.add_argument("event_key", nargs="?"); s.add_argument("--out")
+    s.add_argument("--include-ai", action="store_true", help="also score the AI-reviewed pilot label files")
+    s.set_defaults(f=cmd_review_eval)
     s = sub.add_parser("export"); s.add_argument("event_key"); s.add_argument("--out", default="scouting.csv")
     s.set_defaults(f=cmd_export)
     a = p.parse_args(argv)

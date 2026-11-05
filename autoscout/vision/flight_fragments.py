@@ -57,7 +57,7 @@ def join_hub_fragments(launches, hub_zone, shooters, pixel_scale=1.0):
         source = sources[i][0]
         entry = entries[j]
         pts = sorted([*source.pts,*entry.pts], key=lambda p:p[0])
-        merged = replace(source, t1=entry.t1, end=entry.end, target=entry.target,
+        merged = replace(source, t1=entry.t1, end=entry.end, target=entry.target, entry_t=entry.entry_t,
                          pts=pts, apex=tuple(min(pts,key=lambda p:p[2])[1:3]))
         accepted.append((source,entry,merged))
     replacements = {id(s): m for s,e,m in accepted}

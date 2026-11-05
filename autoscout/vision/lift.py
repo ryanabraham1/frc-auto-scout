@@ -73,7 +73,7 @@ def _mask(bg, img):
     return cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
 
 
-def collect(video, result: dict, view, aux_views: dict | None = None) -> tuple[dict[str, list], list]:
+def collect(video, result: dict, view, aux_views: dict | None = None, normalize_aux: bool = False) -> tuple[dict[str, list], list]:
     """({slot: [[t, reach], ...]} for the wide shot's observed boxes, [reach or None per aux_boxes entry])."""
     vx, vy, vw, vh = view
     clk = result["clock"]
@@ -87,7 +87,11 @@ def collect(video, result: dict, view, aux_views: dict | None = None) -> tuple[d
     aux_reach: list = [None] * len(aux)
     cam_bg = {k: _subtractor() for k in (aux_views or {})}
     step = max(1, int(round(video.fps / HZ)))
+    from .aux_views import AuxViewNormalizer
+    normalize = AuxViewNormalizer(video.frame_at(clk["teleop_end_vt"] - clk["teleop_len"] + 20),
+                                  aux_views if normalize_aux else None)
     for t, frame in video.iter_frames(t0, t1, step=step):
+        frame = normalize(frame)
         fg = _mask(wide_bg, frame[vy: vy + vh, vx: vx + vw])
         now = {}
         for s, rr in rows.items():

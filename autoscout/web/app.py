@@ -857,3 +857,155 @@ def accuracy(event_key: str):
 def detector_benchmark():
     p = config.DATA_DIR / "det_eval" / "results.json"
     return json.loads(p.read_text()) if p.exists() else []
+
+
+# ---- review: blind human labels of who scored, the ground truth for attribution accuracy ----------
+MATCH_KEY = r"20\d\d[a-z0-9]+_(?:qm\d+|(?:ef|qf|sf|f)\d+m\d+)"
+REVIEW_CLIPS = config.DATA_DIR / "review_clips"
+_RESULT_CACHE: dict[str, tuple[float, dict]] = {}
+_FRAME_SIZE: dict[str, tuple[int, int] | None] = {}
+
+
+def _review_result(match_key: str) -> dict:
+    """A saved match result, parsed once per change (they are several MB)."""
+    if not re.fullmatch(MATCH_KEY, match_key):
+        raise HTTPException(400, "bad match key")
+    p = _results() / f"{match_key}.json"
+    if not p.exists():
+        raise HTTPException(404, "process the match first")
+    mt = p.stat().st_mtime
+    hit = _RESULT_CACHE.get(match_key)
+    if hit and hit[0] == mt:
+        return hit[1]
+    try:
+        r = json.loads(p.read_text())
+    except ValueError:
+        raise HTTPException(409, "the result is being written; try again in a moment")
+    keep = {k: r.get(k) for k in ("match_key", "event_key", "year", "label", "red", "blue", "video", "events", "clock")}
+    _RESULT_CACHE.clear()  # one match at a time is being reviewed; don't hold many large results
+    _RESULT_CACHE[match_key] = (mt, keep)
+    return keep
+
+
+def _review_video(r: dict) -> Path | None:
+    from ..video import VIDEO_DIR
+
+    vid = r.get("video")
+    if not vid or not re.fullmatch(r"[\w-]+", vid):
+        return None
+    return next((p for p in sorted(VIDEO_DIR.glob(f"{vid}.*")) if p.suffix in (".mp4", ".mkv", ".webm")), None)
+
+
+def _frame_size(src: Path) -> tuple[int, int] | None:
+    if str(src) not in _FRAME_SIZE:
+        cap = cv2.VideoCapture(str(src))
+        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        _FRAME_SIZE[str(src)] = (w, h) if w and h else None
+    return _FRAME_SIZE[str(src)]
+
+
+def _review_counts(match_key: str, cands: list[dict]) -> dict:
+    from .. import review
+
+    doc = review.load_labels(match_key)
+    ids = {c["id"] for c in cands}
+    labels = [x for x in (doc or {}).get("labels", []) if x["id"] in ids]
+    return {"n_candidates": len(cands), "labelled": len(labels)}
+
+
+@app.get("/api/review")
+def review_index(event: str = ""):
+    """Processed matches that can be reviewed, with how many of their actions are labelled."""
+    from .. import review
+
+    if event:
+        _event_key(event)
+    out = []
+    for p in sorted(_results().glob(f"{event or '20'}*_*.json")):
+        mk = p.stem
+        if not re.fullmatch(MATCH_KEY, mk) or (event and not mk.startswith(event + "_")):
+            continue
+        doc = review.load_labels(mk)
+        out.append({"match_key": mk, "event_key": mk.split("_")[0],
+                    "labelled": len((doc or {}).get("labels", [])), "updated": p.stat().st_mtime})
+    return out
+
+
+@app.get("/api/review/summary")
+def review_summary(event: str = ""):
+    """Accuracy of the saved results against every dashboard-reviewed label."""
+    from .. import review
+
+    if event:
+        _event_key(event)
+    rep = review.evaluate_all(_results(), event or None)
+    rep["rows"] = [r for r in rep["rows"] if not r["correct"]][:200]  # the misses, to look at
+    return rep
+
+
+@app.get("/api/review/{match_key}")
+def review_match(match_key: str, action: str = ""):
+    """The match's review queue, without the system's answers (they show once a label is saved)."""
+    from .. import review
+
+    r = _review_result(match_key)
+    cands = review.candidates(r)
+    if action:
+        cands = [c for c in cands if c["action"] == action]
+    doc = review.load_labels(match_key) or {}
+    labels = {x["id"]: x for x in doc.get("labels", [])}
+    src = _review_video(r)
+    return {"match_key": match_key, "event_key": r.get("event_key"), "year": r.get("year"), "label": r.get("label"),
+            "teams": {"red": r.get("red", []), "blue": r.get("blue", [])},
+            "video": bool(src), "frame_size": _frame_size(src) if src else None,
+            "youtube": r.get("video"), "actions": sorted({c["action"] for c in review.candidates(r)}),
+            "candidates": [dict(review.blind(c), reveal=_reveal(c) if c["id"] in labels else None) for c in cands],
+            "labels": labels, **_review_counts(match_key, cands)}
+
+
+def _reveal(c: dict) -> dict:
+    return {"predicted": c["predicted"], "shares": c["shares"]}
+
+
+@app.post("/api/review/{match_key}")
+def review_save(match_key: str, body: dict):
+    """{id, team (int | "HP" | null), status: accepted|uncertain|rejected, note?, reviewer?}; returns the
+    system's answer for that action now that the person's own is saved."""
+    from .. import review
+
+    r = _review_result(match_key)
+    cand = next((c for c in review.candidates(r) if c["id"] == body.get("id")), None)
+    if cand is None:
+        raise HTTPException(404, "no such action in this match")
+    if body.get("status") == "clear":
+        review.delete_label(match_key, cand["id"])
+        return {"label": None, "reveal": None}
+    try:
+        label = review.save_label(r, cand, body.get("team"), body.get("status", "accepted"),
+                                  str(body.get("reviewer") or ""), str(body.get("note") or ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"label": label, "reveal": _reveal(cand)}
+
+
+@app.get("/api/review/{match_key}/clip.mp4")
+def review_clip(match_key: str, t0: float, t1: float):
+    """A short, seekable, 720p clip of the broadcast (video seconds t0..t1), cut once and cached."""
+    r = _review_result(match_key)
+    if not (math.isfinite(t0) and math.isfinite(t1) and 0 <= t0 < t1 and t1 - t0 <= 20):
+        raise HTTPException(400, "clip must be 0 < length <= 20 s")
+    src = _review_video(r)
+    if src is None:
+        raise HTTPException(404, "match video is not downloaded")
+    out = REVIEW_CLIPS / match_key / f"{t0:.2f}_{t1:.2f}.mp4"
+    if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(".part.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t0:.3f}", "-i", str(src), "-t", f"{t1 - t0:.3f}",
+                        "-vf", "scale=1280:-2", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+                        "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(tmp)], check=False, timeout=120)
+        if not tmp.exists() or tmp.stat().st_size == 0:
+            raise HTTPException(500, "could not cut the clip (is ffmpeg on PATH?)")
+        tmp.replace(out)
+    return FileResponse(out, media_type="video/mp4")

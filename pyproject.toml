@@ -9,13 +9,13 @@ description = "Automated FRC match scouting from broadcast video"
 requires-python = ">=3.10"
 dependencies = [
   "numpy", "scipy", "opencv-python-headless", "requests", "pyyaml",
-  "fastapi", "uvicorn", "yt-dlp[default]", "easyocr", "ultralytics", "lap", "filelock",
-  "timm", "pytorch_lightning", "certifi", "psutil",  # PARSeq bumper-number recognizer (torch.hub baudm/parseq)
+  "fastapi", "pydantic>=2", "uvicorn", "yt-dlp[default]", "easyocr", "ultralytics", "lap", "filelock",
+  "timm", "pytorch_lightning", "nltk", "certifi", "psutil",  # PARSeq bumper-number recognizer (torch.hub baudm/parseq)
   "pyobjc-framework-Vision; sys_platform == 'darwin'",  # Apple Vision OCR for bumper numbers
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "httpx"]
 ml = ["scikit-learn"]
 
 [project.scripts]

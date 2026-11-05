@@ -17,3 +17,5 @@ data_orig/
 demos/
 weights/
 /yolo*.pt
+benchmarks/attribution/*.lock
+benchmarks/attribution/*.tmp

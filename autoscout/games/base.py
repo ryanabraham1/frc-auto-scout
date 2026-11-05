@@ -21,6 +21,7 @@ from ..tba import MatchInfo
 from ..vision.tracker import slot_position_at
 
 REGISTRY: dict[int, type["GamePlugin"]] = {}
+TRACE_MIN_DX = 25.0  # px of sideways travel a flight needs before its arc is run back to a shooter
 
 
 @dataclass
@@ -41,6 +42,7 @@ class MatchContext:
     blobs: dict = field(default_factory=dict, repr=False)  # piece -> moving-piece blobs (t, x, y, area, w, h)
     blob_view: tuple | None = None  # image offset of the blob coordinates
     lift_obs: dict = field(default_factory=dict)  # slot -> [[t, reach above the chassis]] (vision/lift.py)
+    coral_changes: list = field(default_factory=list)  # coral detected resting on a REEF branch (coral_track.py)
     element_changes: list = field(default_factory=list)  # pieces seen appearing on elements (element_changes.py)
     _ts: dict = field(default_factory=dict, repr=False)  # slot -> track times (lookup cache)
 
@@ -226,7 +228,16 @@ class GamePlugin:
         P = np.asarray(launch.pts, dtype=float)
         if len(P) < 4:
             return {}
-        cx, cy, _ = fit_flight(P)
+        cx, cy, rms = fit_flight(P)
+        # Short noisy fragments produce explosive backwards extrapolations.
+        # Their fit must explain the observed flight before it can name a robot.
+        if not np.isfinite(rms) or rms > 6.0 or cy[0] <= 0:
+            return {}
+        # A ball seen only dropping almost straight down (into a HUB's opening) has no sideways travel to
+        # run back along: its "arc" ends just under where it was seen, which named whichever robot stood
+        # beside the HUB for every ball that fell in.
+        if np.ptp(P[:, 1]) < TRACE_MIN_DX:
+            return {}
         dvy = np.polyder(cy)
         out = {}
         for dt in np.arange(0.0, -max_back, -0.05):
@@ -245,6 +256,19 @@ class GamePlugin:
                 if d < out.get(slot, (9.0,))[0]:
                     out[slot] = (d, P[0, 0] + dt)
         return out
+
+    @staticmethod
+    def release_time(ctx: MatchContext, launch, slot: str) -> float:
+        """Time at the selected shooter, rather than first sighting in mid-air."""
+        direct = GamePlugin.launch_distances(ctx, launch, (slot[:-1],)).get(slot)
+        if getattr(launch, "rising", True) and direct is not None:
+            distance, observed = direct
+            if observed and distance < 0.6:
+                return launch.t0
+        traced = GamePlugin.trace_distances(ctx, launch, (slot[:-1],)).get(slot)
+        if traced is not None and traced[0] < 0.6:
+            return float(traced[1])
+        return launch.t0
 
     @staticmethod
     def proportional_split(total: float, weights: dict[str, float], fallback: dict[str, float] | None = None):
