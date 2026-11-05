@@ -258,8 +258,8 @@ The merge brought in origin's FUEL credit rules. `SPLIT_BY="live"` now credits o
 observed makes support, so the rest stays uncredited instead of being spread across teams.
 Reanalysing the 22 cached matches with merged code leaves 1,753 fuel uncredited, against 0 in
 the saved results, and changes team totals by 2,294 in absolute terms. Held-out within-alliance
-correlation is 0.312 against 0.336 (-0.023, CI -0.065 to +0.018), which is within noise. Saved
-results still use the earlier rules, so they differ from anything processed or reanalysed now.
+correlation is 0.312 against 0.336 (-0.023, CI -0.065 to +0.018), which is within noise. `scripts/reanalyze_2026cc.py` then applied these rules to the 22 saved results; the previous
+results and database are in `data/2026cc_before_merged_rules`.
 
 Where both sides differed, stream consensus now only fills missing shooters, as origin does.
 That replaces the local protected-release rule. `scripts/replay_current_code.py` reproduces
