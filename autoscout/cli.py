@@ -67,6 +67,12 @@ def _work(match_key, video_path, opts):
         return match_key, None, ("error", str(e))
 
 
+def cmd_coral(a):
+    from .pipeline import coral_pass
+
+    print("coral placements", len(coral_pass(a.key).get("coral_changes", [])))
+
+
 def cmd_run_event(a):
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 
@@ -348,6 +354,8 @@ def main(argv=None):
     s.add_argument("key"); s.set_defaults(f=cmd_rescore)
     s = sub.add_parser("watch-elements", help="find pieces placed on scoring elements (2025 coral) in saved matches")
     s.add_argument("key"); s.set_defaults(f=cmd_watch_elements)
+    s = sub.add_parser("coral-pass", help="find coral on REEF branches in a saved match, then reanalyze")
+    s.add_argument("key"); s.set_defaults(f=cmd_coral)
     s = sub.add_parser("lift-pass", help="measure robots' elevator/arm reach above the chassis in saved matches")
     s.add_argument("key"); s.set_defaults(f=cmd_lift)
     s = sub.add_parser("calibrate-cams", help="fit the close-up cameras from robots seen in them and the wide shot")

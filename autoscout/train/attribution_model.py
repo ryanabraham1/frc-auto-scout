@@ -112,11 +112,14 @@ def groups(match_key: str, scouting: dict) -> list[dict]:
             rows = [i for i, m in enumerate(meta) if m[0] == a and m[1] == phase]
             if total < 5 or not rows:
                 continue
-            order = [int(t) for t in meta[rows[0]][3:6]]
-            if set(order) != set(teams):
+            order = sorted(teams)
+            # Columns are tracker slots; a slot can change owner mid-match, so line each flight up by team.
+            rows = [i for i in rows if set(int(t) for t in meta[i][3:6]) == set(teams)]
+            if not rows:
                 continue
+            cols = [[[int(t) for t in meta[i][3:6]].index(tm) for tm in order] for i in rows]
             rule = np.array([rules.get(t, np.zeros(2))[phase] for t in order], float)
-            out.append({"match": match_key, "X": X[rows], "n": np.array([meta[i][2] for i in rows], float),
+            out.append({"match": match_key, "X": np.stack([X[i][c] for i, c in zip(rows, cols)]), "n": np.array([meta[i][2] for i in rows], float),
                         "share": np.array([teams[t][phase] / total for t in order]), "total": total,
                         "rule": rule / rule.sum() if rule.sum() else np.full(3, 1 / 3), "phase": phase})
     return out
@@ -143,16 +146,33 @@ def fit(train: list[dict]) -> np.ndarray:
     return minimize(loss, np.zeros(len(FEATURES)), method="L-BFGS-B", options={"maxiter": 200}).x
 
 
-def cross_validate(all_groups: list[dict], folds: int = 5) -> dict:
-    """Mean absolute share error on matches held out of training, for the model, the rules and an equal split."""
+def cross_validate(all_groups: list[dict], folds: int = 5, seed: int = 0) -> dict:
+    """Mean absolute share error on matches held out of training, for the model, the rules and an equal
+    split, overall and per period, with a bootstrap over matches of the model's gain on the rules."""
     matches = sorted({g["match"] for g in all_groups})
-    err = {"model": [], "rules": [], "equal": []}
+    order = np.random.default_rng(seed).permutation(len(matches))
+    rows = []
     for f in range(folds):
-        held = set(matches[f::folds])
+        held = {matches[i] for i in order[f::folds]}
         w = fit([g for g in all_groups if g["match"] not in held])
         for g in all_groups:
             if g["match"] in held:
-                err["model"].append(np.abs(predict(w, g) - g["share"]).mean())
-                err["rules"].append(np.abs(g["rule"] - g["share"]).mean())
-                err["equal"].append(np.abs(1 / 3 - g["share"]).mean())
-    return {k: float(np.mean(v)) for k, v in err.items()} | {"groups": len(err["model"]), "matches": len(matches)}
+                rows.append((g["match"], g["phase"], np.abs(predict(w, g) - g["share"]).mean(),
+                             np.abs(g["rule"] - g["share"]).mean(), np.abs(1 / 3 - g["share"]).mean()))
+    out: dict = {"groups": len(rows), "matches": len(matches)}
+    for name, phase in (("all", None), ("auto", 0), ("teleop", 1)):
+        sel = [r for r in rows if phase is None or r[1] == phase]
+        if not sel:
+            continue
+        m, r, e = (np.array([x[i] for x in sel]) for i in (2, 3, 4))
+        names = sorted({x[0] for x in sel})
+        by = {k: [i for i, x in enumerate(sel) if x[0] == k] for k in names}
+        rng = np.random.default_rng(seed)
+        gains = []
+        for _ in range(2000):
+            pick = np.concatenate([by[names[i]] for i in rng.integers(len(names), size=len(names))])
+            gains.append((r[pick] - m[pick]).mean())
+        out[name] = {"model": round(float(m.mean()), 4), "rules": round(float(r.mean()), 4),
+                     "equal": round(float(e.mean()), 4), "n": len(sel),
+                     "gain_on_rules_ci95": [round(float(q), 4) for q in np.percentile(gains, [2.5, 97.5])]}
+    return out

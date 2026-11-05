@@ -312,3 +312,35 @@ def test_weak_placement_geometry_does_not_override_other_evidence(monkeypatch):
     actions = [{"t": 10.0, "cat": "L4", "piece": "coral", "p": {1: 0.1, 2: 0.8, 3: 0.1}, "conf": 1.0}]
     plugin._match_placements(ctx, "blue", actions)
     assert max(actions[0]["p"], key=actions[0]["p"].get) == 2
+
+
+def test_closeup_trough_change_cannot_consume_a_high_coral_post():
+    from types import SimpleNamespace
+    plugin = Reefscape2025()
+    ctx = SimpleNamespace(cal=SimpleNamespace(aux_watch={"blue_reef": [0, 0, 320, 320]}))
+    actions = [{"t": 20., "cat": "L4"}, {"t": 21., "cat": "L4"}]
+    placements = [{"elem": "blue_reef@cam", "t": t, "h": h}
+                  for t, h in [(17.2, .7), (19.1, .71), (19.1, .2)]]
+    paired = plugin._pair(actions, [0, 1], placements, lambda p, level: plugin._cam_level_px(ctx, p, level))
+    assert len(paired) == 2
+    assert all(p["h"] > .6 for _, p in paired)
+
+
+def test_joint_credit_compares_placement_times_with_estimated_placement_times():
+    actions = [{"t": 20., "t_place": 17.5, "piece": "coral", "cat": "L3", "p": {1: .95, 2: .05}},
+               {"t": 21.2, "piece": "coral", "cat": "L4", "p": {1: .6, 2: .4}}]
+    credit = Reefscape2025.assign_actions(actions, [1, 2])
+    assert credit[0][1] > credit[0][2]
+    assert credit[1][2] > credit[1][1]
+
+
+def test_a_robot_across_the_barge_is_not_at_its_own_net():
+    from types import SimpleNamespace
+    from autoscout.games.reefscape2025 import Reefscape2025
+
+    plugin = Reefscape2025()
+    track = [(i / 10, 9.5, 5.0, True, None) for i in range(20)]  # blue, just past midfield
+    plugin._fresh = lambda ctx, slot: track
+    assert plugin._dwell(SimpleNamespace(), "blue0", 0, 2, "blue")["net"] == 0
+    track[:] = [(i / 10, 8.0, 5.0, True, None) for i in range(20)]
+    assert plugin._dwell(SimpleNamespace(), "blue0", 0, 2, "blue")["net"] > 1.5

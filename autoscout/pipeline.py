@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -272,6 +273,8 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     aux_job = aux_pool.submit(collect_aux_reads, Video(video_path), base_cal, tl, {"red": m.red, "blue": m.blue},
                               plugin.aux_every, aux_boxes)
     watcher = element_watcher(cal, fm, plugin, (video.width, video.height), _aux_watch(base_cal, video))
+    from .vision.aux_views import AuxViewNormalizer
+    normalize_aux = AuxViewNormalizer(mid, _scaled_views(base_cal, video))
     cut = False
     n_frames = n_cut = 0
     finish_stage("model_and_tracking_setup")
@@ -287,7 +290,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
                     L.prev = None
                 continue
             if watcher is not None:
-                watcher.step(t, frame)
+                watcher.step(t, normalize_aux(frame))
             view = frame[y: y + h, x: x + w]
             lv = frame[lview[1]: lview[1] + lview[3], lview[0]: lview[0] + lview[2]]
             for L in launchers.values():
@@ -360,6 +363,8 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     ctx.aux_boxes = aux_boxes
     ctx.blobs, ctx.blob_view = blobs, tuple(lview)
     ctx.element_changes = watcher.changes() if watcher is not None else []
+    ctx.coral_changes = _coral_changes(match_key, m.event_key, plugin.year, video,
+                                       clock, normalize_aux)
     if ctx.element_changes:
         log(f"pieces placed on elements: {len(ctx.element_changes)}")
     if hasattr(plugin, "identity_evidence"):
@@ -379,7 +384,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         prog.update("analysis", 0.3, "measuring robots' reach", force=True)
         ctx.lift_obs, ctx.aux_reach = collect_reach(
             Video(video_path), {"clock": clock.to_dict(), "aux_boxes": aux_boxes, **_track_fields(tracks)}, cal.view,
-            _scaled_views(base_cal, video))
+            _scaled_views(base_cal, video), normalize_aux=True)
     fused = fuse_closeups(ctx, m.event_key)
     ctx.event_matches = _event_matches(tba, m)
     res = plugin.analyze(ctx)
@@ -400,11 +405,13 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "identity_timed": evidence.timed,
         "aux_reads": ctx.aux_reads,
         "aux_boxes": ctx.aux_boxes,
+        "aux_coordinates": "canonical",
         "fused_sightings": fused,
         "lift_obs": ctx.lift_obs,
         "aux_reach": getattr(ctx, "aux_reach", []),
         "fused_rows": getattr(ctx, "fused_rows", []),
         "element_changes": ctx.element_changes,
+        "coral_changes": ctx.coral_changes,
         "identity_timeline": ctx.identity_tl,
         "calibration": _cal_dict(cal, base_cal.scaled((video.width, video.height))),
         "detector": str(det.weights.name),
@@ -482,6 +489,7 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     ctx.aux_reads = [tuple(x) for x in old.get("aux_reads", [])]
     ctx.aux_boxes = old.get("aux_boxes", [])
     ctx.element_changes = old.get("element_changes", [])
+    ctx.coral_changes = old.get("coral_changes", [])
     ctx.lift_obs = old.get("lift_obs", {})
     ctx.aux_reach = old.get("aux_reach", [])
     bp = RESULTS_DIR / f"{match_key}_blobs.npz"
@@ -762,7 +770,12 @@ def collect_aux_reads(video: Video, base_cal: Calibration, timeline, teams: dict
     all_teams = {str(t): t for a in ("red", "blue") for t in teams[a]}
     words = list(all_teams)
     out = []
+    from .vision.aux_views import AuxViewNormalizer
+    reference_t = clock.teleop_start_vt + 20 if clock and hasattr(clock, "teleop_start_vt") else t0 + 30
+    normalize_aux = AuxViewNormalizer(video.frame_at(reference_t) if len(views) == 2 else None,
+                                      _scaled_views(base_cal, video))
     for t, frame in video.iter_frames(t0, t1, step=max(1, int(round(video.fps * every)))):
+        frame = normalize_aux(frame)
         for name, rect in views.items():
             x, y, w, h = [int(v) for v in (rect[0] * sx, rect[1] * sy, rect[2] * sx, rect[3] * sy)]
             if boxes_out is not None or not ocr.has_vision():
@@ -872,6 +885,40 @@ def element_watcher(cal: Calibration, fm, plugin, frame_size, aux_watch: dict | 
     return ElementWatcher(regions, frame_size) if regions else None
 
 
+def _coral_changes(match_key: str, event_key: str, year: int, video: Video, clock, normalize) -> list:
+    """Coral detected resting on the REEF in the close-ups (vision/coral_track.py); needs the detector
+    weights and the event's solved close-up cameras. The detections are kept beside the result."""
+    from .vision import coral_track
+
+    cams = coral_track.load_cameras(config.CONFIG_DIR / "events" / f"{event_key}_reef_cams.json")
+    if year != 2025 or not cams or coral_track.weights() is None or clock is None:
+        return []
+    side = RESULTS_DIR / f"{match_key}_coral.json"
+    if side.exists():
+        obs = json.loads(side.read_text())
+    else:
+        obs = coral_track.scan(video, clock.auto_end_vt - clock.auto_len - 1, clock.teleop_end_vt + 3, normalize)
+        side.write_text(json.dumps(obs))
+    return [p for a, (cam, origin) in cams.items() for p in coral_track.placements(obs, cam, a, origin)]
+
+
+def coral_pass(match_key: str, video_path: str | None = None) -> dict:
+    """Find coral placements in a saved match, then recompute its stats."""
+    from .vision.aux_views import AuxViewNormalizer
+
+    path = RESULTS_DIR / f"{match_key}.json"
+    old = json.loads(path.read_text())
+    video = Video(video_path or str(download(old["video"])))
+    base = Calibration.load(old["event_key"])
+    clk = old["clock"]
+    clock = SimpleNamespace(**clk)
+    normalize = AuxViewNormalizer(video.frame_at(clk["teleop_end_vt"] - clk["teleop_len"] + 20),
+                                  _scaled_views(base, video) if base else None)
+    old["coral_changes"] = _coral_changes(match_key, old["event_key"], old["year"], video, clock, normalize)
+    path.write_text(json.dumps(old, default=_json_default))
+    return reanalyze(match_key)
+
+
 def element_pass(match_key: str, video_path: str | None = None, save: bool = True) -> dict:
     """Watch the scoring elements of an already processed match for placed pieces, then reanalyze."""
     path = RESULTS_DIR / f"{match_key}.json"
@@ -888,6 +935,8 @@ def element_pass(match_key: str, video_path: str | None = None, save: bool = Tru
     if watcher is None:
         return old
     own_ref = video.frame_at(old["clock"]["teleop_end_vt"] - old["clock"]["teleop_len"] + 20)
+    from .vision.aux_views import AuxViewNormalizer
+    normalize_aux = AuxViewNormalizer(own_ref, _scaled_views(base, video) if base else None)
     clk = old["clock"]
     step = max(1, int(round(video.fps / HZ_ELEMENTS)))
     cut = False
@@ -896,7 +945,7 @@ def element_pass(match_key: str, video_path: str | None = None, save: bool = Tru
         if i % 2 == 0 and own_ref is not None:
             cut = view_similarity(frame, own_ref, cal.view) < 0.45
         if not cut:
-            watcher.step(t, frame)
+            watcher.step(t, normalize_aux(frame) if old.get("aux_coordinates") == "canonical" else frame)
     old["element_changes"] = watcher.changes()
     path.write_text(json.dumps(old, default=_json_default))
     return reanalyze(match_key, save=save)
@@ -913,7 +962,8 @@ def lift_pass(match_key: str, video_path: str | None = None) -> dict:
     video = Video(video_path)
     base = Calibration.load(old["event_key"])
     old["lift_obs"], old["aux_reach"] = collect(video, old, old["calibration"]["view"],
-                                                _scaled_views(base, video) if base else None)
+                                                _scaled_views(base, video) if base else None,
+                                                normalize_aux=old.get("aux_coordinates") == "canonical")
     path.write_text(json.dumps(old, default=_json_default))
     return reanalyze(match_key)
 
@@ -935,5 +985,7 @@ def aux_pass(match_key: str, video_path: str | None = None) -> dict:
     old["aux_reads"] = collect_aux_reads(Video(video_path), base, tl, {"red": old["red"], "blue": old["blue"]},
                                          games.get(old["year"]).aux_every, boxes)
     old["aux_boxes"] = boxes
+    old["aux_coordinates"] = "canonical"
+    old["aux_reach"] = []  # samples belonged to the previous boxes; measure again with lift_pass
     (RESULTS_DIR / f"{match_key}.json").write_text(json.dumps(old, default=_json_default))
     return reanalyze(match_key)

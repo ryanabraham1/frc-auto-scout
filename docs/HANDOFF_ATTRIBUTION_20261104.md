@@ -56,9 +56,10 @@ Game clock is the broadcast's countdown; `vt` is video seconds in the saved resu
 
 **2025casj_qm1, blue**
 - Auto L4 (verified from footage): 1351 = 3, 6418 = 1, 649 = 0.
-- 0:55 teleop L3 (+4 at vt 106.61) was scored by **1351**.
-- 0:53 teleop L4 (+5 at vt 108.61) was scored by **6418**. Still wrong on saved data after the
-  fixes (1351 0.69); the paired wide-shot placement and the one-coral-at-a-time joint step need a look.
+- 0:55 teleop L3 (+4 at vt 106.61) was scored by **6418**.
+- 0:53 teleop L4 (+5 at vt 108.61) was scored by **1351**. (Corrected by the user after a footage review: an
+  earlier version of this list had these two swapped. 6418's carriage places the lower branch at about 105 s and
+  1351's elevator drops the L4 at about 106 s.)
 - 0:15 teleop L3 (+4 at vt 148.15) was scored by **1351**. The close-up shows 1351's elevator up
   (aux box at vt 147.65, reach 1.02) but the lift needs two consecutive labelled samples; the denser
   0.25 s close-up sampling plus close-up tracks should supply them. Check after the re-run.
@@ -146,8 +147,33 @@ Results stay local, so a new machine must process them again. Don't use six work
 
 **Still open**
 - Why HUB-shadow links don't reach auto credit (first check whether those flights have `entry_t`; unconfirmed).
-- 0:53 L4: the L3 post pairs with the 107.51 placement (h 0.29, nearest L1), which leaves the L4 on 1351's 105.91
-  placement. Even unpaired, its evidence before placement favours 1351 at 0.87, because 6418 only arrives about 108 s.
+- 0:53 L4: closed. 1351 was right; see the correction in section 3. 6418 is at the REEF from about 101 s, not 108 s.
 - 0:15 L3: no placement pairs with it, and the close-ups box neither robot well at that moment.
 - Team totals sum shares while the video shows each action's top robot, so the two can disagree.
 - 2025new f1m1 auto has not been checked by hand.
+
+## 8. Update after the GPU run
+
+**Fixed and checked against footage**
+- Section 3's 0:55 and 0:53 calls were swapped; the user corrected them. `benchmarks/attribution/2025casj_qm1.user_verified.json`
+  holds every verified call for that match, including 1:44 L4 = 6418 and the 2:03 NET = 1351. Test set only.
+- 2026 linked flights lost their credit when a robot's estimated position was in the neutral zone, not because `entry_t` was
+  missing (all 91 had one). Tracked HUB entries now count.
+- Coral on the branches is detected directly (`vision/coral_track.py`, `coral-pass`), with REEF cameras solved from AprilTags
+  (`vision/field3d.py`). L4 tips on near and far faces overlap, so a coral keeps per-level face probabilities.
+- The detector often boxes a robot's bumpers as well as the robot. The tracker took those for two robots closer than `NEAR` and cut
+  both tracks every frame, so a robot in plain view vanished (336 of 668 tracklets in 2025casj_qm1). `drop_part_boxes` removes them.
+  2026 is barely affected (432 of about 286,000 observations at 2026cc), so 2026cc was not re-run.
+- Robots a close-up shows clearly elsewhere lose coral credit again; running coral pairing first had bypassed that check.
+- NET credit used only closeness, which saturates inside the zone. It now uses time at the NET just before the score and mechanism
+  reach, and NET time only counts on the robot's own side of the BARGE.
+
+**Still open**
+- `run-match` and `reanalyze` give different credit on the same data (2025casj_qm1: 0:55 L3 was 1351 at 0.50 after `run-match`,
+  6418 at 0.61 after `reanalyze`). Double fusion was tested and is not the cause. Run `reanalyze` after `run-match` until this is found.
+- Weak calls: 0:55 L3 (0.61; no coral detected between 100 and 110 s) and auto 14.01 (0.46 vs 0.38).
+- 2025new_f1m1 has not been re-run with the tracker fix; red auto over-credits 4272 (7 of 10 actions, about 3-4 by hand).
+- The trained model does not beat the rules. Mean share error on held-out 2026cc matches (51 matches, 168 groups): all 0.198 model,
+  0.197 rules, 0.239 equal; auto 0.251, 0.240, 0.285; teleop 0.147, 0.156, 0.195. The 95% interval on the gain over the rules
+  crosses zero in all three, so the rules stay in use. Both clearly beat an equal split. Scouted shares are noisy targets.
+- Demo videos in `docs/demos` predate these fixes.

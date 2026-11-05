@@ -38,6 +38,7 @@ ALGAE_MISMATCH = 5.0  # decoding cost per algae action more/fewer than the count
 UNMATCHED_W = 0.0  # weight of a coral seen placed that no score jump explains (off: hurt vs OPR, 15 matches)
 LEVEL_HEIGHTS = [("L4", 0.75), ("L3", 0.55), ("L2", 0.38), ("L1", -1.0)]  # placement height (0-1 of reef) -> level
 REACH_PRE, REACH_POST = 3.0, 0.7  # s around a post in which a robot's reach counts
+VISIT_MAX, VISIT_GAP = 4.0, 0.75  # s: how far a close-up lift is followed back along one visit, and the gap that ends it
 REACH_MIN = 0.2  # box heights of lift (over the robot's usual reach) that start to count
 REACH_BOOST = 1.0  # conservative weight: stronger reach weighting hurt on the pinned 35-match comparison
 REACH_ADD = 0.3  # credit (seconds-at-the-reef equivalent) for a robot at the reef that lifted
@@ -48,6 +49,8 @@ ALGAE_CREDIT = "near"  # "near": closeness + seen launches | "dwell": time at th
 COAST_MIN_SEEN = 3  # sightings in the seconds before a coast needed for it to count
 STALE_S = 3.0  # s a coasting (unseen) position stays usable after a sighting (a robot lost behind a REEF is usually still there)
 PLACE_MIN = 0.3  # a placement only credits robots near its spot (best robot's weight at least this)
+CORAL_PLACED = True  # a detected coral on a branch, when one pairs with the action, decides the placement
+CORAL_LEVEL_COST = 0.5  # pairing cost per level between a detected coral and its action (L2/L3 tips are close)
 CAM_PLACE_W = 1.0  # weight of a reef close-up placement next to a wide-shot one
 CAM_LIFT_FLOOR = 0.4  # close-up placement weight of a robot under the spot with its mechanism down
 CAM_LIFT_FULL = 0.6  # close-up reach (box heights above the chassis) that counts as fully raised
@@ -216,7 +219,9 @@ class Reefscape2025(GamePlugin):
             p = (r[1], r[2])
             if self.field.dist_to_element(p, f"{alliance}_reef") < NEAR["reef"] + DWELL_SLACK:
                 out["reef"] += dt
-            if self.field.dist_to_element(p, f"{alliance}_net_zone") < NEAR["net"] + DWELL_SLACK:
+            # The reach around the NET zone must not cross the BARGE: nobody shoots from the far side of it.
+            own_side = (p[0] < self.field.length / 2) == (self.field.elements[f"{alliance}_net_zone"]["center"][0] < self.field.length / 2)
+            if own_side and self.field.dist_to_element(p, f"{alliance}_net_zone") < NEAR["net"] + DWELL_SLACK:
                 out["net"] += dt
             if self.field.dist_to_element(p, f"{alliance}_processor") < NEAR["processor"] + DWELL_SLACK:
                 out["processor"] += dt
@@ -448,13 +453,24 @@ class Reefscape2025(GamePlugin):
             # algae seen flying from a robot just before the post
             near, _ = self._evidence(ctx, a, teams, t)
             w = {tm: np.exp(-d[elem] / SOFT_SCALE) for tm, d in near.items() if d[elem] <= NEAR[elem] + 1.0}
+            conf = min(1.0, sum(w.values()) / CONF_REF[elem])
+            if cat == "net":
+                # Closeness saturates inside the NET zone, so a robot driving through ties the shooter. The
+                # shooter stays until the shot and raises its mechanism to reach the NET.
+                _, dwell = self._evidence(ctx, a, teams, t, CREDIT_PRE, 0.0)
+                reaches = {tm: self._reach(ctx, tm, t - CREDIT_PRE, t + REACH_POST) for tm in w}
+                comparable = all(v is not None for v in reaches.values())
+                if any(d["net"] > 0 for d in dwell.values()):
+                    for tm in w:
+                        ev = min(max(reaches[tm] - REACH_MIN, 0.0), 1.0) if comparable else 0.0
+                        w[tm] *= dwell[tm]["net"] / CREDIT_PRE * (1 + REACH_BOOST * ev)
             # The NET is on the far side, where robots often go undetected: a robot the tracker can't see
             # right now is a real candidate, one clearly seen elsewhere is not.
             for tm in teams:
                 if UNSEEN_W > 0 and not self._seen(ctx, tm, t - 3.0, t + 0.5):
                     w[tm] = max(w.get(tm, 0.0), UNSEEN_W)
             tot = sum(w.values())
-            return ({tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}), min(1.0, tot / CONF_REF[elem])
+            return ({tm: v / tot for tm, v in w.items() if v > 0} if tot > 0 else {}), max(conf, min(1.0, tot / CONF_REF[elem]))
         near, dwell = self._evidence(ctx, a, teams, t, CREDIT_PRE, CREDIT_POST)
         w = {tm: d[elem] for tm, d in dwell.items()}
         # The reef close-up names the robots at that reef. In AUTO the robots there are the ones scoring; in
@@ -521,12 +537,27 @@ class Reefscape2025(GamePlugin):
                 cache[key] = float(np.median([r for _, r in samples])) if len(samples) >= 10 else 0.0
             # Motion behind a parked robot can persist for an entire reef visit.
             # A lift must exceed that recent background as well as its match norm.
-            before = [r for t, r in samples if t0 - 3.0 <= t < t0]
+            # A robot that raises its elevator and parks fades into the background model, so its reach falls
+            # to nothing while it is still placing. Measure from the start of the sighting run that reaches
+            # this window: that is the visit in which the lift happened.
+            start = Reefscape2025._visit_start(samples, t0) if key[0] == "cam" else t0
+            before = [r for t, r in samples if start - 3.0 <= t < start]
             base = max(cache[key], float(np.median(before))) if len(before) >= 3 else cache[key]
-            v = lift_score(samples, t0, t1, base)
+            v = lift_score(samples, start, t1, base)
             if v is not None:
                 scores.append(v)
         return max(scores) if scores else None
+
+    @staticmethod
+    def _visit_start(samples: list, t0: float) -> float:
+        """Start of the unbroken run of close-up samples that reaches t0, at most VISIT_MAX before it."""
+        times = sorted(t for t, _ in samples if t0 - VISIT_MAX <= t <= t0 + VISIT_GAP)
+        start = t0
+        for t in reversed([t for t in times if t <= t0]):
+            if start - t > VISIT_GAP:
+                break
+            start = t
+        return start
 
     @staticmethod
     def _aux_teams(ctx: MatchContext) -> list:
@@ -633,6 +664,19 @@ class Reefscape2025(GamePlugin):
         """Which robot put a coral seen appearing on the reef in the close-up camera there: the robot box
         in the same close-up under that spot around that moment, named by its bumper read or by the
         wide-shot track it was fused with (vision/fusion.py)."""
+        w = self._cam_under_spot(ctx, a, teams, pl)
+        if max(w.values(), default=0.0) < PLACE_MIN:
+            # Nobody boxed under the spot: the placer is cut off at the close-up's edge or hidden. Robots this
+            # close-up does show clearly elsewhere at that moment did not place it.
+            away = {tm for tm, v in w.items() if v < CAM_AWAY_MAX}
+            rest = [tm for tm in teams if tm not in w]
+            if away and rest:
+                shares = {tm: 1 / len(rest) for tm in rest}
+                return (shares, CAM_AWAY_FIT) if strength else shares
+        return _normalized(w, PLACE_MIN, strength)
+
+    def _cam_under_spot(self, ctx: MatchContext, a: str, teams: list[int], pl: dict) -> dict[int, float]:
+        """{team: how much the close-up shows it under a placement's spot}, for robots boxed around then."""
         view = pl["elem"].split("@")[0]
         named = self._aux_teams(ctx)
         reach = getattr(ctx, "aux_reach", None) or []
@@ -649,15 +693,34 @@ class Reefscape2025(GamePlugin):
             rv = reach[i] if i < len(reach) else None
             lift = 1.0 if rv is None else CAM_LIFT_FLOOR + (1 - CAM_LIFT_FLOOR) * min(max(rv, 0.0) / CAM_LIFT_FULL, 1.0)
             w[tm] = w.get(tm, 0.0) + float(np.exp(-dx / CAM_PLACE_PX)) * (1.0 - abs(bt - pl["t"]) / 1.5) * lift
-        if max(w.values(), default=0.0) < PLACE_MIN:
-            # Nobody boxed under the spot: the placer is cut off at the close-up's edge or hidden. Robots this
-            # close-up does show clearly elsewhere at that moment did not place it.
-            away = {tm for tm, v in w.items() if v < CAM_AWAY_MAX}
-            rest = [tm for tm in teams if tm not in w]
-            if away and rest:
-                shares = {tm: 1 / len(rest) for tm in rest}
-                return (shares, CAM_AWAY_FIT) if strength else shares
-        return _normalized(w, PLACE_MIN, strength)
+        return w
+
+    def _coral_credit(self, ctx: MatchContext, a: str, teams: list[int], pl: dict, level: str):
+        """Which robot put a coral detected on a branch there: the one in front of that branch's REEF face
+        when it appeared. Robots on other faces are at the REEF too, so distance alone says nothing."""
+        from ..vision.field3d import REEF_CENTRE, face_normal_deg
+
+        centre = np.array(REEF_CENTRE[a])
+        faces = pl.get("faces", {}).get(level) or {str(pl["face"]): 1.0}
+        w = {}
+        for team in teams:
+            best = 0.0
+            for dt in (-1.5, -1.0, -0.5, 0.0):
+                slot = ctx.slot_of(team, pl["t"] + dt)
+                r = ctx.robot_at(slot, pl["t"] + dt) if slot else None
+                if r is None or self.field.dist_to_element(r[:2], f"{a}_reef") > FACE_REACH:
+                    continue
+                off = np.array(r[:2], float) - centre
+                ang = np.degrees(np.arctan2(off[1], off[0]))
+                fit = sum(pk * np.exp(-0.5 * (((ang - face_normal_deg(a, int(k)) + 180) % 360 - 180) / FACE_SIGMA) ** 2)
+                          for k, pk in faces.items())
+                best = max(best, float(fit) * (1.0 if r[2] else FACE_UNSEEN))
+            w[team] = best
+        # A robot the close-up shows clearly elsewhere didn't place it, whatever its wide-shot angle suggests.
+        cam = self._cam_under_spot(ctx, a, teams, {**pl, "elem": f"{a}_reef"})
+        if max(cam.values(), default=0.0) < PLACE_MIN:
+            w.update({tm: w.get(tm, 0.0) * (1 - CAM_AWAY_FIT) for tm, v in cam.items() if v < CAM_AWAY_MAX})
+        return _normalized(w, FACE_MIN, True)
 
     def _pair(self, actions: list[dict], idx: list[int], pls: list[dict], level_px=None) -> list[tuple[int, dict]]:
         """One-to-one pairs (action index, placement) with the placement up to PLACE_WINDOW before the post
@@ -683,6 +746,23 @@ class Reefscape2025(GamePlugin):
         rows, cols = linear_sum_assignment(cost)
         return [(idx[r], pls[c]) for r, c in zip(rows, cols) if cost[r, c] < big]
 
+    @staticmethod
+    def _cam_level_px(ctx: MatchContext, pl: dict, level: str) -> float | None:
+        """Distance outside a level's height band in the calibrated reef crop.
+
+        Close-up matches need the same level plausibility check as the wide
+        shot. Otherwise a white change near the trough can consume an L4 post.
+        Bands are deliberately broad; geometry only rules out poor matches.
+        """
+        region = (getattr(ctx.cal, "aux_watch", None) or {}).get(pl["elem"].split("@")[0])
+        if region is None or "h" not in pl:
+            return None
+        levels = [name for name, _ in LEVEL_HEIGHTS]
+        i = levels.index(level)
+        lo = max(0., LEVEL_HEIGHTS[i][1])
+        hi = 1. if i == 0 else LEVEL_HEIGHTS[i - 1][1]
+        return (region[3] - region[1]) * max(lo - pl["h"], 0., pl["h"] - hi)
+
     def _match_placements(self, ctx: MatchContext, a: str, actions: list[dict]) -> None:
         """Pair decoded coral actions with coral seen placed on the alliance's reef, in the wide shot and in
         the reef close-up (each placement used once), and fold in who placed it: both views' answers are
@@ -692,6 +772,22 @@ class Reefscape2025(GamePlugin):
         idx = [i for i, A in enumerate(actions) if A["piece"] == "coral"]
         teams = list(ctx.match.teams(a))
         found: dict[int, list] = {}
+        # A detected coral is the better measure of the same event, so it goes first and the white-pixel
+        # changes are left for the actions it doesn't explain. It can only be a level with a tip near it.
+        if CORAL_PLACED:
+            coral = [p for p in getattr(ctx, "coral_changes", []) if p["elem"] == f"{a}_reef@coral"]
+            order = list(CORAL)
+
+            def coral_px(p, level):
+                if level not in p.get("faces", {}):
+                    return 1e6
+                return abs(order.index(p["level"]) - order.index(level)) * CORAL_LEVEL_COST * FACE_PX_REF / FACE_LEVEL_COST
+
+            for i, pl in self._pair(actions, idx, coral, coral_px):
+                pc, cs = self._coral_credit(ctx, a, teams, pl, actions[i]["cat"])
+                if pc:
+                    found[i] = [(pl, pc, 1.0, cs)]
+            idx = [i for i in idx if i not in found]
         wide = [p for p in ctx.element_changes if p["elem"] == f"{a}_reef"]
         level_px = (lambda p, L: self._level_px(ctx, p, L)) if self._reef_model(ctx) else None
         for i, pl in self._pair(actions, idx, wide, level_px):
@@ -704,7 +800,8 @@ class Reefscape2025(GamePlugin):
             if pc:
                 found.setdefault(i, []).append((pl, pc, 1.0, ps))
         if CAM_PLACE_W > 0:
-            for i, pl in self._pair(actions, idx, [p for p in ctx.element_changes if p["elem"] == f"{a}_reef@cam"]):
+            for i, pl in self._pair(actions, idx, [p for p in ctx.element_changes if p["elem"] == f"{a}_reef@cam"],
+                                    lambda p, level: self._cam_level_px(ctx, p, level)):
                 pc, cs = self._cam_placement_credit(ctx, a, teams, pl, True)
                 if pc:
                     found.setdefault(i, []).append((pl, pc, CAM_PLACE_W, cs))
@@ -758,7 +855,10 @@ class Reefscape2025(GamePlugin):
                 p = p / p.sum() if p.sum() > 0 else np.full(nt, 1 / nt)
             lik[i] = 0.98 * p + 0.02 / nt  # nothing is ever certain
         post = lik.copy()
-        tm_of = lambda A: A.get("t_place", A["t"])  # noqa: E731
+        # Compare action times on the same clock. A score post is delayed; using
+        # it beside a measured placement can falsely put two quick actions
+        # outside the one-piece-at-a-time window.
+        tm_of = lambda A: A.get("t_place", A["t"] - PLACE_LAG)  # noqa: E731
         for piece in ("coral", "algae"):
             idx = sorted((i for i, A in enumerate(actions) if A["piece"] == piece), key=lambda i: tm_of(actions[i]))
             if len(idx) < 2:

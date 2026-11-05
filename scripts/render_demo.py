@@ -155,6 +155,13 @@ if a.observations_only:
     video = ObservationReplay()
 else:
     video = Video(a.video)
+normalize_aux = None
+if r.get("aux_coordinates") == "canonical" and not a.observations_only:
+    from autoscout.field import Calibration
+    from autoscout.pipeline import _scaled_views
+    from autoscout.vision.aux_views import AuxViewNormalizer
+    normalize_aux = AuxViewNormalizer(video.frame_at(clock["teleop_end_vt"] - clock["teleop_len"] + 20),
+                                      _scaled_views(Calibration.load(r["event_key"]), video))
 # Layout: the whole broadcast frame (its scoreboard and close-up camera views stay visible) with
 # robots and flights drawn in place, and a sidebar with the clock, the live score and every robot's
 # running credit.
@@ -351,6 +358,8 @@ def draw_2025(img, t):
 
 
 for t, frame in video.iter_frames(t0, t1, step=step):
+    if normalize_aux is not None:
+        frame = normalize_aux(frame)
     img = cv2.resize(frame, (W, vh), interpolation=cv2.INTER_AREA)
     # flights in progress (draw the trail up to now)
     for flight_id, flight, P in flights:

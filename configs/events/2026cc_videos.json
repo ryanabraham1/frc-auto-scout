@@ -1,0 +1,31 @@
+{
+  "2026cc_qm16": {
+    "youtube_id": "yFRRof42FmY",
+    "title": "QM16   2026 Chezy Champs",
+    "channel": "RSN Match Archive"
+  },
+  "2026cc_qm27": {
+    "youtube_id": "MKsH5siBAG4",
+    "title": "QM27   2026 Chezy Champs",
+    "channel": "RSN Match Archive"
+  },
+  "2026cc_qm40": {
+    "local_path": "data/videos/2026cc_qm40.mp4",
+    "source_youtube_id": "zQ8Oibbg9Ro",
+    "source_start_s": 27700,
+    "source_end_s": 28150,
+    "verification": "Overlay at excerpt 100 s says Qualification 40; all six teams match TBA."
+  },
+  "2026cc_qm50": {
+    "youtube_id": "2In1U4BB1wc",
+    "title": "QM50   2026 Chezy Champs",
+    "channel": "RSN Match Archive"
+  },
+  "2026cc_qm56": {
+    "local_path": "data/videos/2026cc_qm56.mp4",
+    "source_youtube_id": "zQ8Oibbg9Ro",
+    "source_start_s": 36520,
+    "source_end_s": 36946,
+    "verification": "Overlay at excerpt 100 s says Qualification 56; all six teams match TBA."
+  }
+}

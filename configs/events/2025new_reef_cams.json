@@ -1,0 +1,45 @@
+{
+ "note": "REEF close-ups in the 2025 Newton Division broadcast, in panel pixels with panel origin. red: solved from tags 1, 2 (0.7 px). blue: tags 13 and 12 (12 seen once) with red's focal length; only two tags, so less certain.",
+ "blue": {
+  "f": 1294.9,
+  "rvec": [
+   1.3997318435418062,
+   1.4050529870143948,
+   -1.0787694088591666
+  ],
+  "tvec": [
+   -4.1023779918029675,
+   0.16649248150932083,
+   17.12500566327368
+  ],
+  "size": [
+   960,
+   355
+  ],
+  "origin": [
+   0,
+   725
+  ]
+ },
+ "red": {
+  "f": 1294.9284400256972,
+  "rvec": [
+   1.4361290610984954,
+   -1.4230617618517698,
+   1.0370428914080951
+  ],
+  "tvec": [
+   3.831301028175955,
+   5.170935067902938,
+   0.26389319751501966
+  ],
+  "size": [
+   960,
+   355
+  ],
+  "origin": [
+   960,
+   725
+  ]
+ }
+}

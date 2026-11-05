@@ -252,15 +252,15 @@ class Rebuilt2026(GamePlugin):
             ev.update(t=round(release_t, 2), first_seen=round(L.t0, 2),
                       entry_t=round(L.entry_t, 3) if L.entry_t is not None else None)
             zone = self.zone_for(alliance, r[:2]) if r else "own"
-            if zone == "neutral" and getattr(L, "target", None) == f"{alliance}_hub" and r is not None:
-                # a robot at the zone line whose piece drops into its own hub was shooting
-                # (foot-point / calibration error is ~0.5 m)
-                x0 = self.field.zones[f"{alliance}_alliance"]
-                dx = max(x0[0] - r[0], 0, r[0] - x0[2])
-                if dx < 1.0:
-                    zone = "own"
+            is_made = getattr(L, "target", None) == f"{alliance}_hub"
             ev.update(team=team, alliance=alliance, zone=zone, robot_xy=[round(r[0], 2), round(r[1], 2)] if r else None)
-            if zone == "own":
+            # A tracked entry is a shot, including when its release is hidden.
+            # The track's floor position can be an interpolation or a partially
+            # occluded box projected onto the carpet. It must not turn a ball
+            # entering the HUB into a knocked piece/feed and erase its credit.
+            # Keep that position/zone for review; live score deltas still bound
+            # the amount of credit supported by this entry.
+            if is_made or zone == "own":
                 active = hub_active(period, alliance, auto_winner)
                 if active is False:
                     inactive[team] += L.n_pieces
@@ -268,7 +268,6 @@ class Rebuilt2026(GamePlugin):
                 else:
                     shots[team][period] += L.n_pieces
                     ev["kind"] = "shot"
-                    is_made = getattr(L, "target", None) == f"{alliance}_hub"
                     if is_made:
                         made[team][period] += L.n_pieces
                         ev["made"] = True
@@ -733,6 +732,15 @@ class Rebuilt2026(GamePlugin):
         hub = self.field.elements[f"{slot[:-1]}_hub"]["center"]
         pix = ctx.cal.points.get(f"{slot[:-1]}_hub_center")
         if pix is None or np.hypot(before[1] - hub[0], before[2] - hub[1]) > HIDDEN_REACH_M:
+            return False
+        # Being somewhere on the far side of the HUB is not occlusion. The
+        # robot's last box must overlap the HUB's image silhouette horizontally:
+        # a dropout in the central pile must not become a hidden HUB shooter.
+        half = np.array(self.field.elements[f"{slot[:-1]}_hub"]["size"]) / 2
+        corners = ctx.cal.to_image([np.array(hub) + half * q
+                                    for q in ((-1, -1), (-1, 1), (1, -1), (1, 1))])
+        box = before[4]
+        if box is None or box[2] < corners[:, 0].min() or box[0] > corners[:, 0].max():
             return False
         far = ctx.cal.to_field([tuple(pix), (pix[0], pix[1] - 50.0)])  # up the image is away from the camera
         return (before[2] - hub[1]) * (far[1][1] - far[0][1]) > 0

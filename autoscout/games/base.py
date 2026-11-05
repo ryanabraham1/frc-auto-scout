@@ -42,6 +42,7 @@ class MatchContext:
     blobs: dict = field(default_factory=dict, repr=False)  # piece -> moving-piece blobs (t, x, y, area, w, h)
     blob_view: tuple | None = None  # image offset of the blob coordinates
     lift_obs: dict = field(default_factory=dict)  # slot -> [[t, reach above the chassis]] (vision/lift.py)
+    coral_changes: list = field(default_factory=list)  # coral detected resting on a REEF branch (coral_track.py)
     element_changes: list = field(default_factory=list)  # pieces seen appearing on elements (element_changes.py)
     _ts: dict = field(default_factory=dict, repr=False)  # slot -> track times (lookup cache)
 
