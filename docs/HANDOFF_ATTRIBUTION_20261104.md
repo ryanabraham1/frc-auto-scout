@@ -170,10 +170,11 @@ Results stay local, so a new machine must process them again. Don't use six work
 
 **Still open**
 - `run-match` and `reanalyze` give different credit on the same data (2025casj_qm1: 0:55 L3 was 1351 at 0.50 after `run-match`,
-  6418 at 0.61 after `reanalyze`). Double fusion was tested and is not the cause. Run `reanalyze` after `run-match` until this is found.
+  6418 at 0.61 after `reanalyze`). Double fusion was tested and is not the cause. Run `reanalyze` after `run-match` until this is found. 2026 moves too: 2026cosp_qm1 auto went from 2996 25, 9134 25 to 26, 24.
 - Weak calls: 0:55 L3 (0.61; no coral detected between 100 and 110 s) and auto 14.01 (0.46 vs 0.38).
-- 2025new_f1m1 has not been re-run with the tracker fix; red auto over-credits 4272 (7 of 10 actions, about 3-4 by hand).
+- 2025new_f1m1 was re-run with the tracker fix and red auto did not change: 4272 tops 7 of 10 actions, about 3-4 by hand. The cause is
+  not the bumper boxes; the coral detector finds few red coral in that close-up.
 - The trained model does not beat the rules. Mean share error on held-out 2026cc matches (51 matches, 168 groups): all 0.198 model,
   0.197 rules, 0.239 equal; auto 0.251, 0.240, 0.285; teleop 0.147, 0.156, 0.195. The 95% interval on the gain over the rules
   crosses zero in all three, so the rules stay in use. Both clearly beat an equal split. Scouted shares are noisy targets.
-- Demo videos in `docs/demos` predate these fixes.
+- `docs/demos` holds all three matches after these fixes, rendered from `reanalyze` results.
