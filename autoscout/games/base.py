@@ -93,6 +93,9 @@ class MatchContext:
         return self.clock.phase(vt) if self.clock else ("unknown", 0.0)
 
 
+FOOT_MARGIN = 0.25  # box heights a release may sit below a robot's box before it is nearer the camera than that robot
+
+
 class GamePlugin:
     year: int = 0
     # robot detection settings, measured per season on hand-marked frames and event OPR checks
@@ -158,6 +161,10 @@ class GamePlugin:
         x0, y0, x1, y1 = box
         sx, sy = start
         w, h = x1 - x0, y1 - y0
+        # Anything in the air shows above the floor point under it, so a ball seen below a robot's bumpers
+        # is nearer the camera than that robot and can't have left it: its real shooter is out of sight.
+        if FOOT_MARGIN and sy > y1 + FOOT_MARGIN * h:
+            return 9.0
         outside = np.hypot(max(x0 - sx, 0, sx - x1),
                            max(y0 - max(1.5 * h, w) - sy, 0, sy - y1)) / max(w, 20)
         return float(outside + 0.25 * abs(sx - (x0 + x1) / 2) / max(w, 20)

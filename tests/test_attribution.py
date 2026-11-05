@@ -334,3 +334,11 @@ def test_fuel_just_before_the_computed_start_counts_as_auto():
     ctx = N(clock=N(start_vt=7.0), match_time=lambda vt: ("pre", 20.0))
     assert period_of(ctx, 6.5) == "auto"
     assert period_of(ctx, 5.0) is None
+
+
+def test_a_ball_seen_below_a_robots_bumpers_did_not_leave_it():
+    from autoscout.games.base import GamePlugin
+
+    box = (536, 413, 604, 482)
+    assert GamePlugin._release_distance(box, (570, 400)) < 1
+    assert GamePlugin._release_distance(box, (500, 530)) == 9.0
