@@ -23,6 +23,7 @@ from .video import VIDEO_DIR, Video, download
 from .vision.detect import PersonVeto, RobotDetector, StaticSuppressor, alliance_from_pixels, default_detector
 from .vision.identity import IdentityEvidence, identity_timeline
 from .vision.appearance import add_to_bank, load_bank
+from .vision.fused_reads import add_fused_reads
 from .vision.bumper_ocr import reader
 from .vision.tracker import WEAK_CONF, RobotTracker
 from .vision.element_changes import HZ as HZ_ELEMENTS, ElementWatcher, element_region
@@ -32,6 +33,7 @@ from .vision.trajectories import Launch, LaunchDetector
 RESULTS_DIR = config.DATA_DIR / "results"
 AUX_CONF = 0.15  # robot detection threshold in close-up views
 FUSE_CLOSEUPS = True
+FUSED_READ_YEARS = {2026}  # measured on 2026cc only
 CALIBRATED_IDENTITY = True  # close-up bumper reads name the wide-shot robot at the read's field position  # fill wide-shot tracks with robots seen in calibrated close-up cameras
 PRE_MATCH_S = 4.0  # s tracked before AUTO starts
 TRACKER_EVIDENCE = 8.0  # the tracker labels robots by team, so its station slots are the identity
@@ -351,6 +353,10 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     # robots identified for sure (bumper read / labelled) teach the bank; label again with it
     _remember_appearance(m.event_key, match_key, tracker)
     tracker.relabel(load_bank(m.event_key), load_labels(match_key))
+    if m.year in FUSED_READ_YEARS:  # after labelling: these reads repair it, they do not re-solve it
+        prog.update("identity", 0.8, "reading bumpers across views", force=True)
+        tracker.stats["fused_reads"] = add_fused_reads(tracker, video.frame_at)
+        tracker.repair_saved()
     tracker.save_thumbs(RESULTS_DIR / f"{match_key}_robots")
     (RESULTS_DIR / f"{match_key}_tracklets.json").write_text(json.dumps(tracker.to_dict()))
     log(f"tracker: {tracker.stats}")

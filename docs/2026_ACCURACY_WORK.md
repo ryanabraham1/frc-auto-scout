@@ -68,7 +68,7 @@ fuel totals before saving each match. The background refresh also waits for the
 completion job and refreshes newly available matches afterward. Its progress is
 in `data/2026cc_accuracy_refresh.log` and `2026cc_accuracy_refresh.json`.
 
-All 131 tests under `tests/` passed. Running pytest against the repository root
+All 210 tests under `tests/` passed. Running pytest against the repository root
 also collects old staging copies under `data/`, which causes duplicate-module
 collection errors; run `python -m pytest tests -q` for the actual suite.
 
@@ -246,4 +246,21 @@ AI readings. It fixes labels; whether fuel attribution improves is not shown.
 labels changed, 701 fuel moved between teams. Results match the tested replay and the
 dashboard database exactly, and official alliance totals hold. Originals and a copy of
 the database are in `data/2026cc_before_fused_reads`; the appearance bank was not updated.
-The fused reader is not in the pipeline, so the remaining 48 matches would not get it.
+`autoscout/vision/fused_reads.py` now runs in `process_match` for 2026 games, after labelling
+and before the targeted repair, so new matches get the same treatment. Its scores match the
+tested ones exactly on 80 tracklets. A full sandbox run of qm35 added 27 reads and took 611
+seconds, of which identity was 103; official totals held. 2025 is unchanged because the reader
+was not measured there. Saved tracklets cannot use it without their video.
+
+## After merging origin/main
+
+The merge brought in origin's FUEL credit rules. `SPLIT_BY="live"` now credits only what
+observed makes support, so the rest stays uncredited instead of being spread across teams.
+Reanalysing the 22 cached matches with merged code leaves 1,753 fuel uncredited, against 0 in
+the saved results, and changes team totals by 2,294 in absolute terms. Held-out within-alliance
+correlation is 0.312 against 0.336 (-0.023, CI -0.065 to +0.018), which is within noise. Saved
+results still use the earlier rules, so they differ from anything processed or reanalysed now.
+
+Where both sides differed, stream consensus now only fills missing shooters, as origin does.
+That replaces the local protected-release rule. `scripts/replay_current_code.py` reproduces
+the replay without writing production data.

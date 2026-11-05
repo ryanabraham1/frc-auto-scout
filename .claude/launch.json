@@ -6,6 +6,12 @@
       "runtimeExecutable": ".venv/Scripts/autoscout.exe",
       "runtimeArgs": ["serve", "--port", "8000"],
       "port": 8000
+    },
+    {
+      "name": "scouting-app",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "../scouting-app", "run", "dev"],
+      "port": 5173
     }
   ]
 }
