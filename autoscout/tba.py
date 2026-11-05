@@ -57,11 +57,24 @@ class MatchInfo:
     breakdown: dict = field(default_factory=dict)  # {"red": {...}, "blue": {...}}
     red_score: int | None = None
     blue_score: int | None = None
+    local_video: str | None = None
+    video_source: dict = field(default_factory=dict)
 
     @classmethod
     def from_tba(cls, m: dict) -> "MatchInfo":
         teams = lambda c: [int(t[3:]) for t in m["alliances"][c]["team_keys"]]
         vids = [v["key"] for v in m.get("videos") or [] if v.get("type") == "youtube"]
+        source = {}
+        local_video = None
+        if not vids:
+            sources = config.EVENTS_DIR / f"{m['event_key']}_videos.json"
+            if sources.exists():
+                source = json.loads(sources.read_text(encoding="utf-8")).get(m["key"], {})
+                if source.get("youtube_id"):
+                    vids = [source["youtube_id"]]
+                elif source.get("local_path"):
+                    path = Path(source["local_path"])
+                    local_video = str(path if path.is_absolute() else config.ROOT / path)
         return cls(
             key=m["key"],
             year=int(m["key"][:4]),
@@ -75,6 +88,8 @@ class MatchInfo:
             breakdown=m.get("score_breakdown") or {},
             red_score=m["alliances"]["red"].get("score"),
             blue_score=m["alliances"]["blue"].get("score"),
+            local_video=local_video,
+            video_source=source,
         )
 
     def teams(self, alliance: str) -> list[int]:

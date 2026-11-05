@@ -1,0 +1,666 @@
+{
+ "scope": "AI visual review of bumpers in wide and close-up views; not human-verified. Sample of flags plus 12 random frames; tracklets maps tracklet id to verified team.",
+ "reviewed": [
+  {
+   "kind": "tracklet",
+   "match": "2026cc_qm10",
+   "t": 76.4765,
+   "read": 6800,
+   "assigned": 973,
+   "i": 0,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "tracklet",
+   "match": "2026cc_qm10",
+   "t": 19.92,
+   "read": 6647,
+   "assigned": 973,
+   "i": 1,
+   "verdict": "real",
+   "note": "973/6647 swapped; box labelled 973 shows a 6647 bumper"
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm10",
+   "t": 100.1,
+   "read": 6647,
+   "assigned": 1868,
+   "i": 2,
+   "verdict": "false_alarm",
+   "note": "flag itself false; separate error in frame: box labelled 6800 is 841"
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm10",
+   "t": 123.12,
+   "read": 6647,
+   "assigned": 973,
+   "i": 3,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "tracklet",
+   "match": "2026cc_qm11",
+   "t": 156.25650000000002,
+   "read": 9470,
+   "assigned": 6036,
+   "i": 4,
+   "verdict": "real",
+   "note": "9470 bumper in box labelled 6036"
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm11",
+   "t": 26.03,
+   "read": 6036,
+   "assigned": 9470,
+   "i": 5,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm11",
+   "t": 20.02,
+   "read": 6036,
+   "assigned": 2046,
+   "i": 6,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm14",
+   "t": 142.14,
+   "read": 8229,
+   "assigned": 2073,
+   "i": 7,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "tracklet",
+   "match": "2026cc_qm15",
+   "t": 97.848,
+   "read": 4698,
+   "assigned": 1868,
+   "i": 8,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "tracklet",
+   "match": "2026cc_qm15",
+   "t": 29.5295,
+   "read": 841,
+   "assigned": 1868,
+   "i": 9,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm15",
+   "t": 38.04,
+   "read": 5940,
+   "assigned": 254,
+   "i": 10,
+   "verdict": "real",
+   "note": "5940 label on another robot at the red hub; real 5940 at blue end"
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm15",
+   "t": 114.11,
+   "read": 5026,
+   "assigned": 841,
+   "i": 11,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm15",
+   "t": 126.13,
+   "read": 5026,
+   "assigned": 1868,
+   "i": 12,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm18",
+   "t": 142.14,
+   "read": 972,
+   "assigned": 5507,
+   "i": 13,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm18",
+   "t": 127.13,
+   "read": 6647,
+   "assigned": 4270,
+   "i": 14,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm3",
+   "t": 93.09,
+   "read": 359,
+   "assigned": 581,
+   "i": 15,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm35",
+   "t": 39.04,
+   "read": 1540,
+   "assigned": 687,
+   "i": 16,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm4",
+   "t": 35.04,
+   "read": 9496,
+   "assigned": 3847,
+   "i": 17,
+   "verdict": "not_checkable",
+   "note": "no tracked boxes in frame"
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm42",
+   "t": 52.05,
+   "read": 5940,
+   "assigned": 4499,
+   "i": 18,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm42",
+   "t": 161.16,
+   "read": 687,
+   "assigned": 6800,
+   "i": 19,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "tracklet",
+   "match": "2026cc_qm6",
+   "t": 80.08,
+   "read": 6800,
+   "assigned": 254,
+   "i": 20,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm6",
+   "t": 113.11,
+   "read": 6800,
+   "assigned": 2073,
+   "i": 21,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm62",
+   "t": 65.06,
+   "read": 9023,
+   "assigned": 5507,
+   "i": 22,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm62",
+   "t": 130.13,
+   "read": 5507,
+   "assigned": 6647,
+   "i": 23,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "tracklet",
+   "match": "2026cc_qm70",
+   "t": 12.4125,
+   "read": 846,
+   "assigned": 3847,
+   "i": 24,
+   "verdict": "real",
+   "note": "box labelled 3847 shows an 846 bumper"
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm70",
+   "t": 140.64,
+   "read": 3847,
+   "assigned": 9470,
+   "i": 25,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm70",
+   "t": 128.63,
+   "read": 846,
+   "assigned": 3847,
+   "i": 26,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm70",
+   "t": 59.56,
+   "read": 3847,
+   "assigned": 846,
+   "i": 27,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "repeated",
+   "match": "2026cc_qm9",
+   "t": 93.59,
+   "read": 1678,
+   "assigned": 9032,
+   "i": 28,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "far",
+   "match": "2026cc_qm15",
+   "t": 35.04,
+   "read": 5940,
+   "assigned": 254,
+   "i": 29,
+   "verdict": "false_alarm",
+   "note": "real 5940 has no box here"
+  },
+  {
+   "kind": "far",
+   "match": "2026cc_qm15",
+   "t": 37.04,
+   "read": 5940,
+   "assigned": 254,
+   "i": 30,
+   "verdict": "real",
+   "note": "same error as #10"
+  },
+  {
+   "kind": "far",
+   "match": "2026cc_qm9",
+   "t": 138.64,
+   "read": 9032,
+   "assigned": 4698,
+   "i": 31,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "far",
+   "match": "2026cc_qm9",
+   "t": 139.64,
+   "read": 9032,
+   "assigned": 4698,
+   "i": 32,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm18",
+   "t": 148.15,
+   "read": 972,
+   "assigned": 5507,
+   "i": 33,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm13",
+   "t": 12.01,
+   "read": 972,
+   "assigned": 5199,
+   "i": 34,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm35",
+   "t": 10.01,
+   "read": 972,
+   "assigned": 1540,
+   "i": 35,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm11",
+   "t": 77.08,
+   "read": 6036,
+   "assigned": 2046,
+   "i": 36,
+   "verdict": "real",
+   "note": "2046/6036 swapped"
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm11",
+   "t": 79.08,
+   "read": 6036,
+   "assigned": 2046,
+   "i": 37,
+   "verdict": "real",
+   "note": "box labelled 6036 shows a 2046 bumper"
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm70",
+   "t": 94.59,
+   "read": 3847,
+   "assigned": 9470,
+   "i": 38,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm12",
+   "t": 146.15,
+   "read": 4414,
+   "assigned": 4270,
+   "i": 39,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm35",
+   "t": 7.01,
+   "read": 687,
+   "assigned": 972,
+   "i": 40,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm70",
+   "t": 147.65,
+   "read": 3847,
+   "assigned": 846,
+   "i": 41,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm6",
+   "t": 113.11,
+   "read": 6800,
+   "assigned": 2073,
+   "i": 42,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm18",
+   "t": 48.05,
+   "read": 972,
+   "assigned": 5507,
+   "i": 43,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "mid",
+   "match": "2026cc_qm7",
+   "t": 126.63,
+   "read": 9470,
+   "assigned": 841,
+   "i": 44,
+   "verdict": "false_alarm",
+   "note": null
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm10",
+   "t": 153.17,
+   "read": null,
+   "assigned": null,
+   "i": 45,
+   "verdict": "random_clean",
+   "note": null
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm11",
+   "t": 111.98,
+   "read": null,
+   "assigned": null,
+   "i": 46,
+   "verdict": "random_clean",
+   "note": null
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm42",
+   "t": 105.79,
+   "read": null,
+   "assigned": null,
+   "i": 47,
+   "verdict": "random_clean",
+   "note": null
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm70",
+   "t": 38.04,
+   "read": null,
+   "assigned": null,
+   "i": 48,
+   "verdict": "unresolved",
+   "note": "359/4270 looked swapped by eye but 4270 tracklet has a 4270 read; unresolved"
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm8",
+   "t": 106.12,
+   "read": null,
+   "assigned": null,
+   "i": 49,
+   "verdict": "random_clean",
+   "note": null
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm18",
+   "t": 36.45,
+   "read": null,
+   "assigned": null,
+   "i": 50,
+   "verdict": "random_clean",
+   "note": "only one of six robots boxed"
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm62",
+   "t": 58.74,
+   "read": null,
+   "assigned": null,
+   "i": 51,
+   "verdict": "random_clean",
+   "note": null
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm2",
+   "t": 102.37,
+   "read": null,
+   "assigned": null,
+   "i": 52,
+   "verdict": "random_clean",
+   "note": null
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm15",
+   "t": 47.31,
+   "read": null,
+   "assigned": null,
+   "i": 53,
+   "verdict": "random_clean",
+   "note": null
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm1",
+   "t": 84.49,
+   "read": null,
+   "assigned": null,
+   "i": 54,
+   "verdict": "random_clean",
+   "note": null
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm28",
+   "t": 100.29,
+   "read": null,
+   "assigned": null,
+   "i": 55,
+   "verdict": "random_clean",
+   "note": null
+  },
+  {
+   "kind": "random",
+   "match": "2026cc_qm9",
+   "t": 104.22,
+   "read": null,
+   "assigned": null,
+   "i": 56,
+   "verdict": "random_clean",
+   "note": null
+  }
+ ],
+ "tracklets": {
+  "2026cc_qm10": {
+   "7": 973,
+   "11": 6647,
+   "165": 841,
+   "267": 1868,
+   "271": 3045,
+   "275": 841,
+   "273": 973
+  },
+  "2026cc_qm11": {
+   "163": 2046,
+   "158": 6036,
+   "346": 2046,
+   "343": 9470,
+   "347": 1540,
+   "235": 3847,
+   "245": 9470,
+   "242": 1540,
+   "178": 9470,
+   "179": 1540
+  },
+  "2026cc_qm15": {
+   "48": 841,
+   "65": 1868,
+   "71": 4698,
+   "66": 841,
+   "70": 254,
+   "69": 5026,
+   "68": 5940,
+   "33": 1868,
+   "40": 841
+  },
+  "2026cc_qm70": {
+   "0": 846
+  },
+  "2026cc_qm42": {
+   "162": 846,
+   "166": 687,
+   "172": 5940,
+   "176": 6800,
+   "174": 4499,
+   "175": 1540
+  },
+  "2026cc_qm8": {
+   "287": 9496,
+   "286": 3256
+  },
+  "2026cc_qm18": {
+   "25": 9408
+  },
+  "2026cc_qm62": {
+   "55": 9023,
+   "49": 5507,
+   "52": 4499,
+   "54": 3256,
+   "53": 6647
+  },
+  "2026cc_qm2": {
+   "270": 687,
+   "278": 6017,
+   "274": 4698,
+   "277": 1540
+  },
+  "2026cc_qm1": {
+   "176": 973,
+   "177": 9032,
+   "59": 9032
+  },
+  "2026cc_qm28": {
+   "147": 4270,
+   "146": 6036,
+   "153": 2073,
+   "142": 687
+  },
+  "2026cc_qm9": {
+   "237": 9032,
+   "238": 4698,
+   "235": 581
+  },
+  "2026cc_qm13": {
+   "333": 359,
+   "182": 359,
+   "277": 359,
+   "227": 846,
+   "158": 846,
+   "246": 846,
+   "298": 846,
+   "165": 846
+  }
+ }
+}

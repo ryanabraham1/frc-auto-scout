@@ -72,7 +72,12 @@ DWELL_SLACK = 0.5  # m added to an element's reach when timing how long a robot 
 # scorers were credited well under their OPR every match (1323: 15.6 vs 25.3). Each team's coral OPR from
 # the event's OTHER matches' official totals ((OPR + PRIOR_K) ** PRIOR_ALPHA, never this match) weighs
 # the per-coral video likelihoods (assign_actions' prior).
-PRIOR_ALPHA, PRIOR_K = 1.0, 3.0
+# Off (0): attribution is vision only, so a team that gains a mechanism mid-event isn't argued out of it.
+# The per-level official numbers are a tuning check instead (scripts/eval2025.py capability report).
+PRIOR_ALPHA, PRIOR_K = 0.0, 3.0
+# Per level, not total coral: a team's L4 weight comes from the L4s it scores (8793 at 2025casj: L1 OPR 9.3,
+# L2-L4 ~0; a total-coral weight made it a likely L4 scorer). PRIOR_K is then scaled by the level's mean.
+PRIOR_PER_LEVEL = True
 PRIOR_MIN_MATCHES = 12  # other matches with official breakdowns needed before the prior is used
 
 
@@ -141,17 +146,25 @@ class Reefscape2025(GamePlugin):
         if PRIOR_ALPHA <= 0 or len(rows) < PRIOR_MIN_MATCHES or mine is None:
             return None
         idx = {t: i for i, t in enumerate(teams)}
-        A, b = np.zeros((2 * len(rows), len(teams))), np.zeros(2 * len(rows))
+        groups = [(L,) for L in CORAL] if PRIOR_PER_LEVEL else [CORAL]
+        A, b = np.zeros((2 * len(rows), len(teams))), np.zeros((2 * len(rows), len(groups)))
         for i, m in enumerate(rows):
             for j, a in enumerate(("red", "blue")):
                 for t in m.teams(a):
                     A[2 * i + j, idx[t]] = 1
                 c = self.official_counts(m.breakdown[a])
-                b[2 * i + j] = sum(c[ph][k] for ph in c for k in CORAL)
-        opr = dict(zip(teams, np.linalg.lstsq(A, b, rcond=None)[0]))
-        mean = float(np.mean(list(opr.values())))
-        w = lambda t: ((max(opr.get(t, mean), 0.0) + PRIOR_K) / (mean + PRIOR_K)) ** PRIOR_ALPHA  # noqa: E731
-        return {a: {t: {c: w(t) for c in CORAL} for t in mine.teams(a)} for a in ("red", "blue")}
+                b[2 * i + j] = [sum(c[ph][k] for ph in c for k in g) for g in groups]
+        sol = np.linalg.lstsq(A, b, rcond=None)[0]  # (team, group)
+        out = {a: {t: {} for t in mine.teams(a)} for a in ("red", "blue")}
+        for gi, g in enumerate(groups):
+            opr = dict(zip(teams, sol[:, gi]))
+            mean = float(np.mean(list(opr.values())))
+            k = PRIOR_K * (mean / float(np.mean(sol.sum(1))) if PRIOR_PER_LEVEL else 1.0)
+            for a in out:
+                for t in out[a]:
+                    w = ((max(opr.get(t, mean), 0.0) + k) / (mean + k)) ** PRIOR_ALPHA
+                    out[a][t].update({c: w for c in g})
+        return out
 
     @staticmethod
     def _fresh(ctx: MatchContext, slot: str) -> list:

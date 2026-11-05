@@ -16,6 +16,18 @@ from . import config
 VIDEO_DIR = config.DATA_DIR / "videos"
 
 
+def match_video(match, height: int = 1080) -> Path:
+    """Resolve a TBA video or a documented local broadcast excerpt."""
+    if match.local_video:
+        path = Path(match.local_video)
+        if not path.is_file():
+            raise FileNotFoundError(f"Local match video is missing: {path}")
+        return ensure_decodable(path)
+    if not match.videos:
+        raise RuntimeError(f"No video for {match.key}")
+    return download(match.videos[0], height=height)
+
+
 def download(youtube_id: str, out_dir: Path | None = None, height: int = 720) -> Path:
     """Download a YouTube video (H.264 preferred so OpenCV can decode it everywhere)."""
     out_dir = out_dir or VIDEO_DIR
@@ -37,6 +49,8 @@ def download(youtube_id: str, out_dir: Path | None = None, height: int = 720) ->
     cookies = config.yt_cookies()
     if cookies:
         cmd += ["--cookies", str(cookies)]
+    elif browser := config.yt_cookies_browser():
+        cmd += ["--cookies-from-browser", browser]
     cmd.append(f"https://www.youtube.com/watch?v={youtube_id}")
     last_err = ""
     # When YouTube answers the default client with "confirm you're not a bot" (it does after many

@@ -305,7 +305,7 @@ def schedule(event_key: str):
         if pr and pr["stage"] not in ("done", "error") and not pr.get("stale"):
             st = "processing"
         out.append({"match_key": m.key, "label": m.label, "comp_level": m.comp_level, "red": m.red, "blue": m.blue,
-                    "has_video": bool(m.videos), "status": st or "new", "error": err})
+                    "has_video": bool(m.videos or m.local_video), "status": st or "new", "error": err})
     return out
 
 
@@ -331,6 +331,11 @@ def get_cal(event_key: str):
     fm = FieldModel.load(year)
     return {"event_key": event_key, "year": year, "landmarks": fm.landmarks,
             "view": list(cal.view) if cal else None, "points": cal.points if cal else {},
+            "aux_views": cal.aux_views or {} if cal else {},
+            "aux_watch": cal.aux_watch or {} if cal else {},
+            "overlay": cal.overlay or {} if cal else {},
+            "elements": list(fm.elements),
+            "frame_size": list(cal.frame_size) if cal else [1920, 1080],
             "has_reference": bool(cal and cal.reference and (config.ROOT / cal.reference).exists())}
 
 
@@ -350,13 +355,76 @@ def save_cal(event_key: str, body: dict):
     year = int(event_key[:4])
     if cal is None:
         cal = Calibration(event_key=event_key, year=year, view=tuple(body["view"]), points={})
+    original_aux_views = cal.aux_views or {}
+    # Validate all optional rectangles before changing or writing the calibration.
+    rectangles = {}
+    for field in ("aux_views", "aux_watch", "overlay"):
+        if field not in body:
+            continue
+        values = body[field]
+        if not isinstance(values, dict):
+            raise HTTPException(400, f"{field} must contain named rectangles")
+        rectangles[field] = {}
+        for name, rect in values.items():
+            if field == "overlay" and name not in ("timer", "blue_score", "red_score"):
+                raise HTTPException(400, "Unknown scoreboard rectangle")
+            if field != "overlay" and name not in FieldModel.load(year).elements:
+                raise HTTPException(400, "Choose a field element for each secondary camera")
+            if (not isinstance(rect, (list, tuple)) or len(rect) != 4
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in rect)):
+                raise HTTPException(400, "Rectangles need four finite numbers")
+            x, y, a, b = map(int, rect)
+            w, h = (a - x, b - y) if field == "aux_watch" else (a, b)
+            if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > cal.frame_size[0] or y + h > cal.frame_size[1]:
+                raise HTTPException(400, "Draw rectangles inside the reference image")
+            rectangles[field][name] = [x, y, a, b]
+    for field, values in rectangles.items():
+        if field == "overlay":
+            if values and not all(k in values or k in (cal.overlay or {}) for k in ("timer", "blue_score", "red_score")):
+                raise HTTPException(400, "Mark all three scoreboard rectangles, or leave them automatic")
+            if values:
+                cal.overlay = {**(cal.overlay or {}), **values, "frame_size": list(cal.frame_size)}
+        else:
+            setattr(cal, field, values)
     cal.view = tuple(int(v) for v in body["view"])
     cal.points = {k: tuple(v) for k, v in body["points"].items()}
     err = None
     if len(cal.points) >= 4:
         err = cal.fit()
     cal.save()
+    if "aux_views" in rectangles:
+        # Camera fits use full-frame pixels and must not survive moved or removed panes.
+        cams_path = config.EVENTS_DIR / f"{event_key}_cams.json"
+        if cams_path.exists():
+            cams = json.loads(cams_path.read_text())
+            cams = {k: v for k, v in cams.items() if k in cal.aux_views
+                    and original_aux_views.get(k) == cal.aux_views[k]}
+            cams_path.write_text(json.dumps(cams, indent=1))
     return {"ok": True, "reprojection_error_m": err}
+
+
+@app.get("/api/calibration/{event_key}/cameras")
+def camera_status(event_key: str):
+    _event_key(event_key)
+    from ..pipeline import RESULTS_DIR, closeup_calibration
+    from ..vision.fusion import MIN_PAIRS, calibration_pairs
+    cal = Calibration.load(event_key)
+    results = [json.loads(p.read_text()) for p in RESULTS_DIR.glob(f"{event_key}_*.json")
+               if p.stem.count("_") == 1]
+    pairs = calibration_pairs(results)
+    fitted = closeup_calibration(event_key)
+    return {"matches": len(results), "minimum_pairs": MIN_PAIRS,
+            "views": {name: {"pairs": len(pairs.get(name, [])), "fit": fitted.get(name)}
+                      for name in (cal.aux_views or {} if cal else {})}}
+
+
+@app.post("/api/calibration/{event_key}/cameras")
+def fit_cameras(event_key: str):
+    _event_key(event_key)
+    cal = Calibration.load(event_key)
+    if not cal or not cal.aux_views:
+        raise HTTPException(400, "Save secondary camera rectangles first")
+    return _start_job(event_key, ["calibrate-cams", event_key])
 
 
 @app.get("/api/calibration/{event_key}/preview.jpg")

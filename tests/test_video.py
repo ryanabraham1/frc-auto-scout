@@ -82,3 +82,27 @@ def test_blob_collection_is_identical_without_live_tracking():
     assert live.blobs
     assert live.blobs == offline.blobs
     assert not offline.tracks
+
+
+def test_download_supports_browser_session_and_prefers_explicit_cookie_file(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from autoscout import config
+    from autoscout import video as module
+
+    calls = []
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        (tmp_path / 'video.mp4').write_bytes(b'cached video')
+        return SimpleNamespace(returncode=0, stderr='')
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    monkeypatch.setattr(module, 'ensure_decodable', lambda p:p)
+    monkeypatch.setattr(config, 'yt_cookies', lambda:None)
+    monkeypatch.setenv('YT_COOKIES_BROWSER', 'firefox:C:/Profile With Spaces')
+    assert module.download('video',tmp_path).name == 'video.mp4'
+    assert calls[-1][calls[-1].index('--cookies-from-browser')+1] == 'firefox:C:/Profile With Spaces'
+    (tmp_path/'video.mp4').unlink()
+    cookies=tmp_path/'cookies.txt'
+    monkeypatch.setattr(config, 'yt_cookies', lambda:cookies)
+    module.download('video',tmp_path)
+    assert '--cookies-from-browser' not in calls[-1]
+    assert calls[-1][calls[-1].index('--cookies')+1] == str(cookies)

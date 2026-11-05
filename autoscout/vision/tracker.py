@@ -53,6 +53,7 @@ MATCH_APP_MARGIN = 0.02  # similarity margin over the next teammate that counts 
 MATCH_APP_WEIGHT = 8.0
 MATCH_APP_CAP = 30  # observations at which the evidence stops growing
 MATCH_APP_TOP = 3  # a team's similarity: mean of its closest anchors
+ANCHOR_COST = 10.0  # cost per unit of clear bumper read for labelling that tracklet as anyone else
 NOT_ROBOT = 0  # manual label: the tracklet is not a robot (a person, a cart...)
 NEAR = 0.8  # m: two robots this close can be confused, so their tracklets are cut
 LINK_GAP = 0.3  # s: longest miss a tracklet continues across
@@ -138,6 +139,7 @@ class RobotTracker:
         self._next = 0
         self.slots: dict[str, Slot] = {f"{a}{i}": Slot(a, i) for a in ("red", "blue") for i in range(3)}
         self.stats: dict = {}
+        self._honor_anchors = False  # clear bumper reads carry ANCHOR_COST only during the repair pass
 
     # ---- stage 1: tracklets ----------------------------------------------------------------
     def _is_solid_skirt(self, d: Det) -> bool:
@@ -356,6 +358,9 @@ class RobotTracker:
         c = 1.5 * n * max(0.0, 0.5 - tr.alliance_frac(a)) * 2  # wrong bumper colour
         c -= 3.0 * tr.reads.get(team, 0.0)
         c += 1.5 * sum(v for k, v in tr.reads.items() if k != team)  # it read as someone else
+        anchor = self._unanimous_team(tr) if self._honor_anchors else None
+        if anchor is not None and anchor != team:  # a clear bumper read outweighs a smooth trajectory
+            c += ANCHOR_COST * tr.reads[anchor]
         c -= APP_WEIGHT * min(n, 30) / 30 * tr.app.get(team, 0.0)  # looks like that team's robot
         c -= MATCH_APP_WEIGHT * min(n, MATCH_APP_CAP) / 30 * tr.mapp.get(team, 0.0)  # ... as seen in this match
         return c
@@ -410,6 +415,7 @@ class RobotTracker:
             if c < best_c - 1e-9:
                 best, best_c, best_swaps = {k: list(v) for k, v in chains.items()}, c, self.stats["identity_swaps"]
         chains = best
+        self._repair_anchors(chains)
         for tr in trs:
             tr.team = None
         for team, chain in chains.items():
@@ -419,6 +425,39 @@ class RobotTracker:
         n_read = {team: sum(1 for x in chains[team] if x.reads.get(team, 0) > 0) for team in chains}
         self.stats.update(tracklets=len(trs), dropped=sum(t.team is None for t in trs), anchored=n_read,
                           identity_swaps=best_swaps, label_cost=round(best_c, 2))
+
+    def _unanimous_team(self, tr: Tracklet) -> int | None:
+        """A clear read with no dissent. Any other read means the box held two robots, or a close-up
+        named a neighbour by proximity, so it is not strong enough to override the labelling."""
+        return self._anchor_team(tr) if len(tr.reads) == 1 else None
+
+    def _broken_anchors(self, team: int, chain: list[Tracklet]) -> float:
+        """Unanimous bumper read, summed, on tracklets of this chain that read as another team."""
+        anchors = ((x, self._unanimous_team(x)) for x in chain)
+        return sum(x.reads[a] for x, a in anchors if a is not None and a != team)
+
+    def _repair_anchors(self, chains: dict) -> None:
+        """Exchange stretches of two chains where that honours a clear bumper read the labelling broke.
+        Motion links can outweigh a read, but re-solving everything with heavier reads disturbs correct
+        labels elsewhere, so only exchanges that fix a broken read are allowed."""
+        swaps = self.stats.get("identity_swaps", 0)
+        self._honor_anchors, self._uc = True, {}
+        self._swap_suffixes(chains, repair=True)
+        self.stats["anchor_repairs"] = self.stats["identity_swaps"]
+        self.stats["identity_swaps"] = swaps
+        self._honor_anchors, self._uc = False, {}
+
+    def repair_saved(self) -> None:
+        """Apply the anchor repair to already labelled tracklets, then rewrite the slot tracks."""
+        self._uc, self._lc = {}, {}
+        self.add_match_appearance()
+        chains = {team: [] for team in self.all_teams}
+        for x in sorted(self.done + self.active, key=lambda t: t.t0):
+            if x.team in chains:
+                chains[x.team].append(x)
+        self._repair_anchors(chains)
+        self.chains = chains
+        self._write_slots()
 
     def _total(self, trs: list[Tracklet], chains: dict) -> float:
         on = {x.id for chain in chains.values() for x in chain}
@@ -580,7 +619,8 @@ class RobotTracker:
                 n += 1
         self.stats["match_appearance_scored"] = n
 
-    def _swap_suffixes(self, chains: dict, max_rounds: int = 30, max_span: float = 45.0) -> None:
+    def _swap_suffixes(self, chains: dict, max_rounds: int = 30, max_span: float = 45.0,
+                       repair: bool = False) -> None:
         """Repair identity switches: the tracker sometimes hands robot A's track to robot B from
         some moment on. Moving one tracklet back would break motion continuity in both teams'
         chains, so try exchanging the two teams' tracklets over a stretch of time (or their whole
@@ -589,6 +629,7 @@ class RobotTracker:
         def cost(team, chain):
             return self._chain_cost(chain) + sum(self._unary(x, team) for x in chain)
 
+        broken = self._broken_anchors
         for _ in range(max_rounds):
             best, best_gain = None, 1e-6
             for ta, tb in itertools.combinations(self.all_teams, 2):
@@ -633,7 +674,8 @@ class RobotTracker:
                         na = A[:a1] + B[b1:b2] + A[a2:]
                         nb = B[:b1] + A[a1:a2] + B[b2:]
                         gain = base - cost(ta, na) - cost(tb, nb)
-                        if gain > best_gain:
+                        if gain > best_gain and (not repair or broken(ta, na) + broken(tb, nb)
+                                                 < broken(ta, A) + broken(tb, B) - 1e-9):
                             best, best_gain = (ta, tb, na, nb), gain
             if best is None:
                 break
@@ -709,6 +751,9 @@ class RobotTracker:
             self.add_appearance(bank)
         self.add_match_appearance()
         self.label()
+        self._write_slots()
+
+    def _write_slots(self) -> None:
         for a in ("red", "blue"):
             for i, team in enumerate(self.teams[a]):
                 s = self.slots[f"{a}{i}"]

@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+ml = ["scikit-learn"]
 
 [project.scripts]
 autoscout = "autoscout.cli:main"

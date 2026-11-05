@@ -49,6 +49,26 @@ def heldout_opr(ms, skip):
     return {k: dict(zip(teams, np.linalg.lstsq(A, np.array(v, float), rcond=None)[0])) for k, v in B.items()}
 
 
+def heldout_opr_levels(ms, skip):
+    """Per coral level OPR from the matches not in skip (official totals, auto + teleop)."""
+    teams = sorted({t for m in ms for t in m.red + m.blue})
+    idx = {t: i for i, t in enumerate(teams)}
+    A, B = [], defaultdict(list)
+    for m in ms:
+        if m.key in skip or not m.breakdown:
+            continue
+        for a in ("red", "blue"):
+            row = np.zeros(len(teams))
+            for t in m.teams(a):
+                row[idx[t]] = 1
+            A.append(row)
+            c = Reefscape2025.official_counts(None, m.breakdown[a])
+            for L in ("L1", "L2", "L3", "L4"):
+                B[L].append(c["auto"][L] + c["teleop"][L])
+    A = np.array(A)
+    return {L: dict(zip(teams, np.linalg.lstsq(A, np.array(v, float), rcond=None)[0])) for L, v in B.items()}
+
+
 def main(event, saved=False, matches=None, results_dir=RESULTS_DIR):
     tba = TBA()
     ms = [MatchInfo.from_tba(m) for m in tba.event_matches(event) if m["comp_level"] == "qm"]
@@ -107,6 +127,22 @@ def main(event, saved=False, matches=None, results_dir=RESULTS_DIR):
     print(f"  decoded vs official action counts: abs diff {dec['abs']} over {dec['off']} actions "
           f"({dec['abs'] / max(dec['off'], 1):.0%})")
     report["decoded"] = {"absolute_difference": dec['abs'], "official_actions": dec['off']}
+    # Capability check (tuning only, never used in attribution): credit at a level a team shows no sign of
+    # scoring in the reference matches' official totals (per-level OPR ~0) is likely misattributed.
+    lv = heldout_opr_levels(ms, done)
+    flags = []
+    for L, opr in lv.items():
+        for t in sorted({t for r in results for t in byk[r["match_key"]].red + byk[r["match_key"]].blue}):
+            got = [x["coral_" + L] if "coral_" + L in x else None for r in results
+                   for x in [r["teams"].get(str(t)) or r["teams"].get(t)] if x]
+            got = [g for g in got if g is not None]
+            if got and t in opr and opr[t] <= 0.25 and np.mean(got) >= 0.75:
+                flags.append({"team": t, "level": L, "ours_per_match": round(float(np.mean(got)), 2),
+                              "reference_opr": round(float(opr[t]), 2)})
+    report["capability_flags"] = flags
+    print(f"  capability flags (credited at a level the team shows no sign of scoring): {len(flags)}")
+    for f in flags:
+        print(f"    {f['team']} {f['level']}: ours {f['ours_per_match']}/match, reference OPR {f['reference_opr']}")
     return report
 
 

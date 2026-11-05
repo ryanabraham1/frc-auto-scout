@@ -193,10 +193,11 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
 
     # ---- video ------------------------------------------------------------------------
     if video_path is None:
-        if not m.videos:
+        if not m.videos and not m.local_video:
             raise RuntimeError(f"{match_key}: no video on TBA")
         prog.update("download", 0.1, "downloading video")
-        video_path = str(download(m.videos[0], height=opts.video_height))
+        from .video import match_video
+        video_path = str(match_video(m, height=opts.video_height))
     video = Video(video_path)
     log(f"video {Path(video_path).name} {video.width}x{video.height} {video.fps:.0f}fps {video.duration:.0f}s")
 
@@ -388,6 +389,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
         "comp_level": m.comp_level, "match_number": m.match_number, "set_number": m.set_number,
         "red": m.red, "blue": m.blue, "red_score": m.red_score, "blue_score": m.blue_score,
         "video": m.videos[0] if m.videos else Path(video_path).stem,
+        "video_source": m.video_source,
         "video_offset": round(clock.start_vt, 2), "clock": clock.to_dict(),
         "timeline": tl.to_dict(), "identity": {k: v for k, v in ctx.identity.items()},
         "identity_conf": ctx.identity_conf, "identity_notes": solved.notes[-30:],
@@ -532,6 +534,25 @@ def relabel(match_key: str, tba: TBA | None = None) -> dict:
     path.write_text(json.dumps(old, default=_json_default))
     tp.write_text(json.dumps(tracker.to_dict()))
     return reanalyze(match_key, tba)
+
+
+def repair_identity(match_key: str) -> list:
+    """Apply the anchor repair to a processed match's saved labels (no video, no re-solve): rewrites
+    its tracks and tracklets if any label changed, and returns the changed tracklet ids."""
+    path = RESULTS_DIR / f"{match_key}.json"
+    old = json.loads(path.read_text())
+    tp = RESULTS_DIR / f"{match_key}_tracklets.json"
+    saved = json.loads(tp.read_text())
+    tracker = RobotTracker.from_dict(saved, field_model=games.get(old["year"]).field)
+    before = {t.id: t.team for t in tracker.done}
+    tracker.repair_saved()
+    changed = [t.id for t in tracker.done if t.team != before[t.id]]
+    if changed:
+        old.update(_track_fields({s.key: s.track for s in tracker.all_slots()}))
+        old.setdefault("tracker", {})["anchor_repairs"] = tracker.stats.get("anchor_repairs", 0)
+        path.write_text(json.dumps(old, default=_json_default))
+        tp.write_text(json.dumps(tracker.to_dict()))
+    return changed
 
 
 def save_labels(match_key: str, labels: dict[int, int | None]) -> dict:

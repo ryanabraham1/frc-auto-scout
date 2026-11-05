@@ -238,6 +238,9 @@ def test_event_prior_favours_the_teams_that_score_and_skips_this_match(monkeypat
     from autoscout import games
 
     plugin = games.get(2025)
+    from autoscout.games import reefscape2025
+
+    monkeypatch.setattr(reefscape2025, 'PRIOR_ALPHA', 1.0)  # off by default; the mechanism itself is tested
     monkeypatch.setattr(plugin, 'official_counts', lambda bd: {
         'auto': dict.fromkeys(('L1', 'L2', 'L3', 'L4'), 0), 'teleop': {'L1': 0, 'L2': 0, 'L3': 0, 'L4': bd}})
     teams = [1, 2, 3, 4, 5, 6]

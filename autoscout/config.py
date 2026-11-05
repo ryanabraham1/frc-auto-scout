@@ -53,6 +53,15 @@ def yt_cookies() -> Path | None:
     return None
 
 
+def yt_cookies_browser() -> str | None:
+    """Optional yt-dlp browser/profile spec, e.g. firefox:C:/path/to/profile.
+
+    A configured cookies file takes precedence. Browser credentials remain in
+    their existing profile; we do not export them to a project file.
+    """
+    return os.environ.get("YT_COOKIES_BROWSER", "").strip() or None
+
+
 def device() -> str:
     """'cuda' (NVIDIA, e.g. RTX 3060), 'mps' (Apple silicon GPU, e.g. M3), else 'cpu'.
 

@@ -227,3 +227,32 @@ def test_official_fuel_without_robot_evidence_is_reported_unattributed():
         assert result["alliances"][a]["unattributed_fuel"] == 3
         assert result["alliances"][a]["unattributed_fuel_by_period"]["auto"] == 3
         assert sum(result["teams"][t]["fuel_scored"] for t in teams[a]) == 0
+
+
+def test_volley_consensus_preserves_clear_release_from_a_neighbor(monkeypatch):
+    from types import SimpleNamespace
+    plugin = Rebuilt2026()
+    launches = [SimpleNamespace(t0=i*.1,start=(100.,400.),target='red_hub',rising=True,n_pieces=1)
+                for i in range(4)]
+    monkeypatch.setattr(plugin,'hub_shooter',lambda ctx,l,*args:'red1' if l is launches[2] else 'red0')
+    monkeypatch.setattr(plugin,'launch_distances',lambda ctx,l,*args:
+                        {'red0':(.8,True),'red1':(.05,True)} if l is launches[2]
+                        else {'red0':(.05,True),'red1':(.8,True)})
+    links=plugin.link_hub_flights(None,launches,{},lambda x,y:np.zeros(len(x),bool))
+    assert links[id(launches[2])]=='red1'
+
+
+def test_measured_release_at_top_beats_neighbors_firing_history(monkeypatch):
+    from types import SimpleNamespace
+    plugin=Rebuilt2026()
+    early=SimpleNamespace(t0=0.,start=(130.,500.))
+    now=SimpleNamespace(t0=1.,start=(150.,480.))
+    for l in (early,now): l.rising=True
+    monkeypatch.setattr(plugin,'hub_bounce',lambda ctx:lambda l:False)
+    monkeypatch.setattr(plugin,'launch_distances',lambda ctx,l:
+                        {'red0':(.05,True),'red1':(2.,True)} if l is early else
+                        {'red0':(.13,True),'red1':(.04,True)})
+    boxes={'red0':(100.,500.,160.,560.),'red1':(140.,480.,200.,540.)}
+    monkeypatch.setattr(plugin,'robot_box',lambda ctx,s,t:(boxes[s],True))
+    out=plugin.history_shooters(None,[early,now],lambda x,y:np.zeros(len(x),bool))
+    assert out[id(now)]=='red1'

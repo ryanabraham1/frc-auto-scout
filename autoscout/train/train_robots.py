@@ -165,6 +165,7 @@ def _train(base, epochs, imgsz, batch, device, name, repeat, hand_only, freeze, 
     from ultralytics import YOLO
 
     data = split(repeat=repeat, hand_only=hand_only)
+    split_manifest = data.with_name("split.json").read_text()
     from ..vision.detect import DEFAULT_WEIGHTS
     base = base or next((str(p) for p in DEFAULT_WEIGHTS[1:3] if p.exists()), "yolo11s.pt")
     model = YOLO(base)
@@ -180,6 +181,7 @@ def _train(base, epochs, imgsz, batch, device, name, repeat, hand_only, freeze, 
     out = config.DATA_DIR / "models" / "experiments" / Path(res.save_dir).name / "best.pt"
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(best, out)
+    (out.parent / "split.json").write_text(split_manifest)
     report = promote(out)
     (out.parent / "evaluation.json").write_text(json.dumps(report, indent=2))
     print(report["reason"])

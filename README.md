@@ -77,6 +77,7 @@ pip install -e .
 # secrets (git-ignored): .secrets/.env with
 #   TBA_API_KEY=...            (thebluealliance.com/account)
 #   YT_COOKIES=.secrets/cookies.txt   (only needed if YouTube blocks downloads)
+#   YT_COOKIES_BROWSER=firefox:C:/path/to/profile   (alternative: use an existing browser session)
 autoscout calibrate 2026txhou_qm1        # saves a reference frame for the event
 autoscout serve                           # http://127.0.0.1:8000 -> Calibrate -> click >= 4 landmarks
 autoscout run-event 2026txhou            # processes every match with a video
@@ -84,6 +85,23 @@ autoscout export 2026txhou --out txhou.csv
 ```
 
 Useful commands:
+
+The event workflow is also available in the web dashboard: open **Events**, enter the
+event key, and select **Calibrate**. Prepare a reference frame, draw the wide-shot
+rectangle, mark at least four landmarks, and save. On the same page, configure any
+**Secondary cameras** by choosing the field element and drawing its broadcast pane.
+Optional scoring-structure rectangles let the system watch placements in those panes.
+Scoreboard rectangles can be set manually if automatic clock/score reading fails.
+
+Process a few matches from the event page, then return to **Calibrate → Fit secondary
+cameras**. Refresh camera status after the job finishes to review observation counts
+and fit errors; each view needs at least 25 matching observations to attempt a fit.
+Use **Recompute event** to apply fitted positions. After changing camera panes,
+select previously processed matches on the event page and process them again to
+collect observations from the new rectangles. Robot identity corrections, robot
+labeling, detector training, and CSV exports are also available in the dashboard.
+Installing the application, configuring the TBA API key, and starting the web server
+remain initial machine setup steps.
 
 | Command | What it does |
 |---|---|

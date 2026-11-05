@@ -502,29 +502,59 @@ async function viewCalibrate(ek) {
   const c = await api(`/api/calibration/${ek}`);
   const crumb = `<a href="#/events">Events</a> / <a href="#/event/${ek}">${esc(ek)}</a> / calibrate`;
   if (!c.has_reference) { app.innerHTML = head(`Calibrate ${esc(ek)}`, 'Prepare a reference frame from a match video, then mark the field landmarks.', '', crumb) + `<div class="card row"><input id="refmatch" aria-label="Reference match key" value="${ek}_qm1"><button id="prepare" class="primary">Prepare reference frame</button><button id="reload">Check reference</button><a class="small" href="/api/run/${ek}/log" target="_blank">Preparation log</a></div>`; $('#prepare').onclick = async () => { await api(`/api/calibration/${ek}/prepare`, {method: 'POST', headers: H, body: JSON.stringify({match_key: $('#refmatch').value.trim()})}); notify('Preparing reference frame. Check the reference after the job finishes.'); }; $('#reload').onclick = () => viewCalibrate(ek); return; }
-  const pts = {...c.points}; let view = c.view || null; let mode = 'point';
+  const pts = {...c.points}, aux = {...c.aux_views}, watch = {...c.aux_watch};
+  const overlay = Object.fromEntries(['timer', 'blue_score', 'red_score'].filter(k => c.overlay[k]).map(k => [k, c.overlay[k]]));
+  let view = c.view || null; let mode = 'point';
   app.innerHTML = head(`Calibrate ${esc(ek)}`, '', '', crumb) + `
   <div class="card small"><b>1.</b> Drag a rectangle around the wide shot of the whole field (exclude the score bar and picture-in-picture views).
    <b>2.</b> Pick a landmark and click where it touches the carpet. Use at least 4 spread-out landmarks (corners, center-line ends, hub/reef centers).
    x = 0 is the blue alliance wall; y = 0 is the side named in configs/fields/${c.year}.yaml.</div>
   <div class="card row"><button id="mv">Draw view rectangle</button><select id="lm">${Object.keys(c.landmarks).map(k => `<option>${k}</option>`).join('')}</select>
    <button id="mp">Click landmark</button><button id="clr">Remove landmark</button><span class="spacer"></span><span id="msg" class="muted small"></span><button id="save" class="primary">Save</button></div>
+  <div class="card"><h2>Secondary cameras</h2><p class="small muted">Select the field element shown by a close-up, then draw its camera pane on the image below. Optionally mark the scoring structure inside that pane to watch game-piece placements. Save before processing matches.</p>
+   <div class="row"><select id="cam" aria-label="Secondary camera field element">${c.elements.map(k => `<option>${esc(k)}</option>`).join('')}</select><button id="drawcam">Draw camera pane</button><button id="drawwatch">Draw scoring structure</button><button id="delcam">Remove camera</button></div>
+   <div id="camlist" class="small" style="margin-top:12px"></div>
+   <p class="small muted">After processing matches, fit the cameras from robots seen in both views. Then recompute the event to apply the fitted positions. If camera rectangles change, process the affected matches again first.</p>
+   <div class="row"><button id="fitcams">Fit secondary cameras</button><button id="camstatus">Refresh camera status</button><button id="camrecompute">Recompute event</button><a href="/api/run/${ek}/log" target="_blank">Job log</a></div><div id="camresults" class="small" role="status" style="margin-top:12px"></div></div>
+  <details class="card"><summary>Scoreboard rectangles (if automatic reading fails)</summary><p class="small muted">Choose a value and draw a tight rectangle around its digits in the reference image, then save.</p><div class="row"><select id="scorepart" aria-label="Scoreboard value"><option value="timer">Match clock</option><option value="blue_score">Blue score</option><option value="red_score">Red score</option></select><button id="drawscore">Draw scoreboard rectangle</button></div></details>
   <div class="card" style="padding:0;overflow:hidden"><div class="canvaswrap"><img id="img" src="/api/calibration/${ek}/ref.jpg"><canvas id="cv"></canvas></div></div>
   <div class="card"><div class="card-head"><h2>Preview</h2></div><img id="prev" style="max-width:100%;border-radius:8px" src="/api/calibration/${ek}/preview.jpg?${Date.now()}"></div>`;
   const img = $('#img'), cv = $('#cv'), ctx = cv.getContext('2d');
   const draw = () => { cv.width = img.naturalWidth; cv.height = img.naturalHeight; ctx.clearRect(0, 0, cv.width, cv.height); ctx.lineWidth = 3;
     if (view) { ctx.strokeStyle = '#fff'; ctx.strokeRect(...view); }
+    const rect = (r, label, color) => { ctx.strokeStyle = ctx.fillStyle = color; ctx.strokeRect(...r); ctx.font = '20px sans-serif'; ctx.fillText(label, r[0] + 5, r[1] + 23); };
+    Object.entries(aux).forEach(([k, r]) => rect(r, k, '#00ddff'));
+    Object.entries(watch).forEach(([k, r]) => rect([r[0], r[1], r[2] - r[0], r[3] - r[1]], `${k} structure`, '#ffcc00'));
+    Object.entries(overlay).forEach(([k, r]) => rect(r, k, '#00ff88'));
     Object.entries(pts).forEach(([k, [x, y]]) => { ctx.strokeStyle = ctx.fillStyle = '#ff2bd6'; ctx.beginPath(); ctx.arc(x, y, 7, 0, 7); ctx.stroke(); ctx.font = '20px sans-serif'; ctx.fillText(k, x + 9, y - 9); }); };
-  img.onload = draw;
+  img.onload = draw; if (img.complete && img.naturalWidth) draw();
   const toImg = e => { const b = cv.getBoundingClientRect(); return [(e.clientX - b.left) * cv.width / b.width, (e.clientY - b.top) * cv.height / b.height]; };
   let drag = null;
-  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); if (mode === 'view') drag = toImg(e); };
-  cv.onpointerup = e => { const p = toImg(e); if (mode === 'view' && drag) { view = [Math.round(Math.min(drag[0], p[0])), Math.round(Math.min(drag[1], p[1])), Math.round(Math.abs(p[0] - drag[0])), Math.round(Math.abs(p[1] - drag[1]))]; drag = null; mode = 'point'; }
+  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); if (mode !== 'point') drag = toImg(e); };
+  cv.onpointerup = e => { const p = toImg(e); if (mode !== 'point' && drag) { const r = [Math.round(Math.min(drag[0], p[0])), Math.round(Math.min(drag[1], p[1])), Math.round(Math.abs(p[0] - drag[0])), Math.round(Math.abs(p[1] - drag[1]))]; drag = null;
+      if (r[2] < 2 || r[3] < 2) return;
+      if (mode === 'view') view = r;
+      if (mode === 'camera') aux[$('#cam').value] = r;
+      if (mode === 'watch') watch[$('#cam').value] = [r[0], r[1], r[0] + r[2], r[1] + r[3]];
+      if (mode === 'score') overlay[$('#scorepart').value] = r;
+      mode = 'point'; renderCameras(); $('#msg').textContent = 'Unsaved changes'; }
     else if (mode === 'point') pts[$('#lm').value] = p.map(Math.round); draw(); };
   $('#mv').onclick = () => mode = 'view'; $('#mp').onclick = () => mode = 'point'; $('#clr').onclick = () => { delete pts[$('#lm').value]; draw(); };
-  $('#save').onclick = async () => { if (!view) { $('#msg').textContent = 'Draw the view rectangle first.'; return; }
-    const res = await api(`/api/calibration/${ek}`, {method: 'POST', headers: H, body: JSON.stringify({view, points: pts})});
-    $('#msg').textContent = res.reprojection_error_m != null ? `Saved · fit error ${res.reprojection_error_m.toFixed(2)} m` : 'Saved (needs at least 4 landmarks)'; $('#prev').src = `/api/calibration/${ek}/preview.jpg?${Date.now()}`; };
+  const renderCameras = () => { $('#camlist').textContent = Object.keys(aux).length ? `Configured panes: ${Object.keys(aux).join(', ')}` : 'No secondary cameras configured. Wide-shot processing still works.'; };
+  const chooseMode = (next, text) => { mode = next; $('#msg').textContent = text; };
+  $('#drawcam').onclick = () => chooseMode('camera', 'Drag around the selected camera pane below');
+  $('#drawwatch').onclick = () => chooseMode('watch', 'Drag around the scoring structure below');
+  $('#drawscore').onclick = () => chooseMode('score', 'Drag around the selected scoreboard digits below');
+  $('#delcam').onclick = () => { delete aux[$('#cam').value]; delete watch[$('#cam').value]; renderCameras(); draw(); $('#msg').textContent = 'Unsaved changes'; };
+  const refreshCameras = async () => { const s = await api(`/api/calibration/${ek}/cameras`); $('#camresults').textContent = `${s.matches} processed matches. ` + Object.entries(s.views).map(([name, v]) => `${name}: ${v.pairs} matching observations; ${v.fit ? `fitted, ${v.fit.inliers} inliers, median error ${v.fit.err_m} m` : `not fitted (needs at least ${s.minimum_pairs} observations)`}`).join(' · '); };
+  $('#camstatus').onclick = () => refreshCameras().catch(e => notify(e.message));
+  $('#fitcams').onclick = async () => { try { if (JSON.stringify(aux) !== JSON.stringify(c.aux_views)) return notify('Save the camera rectangles before fitting.'); await api(`/api/calibration/${ek}/cameras`, {method: 'POST'}); notify('Fitting cameras. Refresh status after the job finishes; see Job log for details.'); } catch (e) { notify(e.message); } };
+  $('#camrecompute').onclick = async () => { try { await api(`/api/event/${ek}/reanalyze`, {method: 'POST'}); notify('Recomputing event. See Job log for progress.'); } catch (e) { notify(e.message); } };
+  renderCameras(); refreshCameras().catch(e => { $('#camresults').textContent = e.message; });
+  $('#save').onclick = async () => { if (!view) { $('#msg').textContent = 'Draw the view rectangle first.'; return; } try {
+    const res = await api(`/api/calibration/${ek}`, {method: 'POST', headers: H, body: JSON.stringify({view, points: pts, aux_views: aux, aux_watch: watch, overlay})});
+    c.aux_views = JSON.parse(JSON.stringify(aux));
+    $('#msg').textContent = res.reprojection_error_m != null ? `Saved · fit error ${res.reprojection_error_m.toFixed(2)} m` : 'Saved (needs at least 4 landmarks)'; $('#prev').src = `/api/calibration/${ek}/preview.jpg?${Date.now()}`; await refreshCameras(); } catch (e) { $('#msg').textContent = e.message; } };
 }
 
 async function viewLabel() {

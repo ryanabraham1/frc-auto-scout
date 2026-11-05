@@ -1,0 +1,196 @@
+{
+  "scope": "Fresh AI-reviewed physical-robot attribution test; match excluded from linker training. Sample selected for visible rising releases. Not full-match scoring accuracy.",
+  "labels": [
+    {
+      "id": "2026cc_qm35:16",
+      "t": 8.292,
+      "slot": "red2",
+      "visible_team": 972,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_000.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:103",
+      "t": 13.764,
+      "slot": "blue1",
+      "visible_team": 9128,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_000.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:159",
+      "t": 22.039,
+      "slot": "red2",
+      "visible_team": 1540,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_000.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:271",
+      "t": 36.403,
+      "slot": "red1",
+      "visible_team": 1540,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_000.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:334",
+      "t": 41.124,
+      "slot": "blue0",
+      "visible_team": 4270,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_004.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:381",
+      "t": 44.428,
+      "slot": "blue0",
+      "visible_team": 4270,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_004.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:413",
+      "t": 47.714,
+      "slot": "red0",
+      "visible_team": 687,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_004.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:473",
+      "t": 51.568,
+      "slot": "red1",
+      "visible_team": 1540,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_004.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:531",
+      "t": 56.907,
+      "slot": "red1",
+      "visible_team": 687,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_008.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:578",
+      "t": 60.994,
+      "slot": "blue0",
+      "visible_team": 4270,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_008.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:778",
+      "t": 70.771,
+      "slot": null,
+      "visible_team": null,
+      "status": "unknown",
+      "evidence": "data/shot_holdout_qm35/sheet_008.jpg",
+      "note": "Two adjacent red shooters; source remains uncertain."
+    },
+    {
+      "id": "2026cc_qm35:979",
+      "t": 81.949,
+      "slot": "red1",
+      "visible_team": 1540,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_008.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:1026",
+      "t": 85.869,
+      "slot": "red1",
+      "visible_team": 1540,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_012.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:1209",
+      "t": 95.228,
+      "slot": "blue0",
+      "visible_team": 4270,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_012.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:1582",
+      "t": 124.758,
+      "slot": "red1",
+      "visible_team": 1540,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_012.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:1659",
+      "t": 129.262,
+      "slot": "red1",
+      "visible_team": 1540,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_012.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:1720",
+      "t": 134.334,
+      "slot": "red1",
+      "visible_team": 1540,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_016.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:1823",
+      "t": 142.676,
+      "slot": "blue0",
+      "visible_team": 4270,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_016.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:1917",
+      "t": 149.299,
+      "slot": "red1",
+      "visible_team": 1540,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_016.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    },
+    {
+      "id": "2026cc_qm35:1958",
+      "t": 155.389,
+      "slot": "red1",
+      "visible_team": 1540,
+      "status": "labeled",
+      "evidence": "data/shot_holdout_qm35/sheet_016.jpg",
+      "note": "AI visual review of release point and robot boxes; no model predictions displayed."
+    }
+  ],
+  "frozen_checkpoints_sha256": {
+    "data\\models\\experiments\\shot_linker_v1\\mlp_16.pt": "d66d416d6b659b317acfcf1c289d1feb8dbcb4b4e699218c2c94c7fe83513582",
+    "data\\models\\experiments\\shot_linker_v1\\mlp_32.pt": "550e1d85b071cc88e126ffdf6234cb218150b7cf41b8bd9a59474155b0b9afa3",
+    "data\\models\\experiments\\shot_linker_v1\\mlp_64.pt": "78ba4d81483031c8e1f3f653b62b026d5598e2b6761cf93fa0680792c2ef777f",
+    "data\\models\\experiments\\shot_linker_v1\\trees_15.joblib": "13b68c6c13c9f6d11298672275b88b9be2131a508348958596f29de7f17470a6",
+    "data\\models\\experiments\\shot_linker_v1\\trees_31.joblib": "4700441346a1e25be5831f790c374d5dd6b14d3c73afc9f996c8a811cf1057c8",
+    "data\\models\\experiments\\shot_linker_v1\\trees_7.joblib": "b34039feb741cf09542993d0d64f4af86b0dcc7c2165989f88f0480de4422b75",
+    "data\\models\\experiments\\shot_linker_v2\\mlp_16.pt": "0b44dea01daff1df0424abcb730de0484f70be7fe73049887e20297cb7c20693",
+    "data\\models\\experiments\\shot_linker_v2\\mlp_32.pt": "842ad938aeb3f3098891068d75f9b8408e1a931f4d845fb465799d2871327004",
+    "data\\models\\experiments\\shot_linker_v2\\mlp_64.pt": "c0d7aa570ac410415a7c485c4013be4b92aa7fe589eaf68e3f63d62b97eca44c"
+  }
+}

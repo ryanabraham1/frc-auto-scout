@@ -237,6 +237,32 @@ def test_robot_tracker_follows_robots_across_a_crossing():
     assert tr.slots["red0"].track[-1][1] == pytest.approx(12.0)  # team 111's track ends on the right
 
 
+def _crossed_tracker(after_reads):
+    """Two robots cross and the saved labels swap them afterwards."""
+    from autoscout.vision.tracker import RobotTracker
+
+    tr = RobotTracker(None, None, {"red": [111, 222, 333], "blue": [444, 555, 666]})
+    tr.done = [_tracklet(0, 0, 5, 2.0, 7.0, "red", {111: 3.0}), _tracklet(1, 0, 5, 12.0, 7.6, "red", {222: 3.0}),
+               _tracklet(2, 6, 10, 7.4, 12.0, "red", after_reads), _tracklet(3, 6, 10, 7.0, 2.6, "red")]
+    for t, team in zip(tr.done, (111, 222, 222, 111)):
+        t.team = team
+    tr.times = [float(t) for t in np.arange(0, 10.01, 0.25)]
+    return tr
+
+
+def test_anchor_repair_honours_a_unanimous_read_the_labelling_broke():
+    tr = _crossed_tracker({111: 2.0})
+    tr.repair_saved()
+    assert [t.team for t in tr.done] == [111, 222, 111, 222]
+    assert tr.slots["red0"].track[-1][1] == pytest.approx(12.0)
+
+
+def test_anchor_repair_leaves_labels_alone_when_the_read_has_dissent():
+    tr = _crossed_tracker({111: 2.0, 222: 0.3})  # clear, but the box may have held both robots
+    tr.repair_saved()
+    assert [t.team for t in tr.done] == [111, 222, 222, 111]
+
+
 def test_robot_tracker_manual_label_wins_and_round_trips():
     from autoscout.vision.tracker import NOT_ROBOT, RobotTracker
 

@@ -72,20 +72,20 @@ def cmd_run_event(a):
     from . import db
     from .pipeline import Options, RESULTS_DIR
     from .tba import TBA, MatchInfo, sort_key
-    from .video import download
+    from .video import match_video
 
     tba = TBA(max_age_s=300)
     con = db.connect()
     ms = sorted((MatchInfo.from_tba(m) for m in tba.event_matches(a.event_key)), key=sort_key)
     if a.matches:  # an explicit list is processed whether or not it was done before
         want = {k if "_" in k else f"{a.event_key}_{k}" for k in a.matches.split(",") if k}
-        todo = [m for m in ms if m.key in want and m.videos]
+        todo = [m for m in ms if m.key in want and (m.videos or m.local_video)]
         missing = want - {m.key for m in todo}
         if missing:
             print("no video on TBA (skipped):", ", ".join(sorted(missing)))
     else:
         levels = set(a.levels.split(","))
-        ms = [m for m in ms if m.comp_level in levels and m.videos]
+        ms = [m for m in ms if m.comp_level in levels and (m.videos or m.local_video)]
         done = {r["match_key"] for r in con.execute("SELECT match_key FROM matches WHERE status='done'")}
         todo = [m for m in ms if a.force or m.key not in done][: a.limit or None]
     workers = max(1, min(a.workers, len(todo) or 1))
@@ -99,7 +99,7 @@ def cmd_run_event(a):
     # Demo videos render one at a time from saved results while the next matches process.
     with ThreadPoolExecutor(2) as dl, ThreadPoolExecutor(1) as demos, ProcessPoolExecutor(
             workers, initializer=_init_worker, initargs=(a.weights, int(a.event_key[:4]))) as pool:
-        fetch = {dl.submit(download, m.videos[0], height=opts.video_height): m for m in todo}
+        fetch = {dl.submit(match_video, m, height=opts.video_height): m for m in todo}
         pending = set(fetch)
         while pending:
             finished, pending = wait(pending, return_when=FIRST_COMPLETED)

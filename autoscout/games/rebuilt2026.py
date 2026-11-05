@@ -193,9 +193,15 @@ class Rebuilt2026(GamePlugin):
         unattributed = 0.0
         shot_log = []  # (t0, team or "HP", alliance, pieces, made) for time-local attribution
         hub_zone = self.hub_top_zone(ctx)
-        shooter_of = self.history_shooters(ctx, ctx.launches.get("fuel", []), hub_zone)
-        hub_links = self.link_hub_flights(ctx, ctx.launches.get("fuel", []), shooter_of, hub_zone) if HUB_LINK else {}
-        for L in ctx.launches.get("fuel", []):
+        launches = ctx.launches.get("fuel", [])
+        shooter_of = self.history_shooters(ctx, launches, hub_zone)
+        from ..vision.flight_fragments import join_hub_fragments
+        launches, joined = join_hub_fragments(launches, hub_zone, shooter_of, ctx.cal.view[2] / 1920)
+        if joined:
+            shooter_of = self.history_shooters(ctx, launches, hub_zone)
+            ctx.notes.append(f"Joined {len(joined)} rising releases to hub-entry fragments (counted once).")
+        hub_links = self.link_hub_flights(ctx, launches, shooter_of, hub_zone) if HUB_LINK else {}
+        for L in launches:
             period = period_of(ctx, L.t0 + COUNT_LAG)
             if period is None:
                 continue
@@ -526,7 +532,7 @@ class Rebuilt2026(GamePlugin):
         and an estimated (not detected) box costs less for such a robot: when a shooter's detection
         drops out mid-volley, its estimated position plus its history keep the volley its own, rather
         than handing it to a detected robot nearby that never fired."""
-        cand = {}
+        cand, direct = {}, {}
         sure = defaultdict(list)  # slot -> times of certain launches
         bounce = self.hub_bounce(ctx)
         for L in launches:
@@ -538,6 +544,20 @@ class Rebuilt2026(GamePlugin):
             if not ds:
                 continue
             cand[id(L)] = (L.t0, ds)
+            # A release at one measured robot's top beats another robot's firing
+            # history. Extended regions overlap above robots parked side by side.
+            top_hits = []
+            for slot, (_distance, observed) in ds.items():
+                if not observed:
+                    continue
+                box, _ = self.robot_box(ctx, slot, L.t0)
+                x0,y0,x1,y1 = box
+                h = y1-y0
+                if x0 <= L.start[0] <= x1 and y0-.2*h <= L.start[1] <= y0+.25*h:
+                    top_hits.append(slot)
+            if len(top_hits) == 1:
+                direct[id(L)] = top_hits[0]
+                sure[top_hits[0]].append(L.t0)
             ranked = sorted(ds.items(), key=lambda kv: kv[1][0])
             (s0, (d0, obs0)) = ranked[0]
             d1 = ranked[1][1][0] if len(ranked) > 1 else 9.0
@@ -546,6 +566,9 @@ class Rebuilt2026(GamePlugin):
         sure = {k: np.sort(v) for k, v in sure.items()}
         out = {}
         for lid, (t, ds) in cand.items():
+            if lid in direct:
+                out[lid] = direct[lid]
+                continue
             best, best_d = None, 1e9
             for slot, (d, observed) in ds.items():
                 ts = sure.get(slot)
@@ -638,7 +661,7 @@ class Rebuilt2026(GamePlugin):
         """Shooter of every flight into a HUB (hub_shooter), then streams made consistent: FUEL rising
         from one spot in quick succession is one robot emptying its hopper, so a stream goes to the robot
         most of its linked flights point to (STREAM_MAJORITY), including the flights no robot fitted."""
-        out, rel = {}, []
+        out, rel, protected = {}, [], set()
         for L in launches:
             if not (L.target and L.target.endswith("_hub")):
                 continue
@@ -646,6 +669,14 @@ class Rebuilt2026(GamePlugin):
             a = L.target[:-4]
             out[id(L)] = self.hub_shooter(ctx, L, a, shooter_of, at_hub)
             if getattr(L, "rising", True) and not at_hub:
+                # Stream consensus may repair missing/weak associations, but it
+                # must not erase a clear release at a different robot. Two nearby
+                # shooters often produce intersecting or adjacent volleys.
+                distances = sorted((d,slot) for slot,(d,_obs) in self.launch_distances(ctx,L,(a,)).items())
+                if distances and distances[0][1] == out[id(L)]:
+                    margin = distances[1][0]-distances[0][0] if len(distances)>1 else 9.
+                    if distances[0][0] < .15 and margin > .2:
+                        protected.add(id(L))
                 rel.append((L.t0, L.start[0], L.start[1], a, id(L), L.n_pieces))
         if not STREAM_PX:
             return out
@@ -671,7 +702,8 @@ class Rebuilt2026(GamePlugin):
             best = max(votes, key=votes.get)
             if votes[best] >= STREAM_MAJORITY * sum(votes.values()):
                 for r in s:
-                    out[r[4]] = best
+                    if r[4] not in protected:
+                        out[r[4]] = best
         return out
 
     def sighted_shooter(self, ctx: MatchContext, L, alliance: str) -> str | None:
