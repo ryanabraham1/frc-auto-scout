@@ -178,3 +178,8 @@ Results stay local, so a new machine must process them again. Don't use six work
   0.197 rules, 0.239 equal; auto 0.251, 0.240, 0.285; teleop 0.147, 0.156, 0.195. The 95% interval on the gain over the rules
   crosses zero in all three, so the rules stay in use. Both clearly beat an equal split. Scouted shares are noisy targets.
 - `docs/demos` holds all three matches after these fixes, rendered from `reanalyze` results.
+- 2026cosp_qm1 auto is now 9134 = 31, 2996 = 26, 3648 = 5, with 2 red unattributed. Two changes did this: flights just before the
+  computed auto start count (the start runs late), and tracked makes count as volley evidence. Share error on 2026cc stayed flat
+  (0.1971 to 0.1977). 2996's teleop fell from 72 to 66 as a result; that shift has not been checked against footage.
+- Tried and removed: filling unassigned flights from the robot dominating the same HUB within 1.5 s. It agreed with 87% of masked
+  links, but share error got worse (0.1971 to 0.1996) and Pikes Peak barely moved. About 128 Pikes Peak flights still show `unassigned`.
