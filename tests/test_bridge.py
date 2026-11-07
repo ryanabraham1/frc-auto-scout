@@ -740,6 +740,29 @@ def test_live_job_reports_each_matchs_state(world):
     assert backend.syncs()[-1]['jobs'][-1]['progress']['queued'] == [MK]
 
 
+def test_finished_recordings_are_removed_and_active_ones_kept(tmp_path):
+    for name in ('done-job', 'live-job'):
+        segment(tmp_path / 'live' / name, 1_800_000_000)
+    B.prune_recordings(tmp_path, {'live-job'})
+    assert not (tmp_path / 'live' / 'done-job').exists()
+    assert (tmp_path / 'live' / 'live-job').exists()
+
+
+def test_a_live_job_keeps_its_recording_until_its_final_report_is_sent(world):
+    backend, b, sessions = live_bridge(world)
+    backend.jobs = [job('live', source_url='https://www.twitch.tv/firstinspires', match_keys=[])]
+    b.tick()
+    folder = b.root / 'live' / job()['id']
+    assert folder.exists()
+    backend.cancels = [job()['id']]
+    b.tick()
+    assert folder.exists()  # stopping, but its report still reads this folder
+    b.queue.run_next(lambda mk, f, l, src: result(mk))
+    b.tick()
+    assert backend.syncs()[-1]['jobs'][-1]['status'] == 'cancelled'
+    assert not folder.exists()
+
+
 def test_clip_cache_keeps_the_newest(tmp_path):
     for i, name in enumerate(('old', 'mid', 'new')):
         p = tmp_path / f'{name}.mp4'

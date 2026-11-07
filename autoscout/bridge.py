@@ -42,8 +42,9 @@ log = logging.getLogger("autoscout.bridge")
 
 EVENT = re.compile(r"(?:2025|2026)[a-z0-9]+\Z")
 MIN_FREE_GB = 10  # below this, refuse new work: a full disk takes the whole queue down with it
-CLIP_CACHE_GB = 15
-LIVE_KEEP_S = 3 * 3600  # long enough for TBA to post a slow match
+# A clip only matters until its match is processed, so this just leaves room for re-runs.
+CLIP_CACHE_GB = 5
+LIVE_KEEP_S = 90 * 60  # long enough for TBA to post a slow match
 IDLE_S, BUSY_S = 15, 5
 OFFLINE_END_S = 2 * 3600  # a live job with nothing to record for this long has finished
 
@@ -68,6 +69,13 @@ def prune_clips(folder: Path, keep_gb: float = CLIP_CACHE_GB) -> None:
         total += p.stat().st_size
         if total > keep_gb * 1e9:
             p.unlink(missing_ok=True)
+
+
+def prune_recordings(root: Path, active: set[str]) -> None:
+    """A finished live job's recording is dead weight: its matches were cut when they posted."""
+    for folder in root.glob("live/*"):
+        if folder.is_dir() and folder.name not in active:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 class Backend:
@@ -655,6 +663,9 @@ class Bridge:
         for command in reply.get("commands", []):
             self.commands.offer(command)
         prune_clips(self.clips)
+        with closing(self.db()) as c:
+            active = {r["id"] for r in c.execute("SELECT id FROM remote_jobs WHERE kind='live' AND state!='done'")}
+        prune_recordings(self.root, active | set(self.live))
         return bool(reports or self.live or reply.get("jobs"))
 
 
