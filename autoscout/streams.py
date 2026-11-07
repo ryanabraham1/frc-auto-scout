@@ -26,12 +26,12 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import config
 
-# FMS actual_time is the start of the match. The overlay clock then finds the real start, so a
-# window only has to contain the match: pre-roll for clock error, tail for the 2:40 match plus
-# a stream-start estimate that can be a little off.
-VOD_BEFORE_S, VOD_AFTER_S = 30, 230
+# The overlay clock finds the real start, so a window only has to contain the match. FMS
+# actual_time can be well before it: at 2026mttd the match began 60-80 s later, so the tail covers
+# that delay plus the 2:40 match.
+VOD_BEFORE_S, VOD_AFTER_S = 30, 340
 # A live viewer is behind real time, so a segment's wall clock is later than what it shows.
-LIVE_BEFORE_S, LIVE_AFTER_S = 15, 240
+LIVE_BEFORE_S, LIVE_AFTER_S = 15, 340
 SEGMENT_S = 20
 SEGMENT_TIME = "%Y%m%dT%H%M%S"
 FORMAT = "bv*[height<=1080][vcodec^=avc1]+ba/b[height<=1080]/bv*[height<=1080]+ba/b"
@@ -156,13 +156,13 @@ def grab_frame(source: str | Path, out: Path) -> Path:
     """One frame: the end of a recorded segment, or the current picture of a stream link."""
     out.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(source, Path):
-        command = ["ffmpeg", "-v", "error", "-y", "-sseof", "-1", "-i", str(source), "-frames:v", "1", str(out)]
+        command = ["ffmpeg", "-v", "error", "-y", "-i", str(source), "-frames:v", "1", "-strict", "unofficial", str(out)]
     else:
         res = subprocess.run(_ytdlp("-g", "-f", LIVE_FORMAT, "--", source), capture_output=True, text=True, timeout=90)
         lines = res.stdout.split()
         if res.returncode or not lines:
             raise StreamError(_explain(res.stderr))
-        command = ["ffmpeg", "-v", "error", "-y", "-i", lines[0], "-frames:v", "1", str(out)]
+        command = ["ffmpeg", "-v", "error", "-y", "-i", lines[0], "-frames:v", "1", "-strict", "unofficial", str(out)]
     out.unlink(missing_ok=True)
     subprocess.run(command, capture_output=True, timeout=60)
     if not out.exists():
@@ -304,6 +304,14 @@ def cut_clip(folder: Path, start: float, end: float, out: Path) -> Path:
         raise StreamError("Could not cut this match from the recording")
     tmp.replace(out)
     return out
+
+
+def covers(folder: Path, start: float, end: float) -> bool:
+    """Does this recording hold [start, end] without a hole?"""
+    times = [t for t, _ in segments(folder)]
+    inside = [t for t in times if start - SEGMENT_S * 1.5 <= t <= end]
+    return (len(inside) > 1 and inside[0] <= start and inside[-1] + SEGMENT_S >= end
+            and all(b - a <= SEGMENT_S * 2.5 for a, b in zip(inside, inside[1:])))
 
 
 def prune(folder: Path, keep_s: float, now: float | None = None) -> None:

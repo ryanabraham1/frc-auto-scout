@@ -41,8 +41,8 @@ def test_everything_else_is_refused(url):
 
 
 def test_vod_window_brackets_the_match():
-    assert streams.vod_window(10_000, 1_000, 20_000) == (8_970, 9_230)
-    assert streams.vod_window(1_010, 1_000, None) == (0, 240)
+    assert streams.vod_window(10_000, 1_000, 20_000) == (8_970, 9_340)
+    assert streams.vod_window(1_010, 1_000, None) == (0, 350)
     assert streams.vod_window(10_000, 1_000, 9_100)[1] == 9_100
 
 
@@ -121,7 +121,7 @@ def test_stream_runner_clips_then_processes(tmp_path, monkeypatch):
     monkeypatch.setattr(B.streams, 'probe', lambda url: B.streams.StreamInfo('was_live', 1_000, 40_000))
     source = {'stream': True, 'url': 'https://www.youtube.com/watch?v=zQ8Oibbg9Ro'}
     assert runner(MK, False, tmp_path / 'log', source)['match_key'] == MK
-    assert calls == [(8_970, 9_230), 'qm40']
+    assert calls == [(8_970, 9_340), 'qm40']
 
 
 @pytest.mark.parametrize('tba,source,message', [
@@ -635,6 +635,31 @@ def test_an_unmapped_b_team_never_loses_the_match():
     assert team_number('frc2073B', '2026mttd', {}) == 2073
     with pytest.raises(ValueError):
         team_number('frcX', '2026mttd', {})
+
+
+def test_a_recording_of_the_match_beats_any_stream(tmp_path, monkeypatch):
+    t = 1_800_000_000
+    for i in range(30):
+        segment(tmp_path / 'safety' / 'ev', t + 20 * i)
+    clips = tmp_path / 'clips'
+    clips.mkdir()
+    monkeypatch.setattr(B, 'cached_result', lambda k: None)
+    monkeypatch.setattr(B.streams, 'cut_clip', lambda f, a, b, out: out)
+    monkeypatch.setattr(B.streams, 'probe', lambda url: pytest.fail('asked a stream'))
+    used = []
+    tba = FakeTBA([{'key': MK, 'actual_time': t + 50}])
+    B.Runner(clips, tba, process=lambda k, f, l, v=None: used.append(v.name) or result(k))(MK, False, tmp_path / 'log', {'stream': True})
+    assert used == [f'{MK}_rec.mp4']
+
+
+def test_covers_needs_the_whole_window_without_holes(tmp_path):
+    t = 1_800_000_000
+    for i in list(range(10)) + list(range(14, 30)):
+        segment(tmp_path, t + 20 * i)
+    assert streams.covers(tmp_path, t + 300, t + 500)
+    assert not streams.covers(tmp_path, t + 100, t + 400)  # the hole
+    assert not streams.covers(tmp_path, t - 100, t + 100)  # before recording
+    assert not streams.covers(tmp_path, t + 400, t + 900)  # past the end
 
 
 def test_clips_only_live_job_cuts_but_never_queues(tmp_path):

@@ -124,6 +124,8 @@ class Runner:
         actual = self.tba.get(f"/match/{match_key}", max_age_s=30).get("actual_time")
         if not actual:
             raise MatchSkipped("TBA has no start time for this match yet")
+        if clip := self._recorded(match_key, actual):
+            return self.process(match_key, force, log_path, clip)
         if source.get("url"):  # a link the lead pasted is what they asked for: no fallback
             return self.process(match_key, force, log_path, self._clip(source["url"], match_key, actual, source, log_path))
         failure: Exception | None = None
@@ -135,6 +137,14 @@ class Runner:
         if self.tba.match(match_key).get("videos"):
             return self.process(match_key, force, log_path)
         raise failure or MatchSkipped("TBA lists no stream for this match: paste its link")
+
+    def _recorded(self, match_key: str, actual: float) -> Path | None:
+        """Our own recording has exact wall-clock times, which a platform's start time doesn't."""
+        start, end = actual - streams.LIVE_BEFORE_S, actual + streams.LIVE_AFTER_S
+        for folder in sorted(self.clips.parent.glob("live/*")) + sorted(self.clips.parent.glob("safety/*")):
+            if folder.is_dir() and streams.covers(folder, start, end):
+                return streams.cut_clip(folder, start, end, self.clips / f"{match_key}_rec.mp4")
+        return None
 
     def _clip(self, url, match_key, actual, source, log_path) -> Path:
         start = (source.get("stream_starts") or {}).get(streams.video_id(url))

@@ -1,12 +1,21 @@
 event_key: 2026mttd
 year: 2026
-view: [0, 560, 1920, 350]
+view: [0, 240, 1920, 404]
 frame_size: [1920, 1080]
 points:
-  # blue alliance is on the LEFT of this broadcast; the camera has about 1 degree of roll
-  blue_hub_center: [610, 766]
-  red_hub_center: [1256, 777]
-  center_line_yW: [935, 711]
-  center_line_y0: [931, 859]
-  blue_hub_top: [609, 668]
-  red_hub_top: [1258, 672]
+  # Measured on the in-match layout: wide shot on top, hub close-ups below. The pre-match full
+  # frame is the same picture 241 px lower. Blue is on the LEFT; about 1 degree of camera roll.
+  blue_hub_center: [610, 525]
+  red_hub_center: [1256, 536]
+  center_line_yW: [934, 471]
+  center_line_y0: [934, 618]
+  blue_hub_top: [609, 427]
+  red_hub_top: [1258, 431]
+overlay:
+  timer: [912, 164, 98, 36]
+  blue_score: [690, 96, 150, 70]
+  red_score: [1085, 96, 155, 70]
+  frame_size: [1920, 1080]
+aux_views:
+  blue_hub: [0, 645, 955, 435]
+  red_hub: [960, 645, 960, 435]
