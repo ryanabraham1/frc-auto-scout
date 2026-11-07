@@ -59,11 +59,16 @@ NEAR = 0.8  # m: two robots this close can be confused, so their tracklets are c
 PART_HEIGHT, PART_BOTTOM = 0.6, 0.25  # a box under this share of a robot's height, this near its bottom, is its bumpers
 LINK_GAP = 0.3  # s: longest miss a tracklet continues across
 # Track-guided detection: the detector runs at a low threshold, and a detection below STRONG_CONF
-# only extends a robot already tracked, where its motion says it should be (half hidden behind a
-# ramp, buried in a pile of pieces). It never starts a new tracklet, so weak false positives
-# elsewhere don't become robots.
+# extends a robot already tracked, where its motion says it should be (half hidden behind a ramp,
+# buried in a pile of pieces). On its own it starts nothing, so weak false positives elsewhere don't
+# become robots. A robot the model never scores highly would then never be tracked at all (at
+# 2026mttd hopper robots sat at 0.08-0.15 for a whole auto, and their shots went to whichever robot
+# had a box), so weak boxes that repeat in one place with their alliance's bumper colour start one.
 STRONG_CONF = 0.3
-WEAK_CONF = 0.1
+WEAK_CONF = 0.06
+CONFIRM_FRAMES = 4  # weak sightings that make a robot
+CONFIRM_WINDOW = 1.2  # s without a sighting before a candidate is forgotten
+CONFIRM_DIST = 0.7  # m between sightings of one candidate
 LINK_SPEED = 4.0  # m/s for the online link gate (MAX_SPEED stays the bound for offline joins)
 HIDE_NEAR = 1.0  # m from a tall element's edge: a robot that vanishes this close is behind it
 HIDE_HEIGHT = 1.2  # m: elements at least this tall can hide a robot from the wide shot
@@ -223,6 +228,7 @@ class RobotTracker:
         for a, b in itertools.combinations(cur, 2):
             if np.linalg.norm(a.p1 - b.p1) < NEAR:
                 cut.update((a.id, b.id))
+        self._confirm_weak(t, frame, dets, foot, used, live)
         self.active = []
         for tr in live:
             if tr.id in cut and len(tr.obs) > 1:
@@ -253,6 +259,31 @@ class RobotTracker:
                     th = frame[max(0, y0 - m): y1 + m, max(0, x0 - m): x1 + m]
                     tr.thumb = cv2.resize(th, (max(1, int(th.shape[1] * 160 / th.shape[0])), 160))
                     tr.thumb_area = (x1 - x0) * (y1 - y0)
+
+    def _confirm_weak(self, t, frame, dets, foot, used, live) -> None:
+        """Start a robot from weak boxes that keep agreeing with each other."""
+        self.candidates = [c for c in getattr(self, "candidates", []) if t - c[-1][0] <= CONFIRM_WINDOW]
+        for j, d in enumerate(dets):
+            if j in used or d.conf >= STRONG_CONF:
+                continue
+            if any(np.linalg.norm(foot[j] - tr.p1) < NEAR for tr in live):
+                continue  # a piece of a robot already tracked, or a robot about to be cut from it
+            if not self._helper_ok(frame, d, foot[j]):
+                continue
+            near = [c for c in self.candidates if c[-1][1].alliance == d.alliance
+                    and np.linalg.norm(c[-1][2] - foot[j]) <= CONFIRM_DIST]
+            if not near:
+                self.candidates.append([(t, d, foot[j])])
+                continue
+            seen = min(near, key=lambda c: np.linalg.norm(c[-1][2] - foot[j]))
+            seen.append((t, d, foot[j]))
+            if len(seen) >= CONFIRM_FRAMES:
+                tr = Tracklet(self._next)
+                self._next += 1
+                for when, box, spot in seen:
+                    self._add(tr, when, box, spot)
+                live.append(tr)
+                self.candidates.remove(seen)
 
     def _add(self, tr: Tracklet, t, d: Det, p):
         if tr.obs:
