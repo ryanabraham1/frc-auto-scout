@@ -33,6 +33,9 @@ VOD_BEFORE_S, VOD_AFTER_S = 30, 340
 # A live viewer is behind real time, so a segment's wall clock is later than what it shows.
 LIVE_BEFORE_S, LIVE_AFTER_S = 15, 340
 SEGMENT_S = 20
+# Segments land about 20 s apart. Anything wider is lost footage, and a clip with a hole makes the
+# match clock fit wrongly: a 30 s hole at 2026mttd cost one match its whole auto period.
+MAX_SEGMENT_GAP_S = SEGMENT_S * 1.6
 SEGMENT_TIME = "%Y%m%dT%H%M%S"
 FORMAT = "bv*[height<=1080][vcodec^=avc1]+ba/b[height<=1080]/bv*[height<=1080]+ba/b"
 LIVE_FORMAT = "b[protocol^=m3u8][height<=1080]/b[height<=1080]/b"
@@ -291,7 +294,7 @@ def cut_clip(folder: Path, start: float, end: float, out: Path) -> Path:
         raise StreamError("The recording does not cover this match")
     times = [t for t, _ in picked]
     # A reconnect mid-match leaves a hole that the clock reader would silently stretch over.
-    if any(b - a > SEGMENT_S * 2.5 for a, b in zip(times, times[1:])):
+    if any(b - a > MAX_SEGMENT_GAP_S for a, b in zip(times, times[1:])):
         raise StreamError("The stream dropped during this match")
     out.parent.mkdir(parents=True, exist_ok=True)
     listing = out.with_suffix(".txt")
@@ -311,7 +314,7 @@ def covers(folder: Path, start: float, end: float) -> bool:
     times = [t for t, _ in segments(folder)]
     inside = [t for t in times if start - SEGMENT_S * 1.5 <= t <= end]
     return (len(inside) > 1 and inside[0] <= start and inside[-1] + SEGMENT_S >= end
-            and all(b - a <= SEGMENT_S * 2.5 for a, b in zip(inside, inside[1:])))
+            and all(b - a <= MAX_SEGMENT_GAP_S for a, b in zip(inside, inside[1:])))
 
 
 def prune(folder: Path, keep_s: float, now: float | None = None) -> None:

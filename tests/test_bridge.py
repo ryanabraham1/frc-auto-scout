@@ -59,6 +59,15 @@ def segment(folder: Path, t: float):
     return p
 
 
+def test_a_short_restart_gap_counts_as_a_hole(tmp_path):
+    t = 1_800_000_000
+    for dt in (0, 20, 40, 90, 110, 130):  # 50 s between segments: 30 s of lost footage
+        segment(tmp_path, t + dt)
+    assert not streams.covers(tmp_path, t + 5, t + 120)
+    with pytest.raises(streams.StreamError, match='dropped'):
+        streams.cut_clip(tmp_path, t + 5, t + 120, tmp_path / 'out.mp4')
+
+
 def test_cut_clip_refuses_a_gap_in_the_recording(tmp_path):
     t = 1_800_000_000
     for dt in (0, 20, 200, 220):
