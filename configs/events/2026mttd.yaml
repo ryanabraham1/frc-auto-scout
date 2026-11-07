@@ -13,8 +13,8 @@ points:
   red_hub_top: [1258, 431]
 overlay:
   timer: [912, 164, 98, 36]
-  blue_score: [690, 96, 150, 70]
-  red_score: [1085, 96, 155, 70]
+  blue_score: [672, 92, 172, 78]
+  red_score: [1078, 92, 172, 78]
   frame_size: [1920, 1080]
 aux_views:
   blue_hub: [0, 645, 955, 435]
