@@ -1,0 +1,4 @@
+# Credit a person checked against the footage. Reruns keep these, because a rerun repeats the mistake.
+2026mttd_qm12:
+  # 3970's auto volley arcs over 3256, parked beside the hub, into the hub. 3256 did not shoot in auto.
+  - {from: 3256, to: 3970, period: auto}

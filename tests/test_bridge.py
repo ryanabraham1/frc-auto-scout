@@ -709,6 +709,46 @@ def test_a_lead_sees_why_a_match_failed(tmp_path, line, want):
     assert want in B.failure_reason(log)
 
 
+def credit_match():
+    return {'match_key': MK, 'event_key': EVENT, 'teams': {
+        '3256': {'alliance': 'blue', 'fuel_scored': 55, 'fuel_scored_auto': 53, 'fuel_scored_teleop': 2,
+                 'fuel_scored_by_period': {'auto': 53, 'shift2': 2}},
+        '3970': {'alliance': 'blue', 'fuel_scored': 74, 'fuel_scored_auto': 11, 'fuel_scored_teleop': 63,
+                 'fuel_scored_by_period': {'auto': 11, 'shift2': 63}},
+        '841': {'alliance': 'red', 'fuel_scored': 190, 'fuel_scored_auto': 50, 'fuel_scored_teleop': 140,
+                'fuel_scored_by_period': {'auto': 50}},
+    }}
+
+
+def test_a_checked_credit_fix_moves_fuel_and_keeps_the_alliance_total():
+    from autoscout.integration import apply_credit_fixes
+
+    out = apply_credit_fixes(credit_match(), [{'from': 3256, 'to': 3970, 'period': 'auto'}])
+    us, them = out['teams']['3256'], out['teams']['3970']
+    assert (us['fuel_scored_auto'], us['fuel_scored'], us['fuel_scored_teleop']) == (0, 2, 2)
+    assert (them['fuel_scored_auto'], them['fuel_scored']) == (64, 127)
+    assert us['fuel_scored'] + them['fuel_scored'] == 55 + 74
+    assert out['credit_fixes'][0]['fuel'] == 53
+
+
+def test_a_fix_across_alliances_or_for_an_absent_team_is_ignored():
+    from autoscout.integration import apply_credit_fixes
+
+    original = credit_match()
+    assert apply_credit_fixes(original, [{'from': 3256, 'to': 841, 'period': 'auto'}]) == original
+    assert apply_credit_fixes(original, [{'from': 1, 'to': 3970, 'period': 'auto'}]) == original
+
+
+def test_credit_fixes_survive_a_rerun(tmp_path, monkeypatch):
+    from autoscout import integration
+
+    monkeypatch.setattr(integration.config, 'EVENTS_DIR', tmp_path)
+    (tmp_path / f'{EVENT}_credit.yaml').write_text(f'{MK}:\n  - {{from: 3256, to: 3970, period: auto}}\n')
+    out = integration.export_result(credit_match())
+    assert out['match']['teams']['3256']['fuel_scored_auto'] == 0
+    assert out['match']['credit_fixes'][0]['fuel'] == 53
+
+
 def test_clips_only_live_job_cuts_but_never_queues(tmp_path):
     got = []
     s = live(tmp_path, [{'key': MK, 'actual_time': 2_000}], 99_999, got)

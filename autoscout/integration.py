@@ -41,12 +41,45 @@ class MatchSkipped(Exception):
     """One match cannot be done; the job carries on. The message is shown to the team lead."""
 
 
+def apply_credit_fixes(result: dict, fixes: list[dict]) -> dict:
+    """Move one period's fuel between teams, keeping the alliance total."""
+    teams = {str(k): dict(v) for k, v in result.get("teams", {}).items()}
+    applied = []
+    for fix in fixes:
+        source, target, period = teams.get(str(fix["from"])), teams.get(str(fix["to"])), fix["period"]
+        if not source or not target or source["alliance"] != target["alliance"]:
+            continue
+        by_source = dict(source.get("fuel_scored_by_period") or {})
+        by_target = dict(target.get("fuel_scored_by_period") or {})
+        moved = by_source.get(period, 0)
+        by_source[period], by_target[period] = 0, by_target.get(period, 0) + moved
+        side = "fuel_scored_auto" if period == "auto" else "fuel_scored_teleop"
+        source.update(fuel_scored_by_period=by_source, fuel_scored=source["fuel_scored"] - moved)
+        target.update(fuel_scored_by_period=by_target, fuel_scored=target["fuel_scored"] + moved)
+        source[side] -= moved
+        target[side] += moved
+        teams[str(fix["from"])], teams[str(fix["to"])] = source, target
+        applied.append({**fix, "fuel": moved})
+    return {**result, "teams": teams, "credit_fixes": applied} if applied else result
+
+
+def credit_fixes(result: dict) -> list[dict]:
+    path = config.EVENTS_DIR / f"{result.get('event_key')}_credit.yaml"
+    if not path.exists():
+        return []
+    import yaml
+
+    return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get(result.get("match_key"), [])
+
+
 def export_result(result: dict) -> dict:
     """Versioned evidence envelope; do not fabricate human-report fields."""
+    if fixes := credit_fixes(result):
+        result = apply_credit_fixes(result, fixes)
     keys = ("match_key", "event_key", "year", "label", "comp_level", "match_number",
             "set_number", "red", "blue", "red_score", "blue_score", "video", "video_offset",
             "clock", "teams", "alliances", "events", "identity", "identity_conf",
-            "identity_notes", "count_source", "auto_winner", "processing_s", "detector")
+            "identity_notes", "count_source", "auto_winner", "processing_s", "detector", "credit_fixes")
     return {"schema_version": 1, "source": "autoscout", "match": {k: result[k] for k in keys if k in result}}
 
 
