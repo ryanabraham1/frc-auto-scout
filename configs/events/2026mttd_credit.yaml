@@ -1,4 +1,6 @@
 # Credit a person checked against the footage. Reruns keep these, because a rerun repeats the mistake.
 2026mttd_qm12:
-  # 3970's auto volley arcs over 3256, parked beside the hub, into the hub. 3256 did not shoot in auto.
-  - {from: 3256, to: 3970, period: auto}
+  # 1678B (FMS 9978) fired this volley from the near side: its hopper empties between t+7.6 and t+9
+  # while 3970's stays full, and the balls are large on screen. Its track was stuck, so the shots
+  # went to 3256, parked beside the hub, which did not shoot in auto.
+  - {from: 3256, to: 9978, period: auto}
