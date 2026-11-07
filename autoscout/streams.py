@@ -33,9 +33,12 @@ VOD_BEFORE_S, VOD_AFTER_S = 30, 340
 # A live viewer is behind real time, so a segment's wall clock is later than what it shows.
 LIVE_BEFORE_S, LIVE_AFTER_S = 15, 340
 SEGMENT_S = 20
-# Segments land about 20 s apart. Anything wider is lost footage, and a clip with a hole makes the
-# match clock fit wrongly: a 30 s hole at 2026mttd cost one match its whole auto period.
+# A segment holds 20 s of stream time. A gap well past the usual spacing is lost footage, and a clip
+# with a hole makes the match clock fit wrongly.
 MAX_SEGMENT_GAP_S = SEGMENT_S * 1.6
+# Some encoders stamp time slowly: MadTown's Twitch feed carried every frame but 20 s of timestamps
+# took 27 s to arrive, in live and archive alike. Below this it's jitter, not a slow clock.
+MIN_TIME_STRETCH = 1.05
 SEGMENT_TIME = "%Y%m%dT%H%M%S"
 FORMAT = "bv*[height<=1080][vcodec^=avc1]+ba/b[height<=1080]/bv*[height<=1080]+ba/b"
 LIVE_FORMAT = "b[protocol^=m3u8][height<=1080]/b[height<=1080]/b"
@@ -294,7 +297,7 @@ def cut_clip(folder: Path, start: float, end: float, out: Path) -> Path:
         raise StreamError("The recording does not cover this match")
     times = [t for t, _ in picked]
     # A reconnect mid-match leaves a hole that the clock reader would silently stretch over.
-    if any(b - a > MAX_SEGMENT_GAP_S for a, b in zip(times, times[1:])):
+    if has_hole(times):
         raise StreamError("The stream dropped during this match")
     out.parent.mkdir(parents=True, exist_ok=True)
     listing = out.with_suffix(".txt")
@@ -305,6 +308,38 @@ def cut_clip(folder: Path, start: float, end: float, out: Path) -> Path:
     listing.unlink(missing_ok=True)
     if res.returncode or not tmp.exists():
         raise StreamError("Could not cut this match from the recording")
+    stretch = time_stretch(times, [_duration(p) for _, p in picked])
+    if stretch >= MIN_TIME_STRETCH:
+        retime(tmp, stretch, out)
+        tmp.unlink(missing_ok=True)
+    else:
+        tmp.replace(out)
+    return out
+
+
+def has_hole(times: list[float]) -> bool:
+    gaps = sorted(b - a for a, b in zip(times, times[1:]))
+    if not gaps:
+        return False
+    usual = gaps[len(gaps) // 2]
+    return gaps[-1] > max(MAX_SEGMENT_GAP_S, usual * 1.7)
+
+
+def time_stretch(times: list[float], durations: list[float]) -> float:
+    """Real seconds per stream second, from when segments arrived against what they hold."""
+    if len(times) < 3:
+        return 1.0
+    held = sum(durations[:-1])
+    return (times[-1] - times[0]) / held if held > 0 else 1.0
+
+
+def retime(source: Path, stretch: float, out: Path) -> Path:
+    """Rewrite timestamps only, so video seconds are real seconds. Every frame is kept."""
+    tmp = out.with_name(out.stem + ".time.mp4")
+    res = subprocess.run(["ffmpeg", "-v", "error", "-y", "-itsscale", f"{stretch:.5f}", "-i", str(source),
+                          "-c", "copy", str(tmp)], capture_output=True, text=True)
+    if res.returncode or not tmp.exists():
+        raise StreamError("Could not fix this recording's timing")
     tmp.replace(out)
     return out
 
@@ -314,7 +349,7 @@ def covers(folder: Path, start: float, end: float) -> bool:
     times = [t for t, _ in segments(folder)]
     inside = [t for t in times if start - SEGMENT_S * 1.5 <= t <= end]
     return (len(inside) > 1 and inside[0] <= start and inside[-1] + SEGMENT_S >= end
-            and all(b - a <= MAX_SEGMENT_GAP_S for a, b in zip(inside, inside[1:])))
+            and not has_hole(inside))
 
 
 def prune(folder: Path, keep_s: float, now: float | None = None) -> None:

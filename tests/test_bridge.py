@@ -59,6 +59,18 @@ def segment(folder: Path, t: float):
     return p
 
 
+def test_slow_timestamps_are_measured_from_arrival_times():
+    # 20 s of stream time every 27 s of real time, like MadTown's feed
+    assert streams.time_stretch([0, 27, 54, 81], [20, 20, 20, 20]) == pytest.approx(1.35)
+    assert streams.time_stretch([0, 20, 40, 60], [20, 20, 20, 20]) == pytest.approx(1.0)
+    assert streams.time_stretch([0, 20], [20, 20]) == 1.0
+
+
+def test_a_slow_stream_is_not_mistaken_for_a_hole():
+    assert not streams.has_hole([0, 27, 52, 88, 113, 140])
+    assert streams.has_hole([0, 27, 54, 120, 147])
+
+
 def test_a_short_restart_gap_counts_as_a_hole(tmp_path):
     t = 1_800_000_000
     for dt in (0, 20, 40, 90, 110, 130):  # 50 s between segments: 30 s of lost footage
@@ -83,6 +95,7 @@ def test_cut_clip_refuses_an_uncovered_window(tmp_path):
 
 
 def test_cut_clip_joins_exactly_the_overlapping_segments(tmp_path, monkeypatch):
+    monkeypatch.setattr(streams, '_duration', lambda p: 20.0)
     t = 1_800_000_000
     made = [segment(tmp_path, t + 20 * i) for i in range(6)]
     seen = {}
