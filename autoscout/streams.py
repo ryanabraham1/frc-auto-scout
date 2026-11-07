@@ -39,6 +39,8 @@ MAX_SEGMENT_GAP_S = SEGMENT_S * 1.6
 # Some encoders stamp time slowly: MadTown's Twitch feed carried every frame but 20 s of timestamps
 # took 27 s to arrive, in live and archive alike. Below this it's jitter, not a slow clock.
 MIN_TIME_STRETCH = 1.05
+# ffmpeg can hang on corrupt stream data without exiting: at 2026mttd one froze for 32 minutes.
+STALL_S = 90
 SEGMENT_TIME = "%Y%m%dT%H%M%S"
 FORMAT = "bv*[height<=1080][vcodec^=avc1]+ba/b[height<=1080]/bv*[height<=1080]+ba/b"
 LIVE_FORMAT = "b[protocol^=m3u8][height<=1080]/b[height<=1080]/b"
@@ -291,11 +293,13 @@ def covered_until(folder: Path) -> float | None:
 def cut_clip(folder: Path, start: float, end: float, out: Path) -> Path:
     """Join the recorded segments overlapping wall-clock [start, end] into `out`."""
     found = segments(folder)
+    # A segment reaches its successor only if nothing is missing between them: the last one before
+    # a freeze must not count as covering everything after it.
     picked = [(t, p) for i, (t, p) in enumerate(found)
-              if t < end and (found[i + 1][0] if i + 1 < len(found) else t + SEGMENT_S) > start]
-    if not picked:
-        raise StreamError("The recording does not cover this match")
+              if t < end and min(found[i + 1][0] if i + 1 < len(found) else t + SEGMENT_S, t + MAX_SEGMENT_GAP_S) > start]
     times = [t for t, _ in picked]
+    if not picked or times[0] > start + MAX_SEGMENT_GAP_S or times[-1] + MAX_SEGMENT_GAP_S < end:
+        raise StreamError("The recording does not cover this match")
     # A reconnect mid-match leaves a hole that the clock reader would silently stretch over.
     if has_hole(times):
         raise StreamError("The stream dropped during this match")
@@ -384,6 +388,17 @@ class Recorder:
             self._proc.terminate()
         self._thread.join(timeout=15)
 
+    def _watch(self, proc, poll_s: float = 5.0, now=time.time) -> None:
+        """Wait for ffmpeg, killing it if it stops writing while still alive."""
+        started = now()
+        while proc.poll() is None and not self._stop.is_set():
+            self._stop.wait(poll_s)
+            files = [p.stat().st_mtime for _, p in segments(self.folder)[-2:]]
+            if now() - max([started, *files]) > STALL_S:
+                proc.kill()
+                proc.wait()
+                return
+
     def _resolve(self) -> str:
         url = self.url() if callable(self.url) else self.url
         if not url:
@@ -411,7 +426,7 @@ class Recorder:
                      "-c", "copy", "-f", "segment", "-segment_time", str(SEGMENT_S),
                      "-segment_format", "mpegts", "-reset_timestamps", "1", "-strftime", "1", pattern],
                     stdout=out, stderr=subprocess.STDOUT)
-                self._proc.wait()
+                self._watch(self._proc)
             if not self._stop.is_set():
                 self.status = "reconnecting"
                 self._stop.wait(self.retry_s)

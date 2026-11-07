@@ -88,6 +88,66 @@ def test_cut_clip_refuses_a_gap_in_the_recording(tmp_path):
         streams.cut_clip(tmp_path, t, t + 230, tmp_path / 'out.mp4')
 
 
+def test_the_segment_before_a_freeze_does_not_cover_what_came_after(tmp_path):
+    t = 1_800_000_000
+    for dt in (0, 20, 40, 2_000, 2_020):
+        segment(tmp_path, t + dt)
+    with pytest.raises(streams.StreamError, match='cover'):
+        streams.cut_clip(tmp_path, t + 600, t + 950, tmp_path / 'out.mp4')
+
+
+def test_a_window_running_off_the_end_of_the_recording_is_refused(tmp_path):
+    t = 1_800_000_000
+    for i in range(5):
+        segment(tmp_path, t + 20 * i)
+    with pytest.raises(streams.StreamError, match='cover'):
+        streams.cut_clip(tmp_path, t + 40, t + 400, tmp_path / 'out.mp4')
+
+
+class StuckProcess:
+    def __init__(self):
+        self.killed = False
+
+    def poll(self):
+        return 1 if self.killed else None
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self):
+        return 1
+
+
+def recorder(tmp_path):
+    rec = streams.Recorder('u', tmp_path, tmp_path / 'log')
+    rec._stop.wait = lambda s: False
+    return rec
+
+
+def test_a_frozen_recorder_is_killed(tmp_path):
+    proc, clock = StuckProcess(), iter([1_000.0, 1_000.0 + streams.STALL_S + 1])
+    recorder(tmp_path)._watch(proc, now=lambda: next(clock))
+    assert proc.killed
+
+
+def test_a_recorder_still_writing_is_left_alone(tmp_path):
+    t = 1_800_000_000
+    made = segment(tmp_path, t)
+    import os
+    os.utime(made, (t + 500, t + 500))
+
+    class Ends(StuckProcess):
+        calls = 0
+
+        def poll(self):
+            Ends.calls += 1
+            return 0 if Ends.calls > 2 else None
+
+    proc = Ends()
+    recorder(tmp_path)._watch(proc, now=lambda: t + 510.0)
+    assert not proc.killed
+
+
 def test_cut_clip_refuses_an_uncovered_window(tmp_path):
     segment(tmp_path, 1_800_000_000)
     with pytest.raises(streams.StreamError, match='cover'):
