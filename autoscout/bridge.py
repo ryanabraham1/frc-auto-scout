@@ -82,6 +82,22 @@ class Backend:
         return r.json()
 
 
+def failure_reason(log_path: Path) -> str:
+    """The specific reason from a job log's tail when the pipeline gave one a lead can act on."""
+    try:
+        tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+    except OSError:
+        tail = ""
+    wrong = re.findall(r"WRONG_MATCH: ([^\n]+)", tail)
+    if wrong:
+        return wrong[-1].strip()
+    if "could not locate scoreboard" in tail or "could not read the match clock" in tail:
+        return "Could not read the scoreboard in this footage: check the calibration"
+    if "is not calibrated" in tail:
+        return "This event isn't calibrated"
+    return "Processing failed on the computer; see its job log"
+
+
 class Runner:
     """Turns a job's source into footage, then runs the normal per-match pipeline."""
 
@@ -101,7 +117,7 @@ class Runner:
         except streams.StreamError as e:
             raise MatchSkipped(str(e)) from e
         except subprocess.CalledProcessError as e:
-            raise MatchSkipped("Processing failed on the computer; see its job log") from e
+            raise MatchSkipped(failure_reason(log_path)) from e
         except subprocess.TimeoutExpired as e:
             raise MatchSkipped("Timed out on the computer") from e
         except requests.RequestException as e:

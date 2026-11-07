@@ -229,6 +229,12 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     clock = tl.clock
     if clock is None:
         raise RuntimeError("could not read the match clock from the overlay")
+    # Clips cut by time can hold the wrong match, and every number would then land on the wrong
+    # teams. Offseason timestamps and stream archives have both done this.
+    if m.comp_level == "qm":
+        shown = overlay.shown_qual(video.frame_at(clock.teleop_start_vt + 20))
+        if shown is not None and shown != m.match_number:
+            raise RuntimeError(f"WRONG_MATCH: this footage shows Qualification {shown}, not {m.match_number}")
     log(f"match clock: auto {clock.start_vt:.1f}-{clock.auto_end_vt:.1f}s, teleop ends {clock.teleop_end_vt:.1f}s; "
         f"overlay final blue {int(tl.blue[-1])} red {int(tl.red[-1])}")
 

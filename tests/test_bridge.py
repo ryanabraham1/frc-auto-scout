@@ -662,6 +662,31 @@ def test_covers_needs_the_whole_window_without_holes(tmp_path):
     assert not streams.covers(tmp_path, t + 400, t + 900)  # past the end
 
 
+@pytest.mark.parametrize('texts,want', [
+    (['Madtown Throwdown', 'Qualification 2'], 2),
+    (['Qualification', '41'], 41),
+    (['Qual 7'], 7),
+    (['Madtown Throwdown'], None),
+    (['Semifinal 3'], None),
+    ([], None),
+])
+def test_reading_the_match_off_the_overlay(texts, want):
+    from autoscout.overlay import qual_number
+
+    assert qual_number(texts) == want
+
+
+@pytest.mark.parametrize('line,want', [
+    ('RuntimeError: WRONG_MATCH: this footage shows Qualification 2, not 1', 'this footage shows Qualification 2, not 1'),
+    ('RuntimeError: could not locate scoreboard (timer + scores) in overlay', 'Could not read the scoreboard'),
+    ('something else', 'Processing failed'),
+])
+def test_a_lead_sees_why_a_match_failed(tmp_path, line, want):
+    log = tmp_path / 'job.log'
+    log.write_text('noise\n' + line + '\n')
+    assert want in B.failure_reason(log)
+
+
 def test_clips_only_live_job_cuts_but_never_queues(tmp_path):
     got = []
     s = live(tmp_path, [{'key': MK, 'actual_time': 2_000}], 99_999, got)

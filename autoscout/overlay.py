@@ -276,6 +276,22 @@ def fit_clock(samples: list[ScoreSample], auto_len: int, teleop_len: int, pause:
     return MatchClock(auto_len, teleop_len, auto_end, teleop_end)
 
 
+QUAL_LABEL = re.compile(r"qual[a-z]*\s*(?:match\s*)?(\d{1,3})\b", re.I)
+
+
+def qual_number(texts: list[str]) -> int | None:
+    """The qualification number a broadcast names, from its overlay text, or None if it names none."""
+    found = QUAL_LABEL.search(" ".join(texts))
+    return int(found.group(1)) if found else None
+
+
+def shown_qual(img: np.ndarray) -> int | None:
+    from . import ocr
+
+    top = img[: img.shape[0] // 4]
+    return qual_number([text for _, text, _ in ocr.read_text(top)])
+
+
 def read_timeline(video: Video, layout: OverlayLayout, auto_len: int, teleop_len: int,
                   interval: float = 0.5, t0: float = 0.0, t1: float | None = None,
                   counters: dict | None = None) -> ScoreTimeline:
