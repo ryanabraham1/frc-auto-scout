@@ -1,0 +1,12 @@
+event_key: 2026mttd
+year: 2026
+view: [0, 560, 1920, 350]
+frame_size: [1920, 1080]
+points:
+  # blue alliance is on the LEFT of this broadcast; the camera has about 1 degree of roll
+  blue_hub_center: [610, 766]
+  red_hub_center: [1256, 777]
+  center_line_yW: [935, 711]
+  center_line_y0: [931, 859]
+  blue_hub_top: [609, 668]
+  red_hub_top: [1258, 672]

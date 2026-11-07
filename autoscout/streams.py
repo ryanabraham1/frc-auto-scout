@@ -100,8 +100,8 @@ def webcast_url(webcast: dict) -> str | None:
     return None
 
 
-def event_stream(webcasts: list[dict], day: str, vod: bool = False) -> str | None:
-    """The stream covering `day` (YYYY-MM-DD): that day's, else whole-event, else any other day's.
+def stream_candidates(webcasts: list[dict], day: str, vod: bool = False) -> list[str]:
+    """Streams that could cover `day` (YYYY-MM-DD), best first: that day's, whole-event, other days'.
 
     Mirrors the app's pickWebcast. A Twitch channel has no history, so it can't serve an ended match.
     """
@@ -112,7 +112,62 @@ def event_stream(webcasts: list[dict], day: str, vod: bool = False) -> str | Non
             continue
         date = webcast.get("date")
         ranked.append((0 if date == day else 1 if not date else 2, order, url))
-    return min(ranked)[2] if ranked else None
+    return [url for _, _, url in sorted(ranked)]
+
+
+def event_stream(webcasts: list[dict], day: str, vod: bool = False) -> str | None:
+    found = stream_candidates(webcasts, day, vod)
+    return found[0] if found else None
+
+
+def live_stream(webcasts: list[dict], day: str, check=None) -> str | None:
+    """The first candidate actually on air. TBA's link for today can be dead: MadTown's YouTube
+    stream stopped after 6 minutes and the event carried on on Twitch."""
+    check = check or probe
+    for url in stream_candidates(webcasts, day):
+        try:
+            if check(url).live_status == "is_live":
+                return url
+        except (StreamError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def twitch_archives(webcasts: list[dict], limit: int = 6) -> list[str]:
+    """Past broadcasts of the event's Twitch channels, newest first. A channel link has no history
+    but its archive does, including the broadcast still in progress."""
+    found = []
+    for webcast in webcasts or []:
+        channel = webcast.get("channel")
+        if webcast.get("type") != "twitch" or not channel or not TWITCH_CHANNEL.fullmatch(channel):
+            continue
+        command = [c for c in _ytdlp("--flat-playlist", "--yes-playlist", "--playlist-end", str(limit), "--print", "id",
+                                     "--", f"https://www.twitch.tv/{channel.lower()}/videos?filter=archives&sort=time")
+                   if c != "--no-playlist"]
+        res = subprocess.run(command, capture_output=True, text=True, timeout=90)
+        for line in res.stdout.split():
+            vod = line.lstrip("v")
+            if TWITCH_VOD.fullmatch(vod):
+                found.append(f"https://www.twitch.tv/videos/{vod}")
+    return found
+
+
+def grab_frame(source: str | Path, out: Path) -> Path:
+    """One frame: the end of a recorded segment, or the current picture of a stream link."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(source, Path):
+        command = ["ffmpeg", "-v", "error", "-y", "-sseof", "-1", "-i", str(source), "-frames:v", "1", str(out)]
+    else:
+        res = subprocess.run(_ytdlp("-g", "-f", LIVE_FORMAT, "--", source), capture_output=True, text=True, timeout=90)
+        lines = res.stdout.split()
+        if res.returncode or not lines:
+            raise StreamError(_explain(res.stderr))
+        command = ["ffmpeg", "-v", "error", "-y", "-i", lines[0], "-frames:v", "1", str(out)]
+    out.unlink(missing_ok=True)
+    subprocess.run(command, capture_output=True, timeout=60)
+    if not out.exists():
+        raise StreamError("Could not grab a frame from that stream")
+    return out
 
 
 def event_day(epoch: float, timezone: str | None) -> str:

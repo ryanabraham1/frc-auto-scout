@@ -16,14 +16,17 @@ live job whichever is current each time the recorder reconnects.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from contextlib import closing
@@ -32,7 +35,7 @@ from pathlib import Path
 import requests
 
 from . import config, streams
-from .integration import MATCH, MatchSkipped, Queue, cached_result, process_match
+from .integration import MATCH, MatchSkipped, Queue, cached_result, export_result, process_match
 from .tba import TBA
 
 log = logging.getLogger("autoscout.bridge")
@@ -73,7 +76,8 @@ class Backend:
         self.session.headers["Authorization"] = f"Bearer {token}"
 
     def call(self, action: str, **body) -> dict:
-        r = self.session.post(self.url, json={"action": action, **body}, timeout=30)
+        # Generous: when the app's API is under load a sync still lands, just slowly.
+        r = self.session.post(self.url, json={"action": action, **body}, timeout=90)
         r.raise_for_status()
         return r.json()
 
@@ -120,17 +124,19 @@ class Runner:
         actual = self.tba.get(f"/match/{match_key}", max_age_s=30).get("actual_time")
         if not actual:
             raise MatchSkipped("TBA has no start time for this match yet")
-        try:
-            clip = self._clip(match_key, actual, source, log_path)
-        except (MatchSkipped, streams.StreamError):
-            # A link the lead pasted is what they asked for; the automatic choice has a fallback.
-            if source.get("url") or not self.tba.match(match_key).get("videos"):
-                raise
+        if source.get("url"):  # a link the lead pasted is what they asked for: no fallback
+            return self.process(match_key, force, log_path, self._clip(source["url"], match_key, actual, source, log_path))
+        failure: Exception | None = None
+        for url in self._event_streams(match_key, actual):
+            try:
+                return self.process(match_key, force, log_path, self._clip(url, match_key, actual, source, log_path))
+            except (MatchSkipped, streams.StreamError) as e:
+                failure = e  # a dead day's stream or another broadcast: try the next one
+        if self.tba.match(match_key).get("videos"):
             return self.process(match_key, force, log_path)
-        return self.process(match_key, force, log_path, clip)
+        raise failure or MatchSkipped("TBA lists no stream for this match: paste its link")
 
-    def _clip(self, match_key, actual, source, log_path) -> Path:
-        url = source.get("url") or self._event_stream(match_key, actual)
+    def _clip(self, url, match_key, actual, source, log_path) -> Path:
         start = (source.get("stream_starts") or {}).get(streams.video_id(url))
         info = streams.probe(url)
         start = start or info.start
@@ -140,13 +146,12 @@ class Runner:
         tag = hashlib.sha256(f"{url}{window}".encode()).hexdigest()[:8]
         return streams.clip_vod(url, *window, self.clips / f"{match_key}_{tag}.mp4", log_path)
 
-    def _event_stream(self, match_key: str, actual: float) -> str:
+    def _event_streams(self, match_key: str, actual: float):
         event = self.tba.get(f"/event/{match_key.split('_')[0]}", max_age_s=3600)
+        webcasts = event.get("webcasts") or []
         day = streams.event_day(actual, event.get("timezone"))
-        url = streams.event_stream(event.get("webcasts") or [], day, vod=True)
-        if not url:
-            raise MatchSkipped("TBA lists no YouTube stream for this match: paste its link")
-        return url
+        yield from streams.stream_candidates(webcasts, day, vod=True)
+        yield from streams.twitch_archives(webcasts)
 
 
 class LiveSession:
@@ -184,7 +189,7 @@ class LiveSession:
         except requests.RequestException:
             return None
         day = streams.event_day(time.time(), event.get("timezone"))
-        return streams.event_stream(event.get("webcasts") or [], day)
+        return streams.live_stream(event.get("webcasts") or [], day)
 
     def start(self):
         self.recorder.start()
@@ -230,6 +235,160 @@ class LiveSession:
             self._save()
 
 
+COMMAND_OPS = {"reanalyze": "reanalyze", "rescore": "rescore", "identify": "identify"}
+
+
+def field_points(event_key: str, payload: dict) -> tuple[dict, tuple]:
+    """Validated calibration input from the app: known landmark names, numbers inside the frame."""
+    from .field import FieldModel
+
+    year = int(event_key[:4])
+    size = payload.get("frame_size") or [1920, 1080]
+    width, height = int(size[0]), int(size[1])
+    known = set(FieldModel.load(year).landmarks) | {"blue_hub_top", "red_hub_top"}
+    points = {}
+    for name, xy in (payload.get("points") or {}).items():
+        if name not in known or not isinstance(xy, (list, tuple)) or len(xy) != 2:
+            raise ValueError(f"Unknown or malformed point {name}")
+        x, y = float(xy[0]), float(xy[1])
+        if not (0 <= x <= width and 0 <= y <= height):
+            raise ValueError(f"{name} is outside the frame")
+        points[name] = (x, y)
+    view = tuple(int(v) for v in payload.get("view") or ())
+    if len(view) != 4 or view[2] <= 0 or view[3] <= 0 or view[0] < 0 or view[1] < 0 \
+            or view[0] + view[2] > width or view[1] + view[3] > height:
+        raise ValueError("The field area must sit inside the frame")
+    return points, view
+
+
+class Commands:
+    """Things a lead does from the app that aren't match jobs. Runs apart from the sync loop because
+    grabbing a frame takes seconds and an API stall must never hold one up."""
+
+    def __init__(self, bridge: "Bridge", run=subprocess.run):
+        self.bridge, self.run = bridge, run
+        self.inbox: queue.Queue = queue.Queue()
+        self.done: list[dict] = []
+        self.seen: set[str] = set()
+        self.lock = threading.Lock()
+
+    def offer(self, command: dict) -> None:
+        if command["id"] not in self.seen:
+            self.seen.add(command["id"])
+            self.inbox.put(command)
+
+    def take_reports(self) -> list[dict]:
+        with self.lock:
+            reports, self.done = self.done, []
+        return reports
+
+    def put_back(self, reports: list[dict]) -> None:
+        with self.lock:
+            self.done = reports + self.done
+
+    def work(self, stop: threading.Event) -> None:
+        while not stop.is_set():
+            try:
+                command = self.inbox.get(timeout=1)
+            except queue.Empty:
+                continue
+            self.handle(command)
+
+    def handle(self, command: dict) -> None:
+        report = {"id": command["id"], "status": "done", "result": {}, "error": None}
+        try:
+            if not EVENT.fullmatch(command.get("event_key") or ""):
+                raise ValueError("Auto-Scout supports 2025 and 2026 events")
+            action = {"capture_frame": self.capture_frame, "save_calibration": self.save_calibration}.get(command["kind"])
+            report["result"] = action(command) if action else self.match_op(command)
+        except (ValueError, TypeError, streams.StreamError, subprocess.SubprocessError, requests.RequestException) as e:
+            report.update(status="failed", error=str(e)[:300] if isinstance(e, (ValueError, streams.StreamError))
+                          else "That failed on the computer; see its log")
+            log.warning("command %s failed: %r", command.get("kind"), e)
+        with self.lock:
+            self.done.append(report)
+
+    def _source(self, command: dict):
+        """Newest recording if this event is being followed, else a pasted link, else what's on air."""
+        event = command["event_key"]
+        link = (command.get("payload") or {}).get("source_url")
+        if link:
+            return streams.parse_source(link)
+        for session in self.bridge.live.values():
+            if session.job["event_key"] == event:
+                found = streams.segments(session.folder)
+                if len(found) > 1:
+                    return found[-2][1]  # the newest may still be open
+        info = TBA().get(f"/event/{event}", max_age_s=600)
+        day = streams.event_day(time.time(), info.get("timezone"))
+        url = streams.live_stream(info.get("webcasts") or [], day)
+        if not url:
+            raise streams.StreamError("Nothing is live for this event: paste a stream link")
+        return url
+
+    def capture_frame(self, command: dict) -> dict:
+        import cv2
+
+        from .field import Calibration
+
+        event = command["event_key"]
+        path = streams.grab_frame(self._source(command), config.EVENTS_DIR / f"{event}_ref.jpg")
+        image = cv2.imread(str(path))
+        ok, jpeg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if not ok:
+            raise streams.StreamError("Could not read that frame")
+        cal = Calibration.load(event)
+        height, width = image.shape[:2]
+        self.bridge.backend.call(
+            "calibration", event_key=event, frame_jpeg=base64.b64encode(jpeg.tobytes()).decode(),
+            frame_size=[width, height], view=list(cal.view) if cal else None,
+            points={k: list(v) for k, v in cal.points.items()} if cal else None)
+        return {"frame_size": [width, height]}
+
+    def save_calibration(self, command: dict) -> dict:
+        from .field import Calibration, FieldModel
+
+        event = command["event_key"]
+        payload = command.get("payload") or {}
+        points, view = field_points(event, payload)
+        fm = FieldModel.load(int(event[:4]))
+        if sum(name in fm.landmarks for name in points) < 4:
+            raise ValueError("Place at least 4 field landmarks")
+        size = tuple(int(v) for v in payload.get("frame_size") or (1920, 1080))
+        cal = Calibration.load(event) or Calibration(event_key=event, year=int(event[:4]), view=view, points={}, frame_size=size)
+        cal.view, cal.points, cal.frame_size = view, points, size
+        reference = config.EVENTS_DIR / f"{event}_ref.jpg"
+        if reference.exists():
+            cal.reference = str(reference.relative_to(config.ROOT))
+        error = cal.fit(fm)
+        cal.save()
+        self.bridge.backend.call("calibration", event_key=event, view=list(view),
+                                 points={k: list(v) for k, v in points.items()}, error_m=round(error, 3))
+        return {"error_m": round(error, 3)}
+
+    def match_op(self, command: dict) -> dict:
+        """Recompute saved matches, then replace their results in the app."""
+        from . import db
+
+        op = COMMAND_OPS.get(command["kind"])
+        keys = (command.get("payload") or {}).get("match_keys") or []
+        event = command["event_key"]
+        if not op or not keys or len(keys) > 100 or any(not MATCH.fullmatch(k) or not k.startswith(f"{event}_") for k in keys):
+            raise ValueError("Pick up to 100 matches from this event")
+        done, failed = [], []
+        for key in keys:
+            res = self.run([sys.executable, "-m", "autoscout.cli", op, key], cwd=config.ROOT, capture_output=True,
+                           text=True, timeout=1800)
+            with closing(db.connect()) as c:
+                result = db.load_result(c, key)
+            if res.returncode or result is None:
+                failed.append(key)
+                continue
+            self.bridge.backend.call("refresh", match_key=key, envelope=export_result(result))
+            done.append(key)
+        return {"done": done, "failed": failed}
+
+
 class Bridge:
     def __init__(self, backend: Backend, root: Path | None = None, runner=None, session_factory=LiveSession):
         self.backend = backend
@@ -241,6 +400,7 @@ class Bridge:
         self.session_factory = session_factory
         self.live: dict[str, LiveSession] = {}
         self.unknown_cancels: list[str] = []
+        self.commands = Commands(self)
         with closing(self.db()) as c:
             c.execute("""CREATE TABLE IF NOT EXISTS remote_jobs (
                 id TEXT PRIMARY KEY, kind TEXT, job TEXT, local_id TEXT, state TEXT, error TEXT)""")
@@ -450,10 +610,12 @@ class Bridge:
         stopped, self.unknown_cancels = self.unknown_cancels, []
         reports += [{"id": i, "status": "cancelled", "completed_matches": [], "match_errors": {},
                      "progress": {}, "error": None} for i in stopped]
+        finished = self.commands.take_reports()
         try:
-            reply = self.backend.call("sync", worker=self.worker_info(), jobs=reports)
+            reply = self.backend.call("sync", worker=self.worker_info(), jobs=reports, commands=finished)
         except (requests.RequestException, ValueError):
             self.unknown_cancels += stopped
+            self.commands.put_back(finished)
             raise
         with closing(self.db()) as c:
             for r in reports:  # the app has the final word now, so stop reporting this one
@@ -464,6 +626,8 @@ class Bridge:
             self.accept(job)
         for remote_id in reply.get("cancel", []):
             self.cancel(remote_id)
+        for command in reply.get("commands", []):
+            self.commands.offer(command)
         prune_clips(self.clips)
         return bool(reports or self.live or reply.get("jobs"))
 
@@ -488,6 +652,7 @@ def run() -> None:
         bridge.queue.recover()
         bridge.resume()
         threading.Thread(target=work, daemon=True).start()
+        threading.Thread(target=bridge.commands.work, args=(stop,), daemon=True).start()
         log.info("bridge up; %d calibrated events", len(calibrated_events()))
         failures = 0
         try:

@@ -512,6 +512,131 @@ def test_a_pasted_link_is_never_silently_replaced(tmp_path, monkeypatch):
         runner(MK, False, tmp_path / 'log', {'stream': True, 'url': 'https://www.youtube.com/watch?v=abcdefghijk'})
 
 
+def test_a_dead_link_is_skipped_for_what_is_actually_on_air():
+    state = {'https://www.youtube.com/watch?v=dayone12345': 'was_live', 'https://www.twitch.tv/firstinspires': 'is_live'}
+    check = lambda url: B.streams.StreamInfo(state.get(url, 'not_live'), None, None)
+    assert streams.live_stream(WEBCASTS, '2026-10-03', check) == 'https://www.twitch.tv/firstinspires'
+
+
+def test_nothing_on_air_is_none():
+    assert streams.live_stream(WEBCASTS, '2026-10-03', lambda url: B.streams.StreamInfo('was_live', None, None)) is None
+
+
+def test_a_match_missing_from_todays_stream_is_found_in_the_twitch_archive(tmp_path, monkeypatch):
+    class EventTBA(FakeTBA):
+        def get(self, path, max_age_s=None):
+            if path.startswith('/event/'):
+                return {'timezone': 'UTC', 'webcasts': WEBCASTS}
+            return {'actual_time': 5_000}
+
+    archive = 'https://www.twitch.tv/videos/2922204988'
+    infos = {archive: B.streams.StreamInfo('was_live', 4_000, 2_000)}
+    used = []
+    monkeypatch.setattr(B, 'cached_result', lambda k: None)
+    monkeypatch.setattr(B.streams, 'twitch_archives', lambda w: [archive])
+    monkeypatch.setattr(B.streams, 'probe', lambda url: infos.get(url, B.streams.StreamInfo('was_live', 4_900, 50)))
+    monkeypatch.setattr(B.streams, 'clip_vod', lambda url, a, b, out, log: used.append(url) or out)
+    B.Runner(tmp_path, EventTBA(), process=lambda k, f, l, v=None: result(k))(MK, False, tmp_path / 'log', {'stream': True})
+    assert used == [archive]
+
+
+GOOD_POINTS = {'blue_hub_center': [610, 766], 'red_hub_center': [1256, 777], 'center_line_yW': [935, 711],
+               'center_line_y0': [931, 859], 'blue_hub_top': [609, 668]}
+
+
+def test_field_points_accept_a_good_calibration():
+    points, view = B.field_points('2026cc', {'points': GOOD_POINTS, 'view': [0, 560, 1920, 350]})
+    assert view == (0, 560, 1920, 350) and points['blue_hub_top'] == (609, 668)
+
+
+@pytest.mark.parametrize('payload', [
+    {'points': {'nonsense': [1, 2]}, 'view': [0, 0, 10, 10]},
+    {'points': {'blue_hub_center': [5000, 1]}, 'view': [0, 0, 10, 10]},
+    {'points': {'blue_hub_center': 'x'}, 'view': [0, 0, 10, 10]},
+    {'points': GOOD_POINTS, 'view': [0, 900, 1920, 350]},
+    {'points': GOOD_POINTS, 'view': [0, 0]},
+])
+def test_field_points_refuse_bad_input(payload):
+    with pytest.raises(ValueError):
+        B.field_points('2026cc', payload)
+
+
+def command(kind, **payload):
+    return {'id': 'c1', 'event_key': EVENT, 'kind': kind, 'payload': payload}
+
+
+def test_save_calibration_writes_the_event_and_reports_the_fit(world, tmp_path, monkeypatch):
+    backend, b = world
+    monkeypatch.setattr(B.config, 'EVENTS_DIR', tmp_path)
+    monkeypatch.setattr(B.config, 'ROOT', tmp_path)
+    b.commands.handle({**command('save_calibration', points=GOOD_POINTS, view=[0, 560, 1920, 350]), 'event_key': '2026zz'})
+    report = b.commands.take_reports()[0]
+    assert report['status'] == 'done' and report['result']['error_m'] == 0
+    assert (tmp_path / '2026zz.yaml').exists()
+    assert [a for a, _ in backend.calls] == ['calibration']
+
+
+def test_too_few_landmarks_are_refused(world):
+    _, b = world
+    b.commands.handle(command('save_calibration', points={'blue_hub_center': [10, 10]}, view=[0, 0, 100, 100]))
+    report = b.commands.take_reports()[0]
+    assert report['status'] == 'failed' and 'at least 4' in report['error']
+
+
+def test_an_unknown_command_or_foreign_match_runs_nothing(world):
+    _, b = world
+    b.commands.run = lambda *a, **k: pytest.fail('ran a command')
+    b.commands.handle(command('rm -rf', match_keys=[MK]))
+    b.commands.handle(command('reanalyze', match_keys=['2026other_qm1']))
+    assert [r['status'] for r in b.commands.take_reports()] == ['failed', 'failed']
+
+
+def test_match_op_refreshes_the_result_in_the_app(world, monkeypatch):
+    backend, b = world
+    from autoscout import db
+    monkeypatch.setattr(db, 'connect', lambda: __import__('sqlite3').connect(':memory:'))
+    monkeypatch.setattr(db, 'load_result', lambda c, k: {'match_key': k, 'teams': {}})
+    seen = []
+    b.commands.run = lambda cmd, **k: seen.append(cmd[-2:]) or subprocess.CompletedProcess(cmd, 0)
+    b.commands.handle(command('rescore', match_keys=[MK]))
+    assert seen == [['rescore', MK]]
+    assert b.commands.take_reports()[0]['result'] == {'done': [MK], 'failed': []}
+    assert [a for a, _ in backend.calls] == ['refresh']
+
+
+def test_a_command_is_taken_once_and_its_report_survives_an_outage(world):
+    backend, b = world
+    cmd = command('rm -rf')
+    b.commands.offer(cmd)
+    b.commands.offer(cmd)
+    assert b.commands.inbox.qsize() == 1
+    b.commands.handle(b.commands.inbox.get())
+    real = backend.call
+    backend.call = lambda *a, **k: (_ for _ in ()).throw(B.requests.ConnectionError())
+    with pytest.raises(B.requests.ConnectionError):
+        b.tick()
+    backend.call = real
+    b.tick()
+    assert backend.syncs()[-1]['commands'][0]['id'] == 'c1'
+
+
+def test_b_teams_use_their_fms_number():
+    from autoscout.tba import team_number
+
+    event = {'remap_teams': {'frc9990': 'frc2073B', 'frc9991': 'frc581B'}}
+    assert team_number('frc254', '2026mttd') == 254
+    assert team_number('frc2073B', '2026mttd', event) == 9990
+    assert team_number('frc581B', '2026mttd', event) == 9991
+
+
+def test_an_unmapped_b_team_never_loses_the_match():
+    from autoscout.tba import team_number
+
+    assert team_number('frc2073B', '2026mttd', {}) == 2073
+    with pytest.raises(ValueError):
+        team_number('frcX', '2026mttd', {})
+
+
 def test_clips_only_live_job_cuts_but_never_queues(tmp_path):
     got = []
     s = live(tmp_path, [{'key': MK, 'actual_time': 2_000}], 99_999, got)

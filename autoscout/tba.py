@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +44,26 @@ class TBA:
         return self.get(f"/event/{event_key}", max_age_s=86400)
 
 
+def team_number(team_key: str, event_key: str, event=None) -> int:
+    """Offseason B teams have keys like frc2073B. Their FMS number (9990) is what the broadcast
+    shows, and the rest of the pipeline needs one integer per robot, so use the event's remap.
+    Without a remap the digits are still better than a crash that loses the match."""
+    digits = team_key[3:]
+    if digits.isdigit():
+        return int(digits)
+    try:
+        remap = (event if event is not None else TBA().event(event_key)).get("remap_teams") or {}
+    except (requests.RequestException, RuntimeError):
+        remap = {}
+    for fms, shown in remap.items():
+        if shown == team_key and fms[3:].isdigit():
+            return int(fms[3:])
+    found = re.match(r"\d+", digits)
+    if not found:
+        raise ValueError(f"Unreadable team key {team_key}")
+    return int(found.group())
+
+
 @dataclass
 class MatchInfo:
     key: str
@@ -62,7 +83,7 @@ class MatchInfo:
 
     @classmethod
     def from_tba(cls, m: dict) -> "MatchInfo":
-        teams = lambda c: [int(t[3:]) for t in m["alliances"][c]["team_keys"]]
+        teams = lambda c: [team_number(t, m["event_key"]) for t in m["alliances"][c]["team_keys"]]
         vids = [v["key"] for v in m.get("videos") or [] if v.get("type") == "youtube"]
         source = {}
         local_video = None
