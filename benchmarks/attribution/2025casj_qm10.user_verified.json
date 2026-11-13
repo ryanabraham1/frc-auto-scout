@@ -1,0 +1,11 @@
+{
+  "match_key": "2025casj_qm10",
+  "reviewer_type": "user_verified_footage",
+  "usage": "test_only; never a training label",
+  "source": "User review of the annotated video on 2026-11-12",
+  "teams": {"red": [649, 6814, 10644], "blue": [670, 1700, 3045]},
+  "labels": [
+    {"id": "teleop_206_L4", "status": "accepted", "alliance": "blue", "team": 3045, "kind": "L4", "post_t": 35.54,
+     "note": "Match clock 2:06. The render the user watched credited 1700 (0.45, older dwell logic: no robot was seen at the branch in the wide shot)."}
+  ]
+}

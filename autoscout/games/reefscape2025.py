@@ -84,6 +84,12 @@ NODE_SCORE_LAG = 1.5  # s before a score at which its coral went on, when the co
 NODE_SPOT_GAIN = 4.0  # how much a robot at a branch's spot argues that this score filled that branch
 NODE_UNSEEN_COST, NODE_LATE_COST, NODE_EARLY_COST = 4.0, 3.0, 6.0  # pairing a score with a branch not seen filling then
 NODE_SCORE_TRUST = 0.5  # weight of a pairing timed by the score rather than by the coral (a box cut off at the bottom maps too far back)
+# Robots the wide shot can't see at a branch (far side of the REEF) are placed from the REEF close-up
+# instead: direction from where the box is in the picture, distance from how wide it is.
+NODE_CAM = True
+NODE_SIGMA_CAM = 0.6  # m: a close-up position is rougher than a wide-shot one
+NODE_ROBOT_WIDTH = 0.9  # m across a robot with bumpers, for distance from box width
+NODE_CAM_MIN_PX = 60.0  # px: narrower close-up boxes are robots far behind the REEF or cut off by it
 SHARE_MODE = "hybrid"  # "nearest" | "soft" | "dwell" | "hybrid" (dwell for coral, soft for algae): see _shares
 SOFT_SCALE = 1.0  # m
 DWELL_SLACK = 0.5  # m added to an element's reach when timing how long a robot stayed there
@@ -886,6 +892,28 @@ class Reefscape2025(GamePlugin):
                             c = robot_centre(wide, r[4])
                             rows[tm].append((r[0], float(c[0]), float(c[1])))
             centres[a] = {tm: np.array(sorted(v)).reshape(-1, 3) for tm, v in rows.items()}
+        near = ctx.__dict__.setdefault("_node_cam_centres", {})
+        if a not in near:  # the same from the REEF close-up, for robots named there (bumper read or close-up track)
+            rows = {tm: [] for tm in teams}
+            cam = cams.get("cam")
+            if NODE_CAM and cam is not None:
+                bottom = reef3d.PANEL_Y + 370 - 4
+                named = self._aux_teams(ctx)
+                for (bt, view, x0, y0, x1, y1, *_r), tm in zip(ctx.aux_boxes, named):
+                    if view != f"{a}_reef" or tm not in rows or x1 - x0 < NODE_CAM_MIN_PX:
+                        continue
+                    if y1 < bottom:  # feet in the picture: where the box meets the carpet
+                        c = robot_centre(cam, (x0, y0, x1, y1))
+                    else:  # cut off by the bottom of the close-up: along its line of sight, as far as its width says
+                        _, d = cam.rays([((x0 + x1) / 2, (y0 + y1) / 2)])
+                        slant = cam.f * NODE_ROBOT_WIDTH / (x1 - x0)
+                        drop = cam.centre[2] - 0.4
+                        flat = float(np.sqrt(max(slant ** 2 - drop ** 2, 0.25)))
+                        h = d[0, :2] / max(np.linalg.norm(d[0, :2]), 1e-9)
+                        c = cam.centre[:2] + flat * h
+                    if np.isfinite(c).all():
+                        rows[tm].append((bt, float(c[0]), float(c[1])))
+            near[a] = {tm: np.array(sorted(v)).reshape(-1, 3) for tm, v in rows.items()}
 
         def at_spot(node, t0, t1):
             """{team: 0..1} how well each robot's centre sat on the branch's scoring spot in [t0, t1]; the
@@ -893,13 +921,15 @@ class Reefscape2025(GamePlugin):
             poses = [reef3d.node_pose(a, b) for b in [node["branch"]] + node.get("alts", [])]
             w = {}
             for tm in teams:
-                P = centres[a][tm]
-                d = 9.0
-                if len(P):
+                best = 0.0
+                for P, sigma in ((centres[a][tm], NODE_SIGMA), (near[a][tm], NODE_SIGMA_CAM)):
+                    if not len(P):
+                        continue
                     m = (P[:, 0] >= t0) & (P[:, 0] <= t1)
                     if m.any():
                         d = min(float(np.min(np.hypot(P[m, 1] - q[0], P[m, 2] - q[1]))) for q in poses)
-                w[tm] = float(np.exp(-0.5 * (d / NODE_SIGMA) ** 2))
+                        best = max(best, float(np.exp(-0.5 * (d / sigma) ** 2)))
+                w[tm] = best
             return w
 
         def option(i, node):
