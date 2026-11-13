@@ -71,6 +71,19 @@ LEVEL_PX_MAX = 4.0  # FACE_PX_REFs from every tip of a level beyond which a plac
 FACE_LEVEL_COST = 0.5  # pairing cost per FACE_PX of a placement's distance from its action's level tips
 FACE_MIN = 0.2  # the best robot's weight below which the face says nothing (no robot in front of it)
 DECODE = "joint"  # "joint": all jumps decoded together against official counts | "each": one at a time
+# Node credit (vision/reef3d.py): the official breakdown names the branches an alliance filled; the CORAL
+# detector and the 3D cameras say when each one got its coral; the robot whose centre is at that branch's
+# scoring spot then placed it. Sharp where a robot is seen at the spot, silent where none is.
+NODE_CREDIT = True
+NODE_SIGMA = 0.45  # m: spread of a placing robot's centre (from its box) around the branch's scoring spot
+NODE_PRE, NODE_POST = 2.0, 0.5  # s around the coral coming to rest in which the placing robot is at the spot
+NODE_MIX = 0.95  # how far a robot seen right at the spot overrides the softer evidence
+NODE_MIN_FIT = 0.02  # a resting coral must sit this well on a branch to count as that branch filling
+NODE_GAP = (-1.5, 6.0)  # s from a coral coming to rest to its score posting
+NODE_SCORE_LAG = 1.5  # s before a score at which its coral went on, when the coral itself wasn't timed
+NODE_SPOT_GAIN = 4.0  # how much a robot at a branch's spot argues that this score filled that branch
+NODE_UNSEEN_COST, NODE_LATE_COST, NODE_EARLY_COST = 4.0, 3.0, 6.0  # pairing a score with a branch not seen filling then
+NODE_SCORE_TRUST = 0.5  # weight of a pairing timed by the score rather than by the coral (a box cut off at the bottom maps too far back)
 SHARE_MODE = "hybrid"  # "nearest" | "soft" | "dwell" | "hybrid" (dwell for coral, soft for algae): see _shares
 SOFT_SCALE = 1.0  # m
 DWELL_SLACK = 0.5  # m added to an element's reach when timing how long a robot stayed there
@@ -834,6 +847,101 @@ class Reefscape2025(GamePlugin):
             mix = PLACE_MIX * fit
             A["p"] = {tm: (1 - mix) * base.get(tm, 0) + mix * pc.get(tm, 0) for tm in teams}
 
+    def _match_nodes(self, ctx: MatchContext, a: str, actions: list[dict]) -> None:
+        """Pair each decoded L2-L4 coral score with the official branch it filled and credit the robot at
+        that branch (vision/reef3d.py). Needs the CORAL detector's boxes for the match and the event's
+        3D cameras; without them, or where no robot is seen at the branch, the other evidence stands.
+
+        Which score filled which branch is decided by two things together: when the branch's coral was
+        seen coming to rest (the score posts a second or two later), and whether a robot stood at that
+        branch's scoring spot just before the score. The detector often first sees a coral only after
+        the robot that placed it backs away, so the second often settles what the first leaves open."""
+        obs, wide = getattr(ctx, "coral_obs", None), getattr(ctx, "cam3d", None)
+        bd = (ctx.match.breakdown or {}).get(a)
+        if not NODE_CREDIT or not obs or wide is None or not bd:
+            return
+        from scipy.optimize import linear_sum_assignment
+
+        from ..vision import reef3d
+        from ..vision.shooters import robot_centre
+
+        cams = reef3d.views(ctx.match.event_key, a)
+        cams["wide"] = wide
+        idx = [i for i, A in enumerate(actions) if A["cat"] in reef3d.LEVELS]
+        nodes = reef3d.node_fills(obs, cams, a, reef3d.official_nodes(bd))
+        for n in nodes:
+            if "t" in n and n["fit"] < NODE_MIN_FIT:
+                n.pop("t")
+        teams = list(ctx.match.teams(a))
+        centres = ctx.__dict__.setdefault("_node_centres", {})
+        if a not in centres:  # {team: [(t, x, y)]} robot centres from boxes, through the 3D wide camera
+            rows: dict = {tm: [] for tm in teams}
+            for slot, tr in ctx.tracks.items():
+                if slot[:-1] != a:
+                    continue
+                for r in tr:
+                    if r[3] and len(r) > 4 and r[4] is not None:
+                        tm = ctx.team_at(slot, r[0])
+                        if tm in rows:
+                            c = robot_centre(wide, r[4])
+                            rows[tm].append((r[0], float(c[0]), float(c[1])))
+            centres[a] = {tm: np.array(sorted(v)).reshape(-1, 3) for tm, v in rows.items()}
+
+        def at_spot(node, t0, t1):
+            """{team: 0..1} how well each robot's centre sat on the branch's scoring spot in [t0, t1]; the
+            branch, or any other official branch one view alone could not tell it from."""
+            poses = [reef3d.node_pose(a, b) for b in [node["branch"]] + node.get("alts", [])]
+            w = {}
+            for tm in teams:
+                P = centres[a][tm]
+                d = 9.0
+                if len(P):
+                    m = (P[:, 0] >= t0) & (P[:, 0] <= t1)
+                    if m.any():
+                        d = min(float(np.min(np.hypot(P[m, 1] - q[0], P[m, 2] - q[1]))) for q in poses)
+                w[tm] = float(np.exp(-0.5 * (d / NODE_SIGMA) ** 2))
+            return w
+
+        def option(i, node):
+            """(cost, time the coral went on, robot fits, timed by the coral itself?) of score i filling node."""
+            tj = actions[i]["t"]
+            gap = tj - node["t"] if "t" in node else None
+            if gap is not None and NODE_GAP[0] <= gap <= NODE_GAP[1]:
+                w = at_spot(node, node["t"] - NODE_PRE, node["t"] + NODE_POST)
+                return 0.5 * abs(gap - 1.0) - NODE_SPOT_GAIN * max(w.values()), node["t"], w, True
+            # the coral was first seen at another time (late: hidden behind the robot that placed it;
+            # early: a neighbour's coral), or never: the score's own time says when, less surely
+            tp = tj - NODE_SCORE_LAG
+            w = at_spot(node, tp - NODE_PRE, tp + NODE_POST + 0.5)
+            base = NODE_UNSEEN_COST if gap is None else NODE_LATE_COST if gap < NODE_GAP[0] else NODE_EARLY_COST
+            return base - NODE_SPOT_GAIN * max(w.values()), tp, w, False
+
+        for level in reef3d.LEVELS:
+            for phase in ("auto", "teleop"):
+                J = [i for i in idx if actions[i]["cat"] == level and actions[i]["phase"] == phase]
+                N = [n for n in nodes if n["level"] == level and n["phase"] == phase]
+                if not J or not N:
+                    continue
+                opts = [[option(i, n) for n in N] for i in J]
+                rows_, cols_ = linear_sum_assignment(np.array([[o[0] for o in row] for row in opts]))
+                for r_, c_ in zip(rows_, cols_):
+                    A, node = actions[J[r_]], N[c_]
+                    _cost, tp, w, timed = opts[r_][c_]
+                    best = max(w.values())
+                    A["node"] = {"branch": node["branch"], "level": node["level"], "t": round(tp, 2),
+                                 "views": node.get("views", []) if timed else [], "or": node.get("alts", []),
+                                 "timed": "coral" if timed else "score",
+                                 "at_spot": {str(tm): round(v, 2) for tm, v in w.items()}}
+                    if best < 0.1:
+                        continue  # nobody seen at that branch then (hidden behind the REEF): softer evidence stands
+                    tot = sum(w.values()) + 0.02 * len(teams)
+                    pn = {tm: (v + 0.02) / tot for tm, v in w.items()}
+                    mix = NODE_MIX * min(best, 1.0) * (1.0 if timed else NODE_SCORE_TRUST)
+                    base = A["p"] or {tm: 1 / len(teams) for tm in teams}
+                    A["p"] = {tm: (1 - mix) * base.get(tm, 0.0) + mix * pn[tm] for tm in teams}
+                    A["conf"] = max(A["conf"], best if timed else NODE_SCORE_TRUST * best)
+                    A["t_place"] = tp
+
     @staticmethod
     def assign_actions(actions: list[dict], teams: list[int], prior: dict | None = None) -> list[dict[int, float]]:
         """Credit robot actions of one alliance jointly.
@@ -996,6 +1104,7 @@ class Reefscape2025(GamePlugin):
                 actions.append({"t": t, "cat": cat, "phase": ph, "piece": "coral" if cat in CORAL else "algae",
                                 "p": p, "conf": conf, "jump": d})
         self._match_placements(ctx, a, actions)
+        self._match_nodes(ctx, a, actions)
         self._match_algae(ctx, a, actions)
         # Vision first: coral seen going onto the reef with no score jump to pair it with (missed overlay
         # read, batched post) still says which robot scored, and its height roughly which level.
@@ -1030,6 +1139,7 @@ class Reefscape2025(GamePlugin):
                            "shares": {str(k): round(v, 2) for k, v in cr.items() if v >= 0.01},
                            "likelihood": {str(k): round(v, 2) for k, v in A["p"].items() if v >= 0.01},
                            **({"launched": A["launched"]} if "launched" in A else {}),
+                           **({"node": A["node"]} if "node" in A else {}),
                            **({"placed": A["placed"], "placed_views": A["placed_views"]} if "placed" in A else {})})
 
     @staticmethod

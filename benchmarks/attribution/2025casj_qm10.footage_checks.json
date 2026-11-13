@@ -1,0 +1,20 @@
+{
+  "match_key": "2025casj_qm10",
+  "reviewer_type": "ai_footage_check",
+  "review_date": "2026-11-12",
+  "usage": "test_only; never a training label",
+  "scope": "Scores where 3D node credit disagreed with 2025casj_qm10.json. Each was checked on six raw frames of the REEF around the score (no pipeline overlays). These are AI readings of footage, not human-verified; a person should confirm them before they are treated as ground truth.",
+  "teams": {"red": [649, 6814, 10644], "blue": [670, 1700, 3045]},
+  "labels": [
+    {"id": "blue@65.06", "alliance": "blue", "post_t": 65.06, "kind": "L4", "team": 1700, "replaces": 3045, "status": "accepted",
+     "evidence": "60.6-63.0 s: no new coral on the left of the blue REEF. 63.8 s: a coral is raised at the upper left. 65.0 s: a robot whose bumper reads 1700 stands at the left faces with its elevator at the top and the coral is on an upper-left L4 branch. 3045 is at the camera-side face holding a coral at mid height in the same seconds (its own L2 posts at 70.6 s)."},
+    {"id": "red@77.08", "alliance": "red", "post_t": 77.08, "kind": "L4", "team": 6814, "replaces": 10644, "status": "accepted",
+     "evidence": "74.6-75.6 s: 6814 (bumper readable) is at the right of the red REEF with a tall elevator. 76.4 s: a coral appears tilted at the upper right, at the top of that elevator. 77.0-79.0 s: it stays on the upper-right L4 branch while 6814 backs away."},
+    {"id": "blue@146.15", "alliance": "blue", "post_t": 146.15, "kind": "L4", "team": 670, "replaces": 3045, "status": "accepted",
+     "evidence": "141.5-146.4 s: 670 (bumper readable) holds its elevator at full height on the left faces; its coral is still at the top of the mast at 144.6 s and on the upper-left branch after. 3045 arrives low at the front-left about 143.6 s with its mechanism down. The +5 decoded as an L4 at 143.1 s is the doubtful one of the pair (blue has eight decoded L4 scores for seven official L4 branches)."}
+  ],
+  "open": [
+    {"id": "blue@12.51", "alliance": "blue", "post_t": 12.51, "kind": "L4",
+     "note": "Auto L4 on branch J. The placing robot's body is hidden behind the REEF; 1700 is parked at the near side with its box cut off by the foreground fence, which maps it too far back and onto J's scoring spot. The original label says 3045. Not settled from the wide shot."}
+  ]
+}

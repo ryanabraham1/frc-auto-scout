@@ -288,6 +288,80 @@ def recent_credit(t):
 LEVEL = lambda h: "L4" if h > 0.8 else "L3" if h > 0.6 else "L2" if h > 0.4 else "L1"  # noqa: E731
 
 
+# ---- 3D layer (2025): official REEF branches through the solved cameras ------------------------------
+NODES3D = []  # per official branch: {alliance, branch, level, px: {view: (x, y)}, spot: (x, y), ev}
+if year == 2025:
+    try:
+        from autoscout.config import DATA_DIR
+        from autoscout.tba import TBA, MatchInfo
+        from autoscout.vision import camera3d, field3d, reef3d
+
+        _shift = r.get("cam3d_shift")
+        _cache = DATA_DIR / "cam3d_shift" / f"{a.match_key}.json"
+        if _shift is None and _cache.exists():
+            _shift = json.loads(_cache.read_text())
+        _wide = camera3d.load_event_camera(r["event_key"])
+        _bd = MatchInfo.from_tba(TBA().match(a.match_key)).breakdown
+        if _wide is not None and _bd:
+            if _shift and _shift[2]:
+                _wide = _wide.shifted(_shift[0], _shift[1])
+            for _al in ("red", "blue"):
+                _cams = reef3d.views(r["event_key"], _al)
+                _cams["wide"] = _wide
+                _tips = field3d.branch_tips(_al)
+                _by = {(e["node"]["branch"], e["node"]["level"]): e for e in r.get("events", [])
+                       if e.get("alliance") == _al and e.get("node")}
+                for _n in reef3d.official_nodes(_bd[_al]):
+                    _tip = _tips[(_n["branch"], _n["level"])]
+                    _px = {}
+                    for _v, _c in _cams.items():
+                        _q = _c.project([_tip])[0]
+                        if reef3d.in_view(_v, _al, _q[0], _q[1]):
+                            _px[_v] = (float(_q[0]), float(_q[1]))
+                    _pose = reef3d.node_pose(_al, _n["branch"])
+                    _sp = _wide.project([[_pose[0], _pose[1], 0.0]])[0]
+                    NODES3D.append({"alliance": _al, "branch": _n["branch"], "level": _n["level"], "px": _px,
+                                    "spot": (float(_sp[0]), float(_sp[1])), "ev": _by.get((_n["branch"], _n["level"]))})
+    except Exception as _e:  # the 3D layer is a debug aid: never fail a render over it
+        print("3D layer off:", repr(_e))
+
+
+def draw_nodes(img, t):
+    """Every branch the official breakdown says was filled, where the 3D cameras put it: a grey ring
+    until its coral is seen coming to rest, then a filled dot with the branch, level and the robot
+    credited. For two seconds after, the scoring spot on the carpet in front of that branch is ringed
+    and joined to the branch, with how well each robot fits that spot."""
+    for n in NODES3D:
+        e = n["ev"]
+        col = RED if n["alliance"] == "red" else BLUE
+        filled = e is not None and e["node"]["t"] <= t
+        age = t - e["node"]["t"] if filled else None
+        for v, (x_, y_) in n["px"].items():
+            c = (int(x_ * scale), int(y_ * scale))
+            if not filled:
+                cv2.circle(img, c, 5, (170, 170, 170), 1, cv2.LINE_AA)
+                continue
+            cv2.circle(img, c, 5, (0, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(img, c, 6, col, 2, cv2.LINE_AA)
+            if age < 6.0 or v == "cam":
+                cv2.putText(img, f"{n['branch']}{n['level'][1]} {e.get('team')}", (c[0] + 8, c[1] + 4), FONT, 0.42,
+                            (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, f"{n['branch']}{n['level'][1]} {e.get('team')}", (c[0] + 8, c[1] + 4), FONT, 0.42,
+                            (0, 255, 255), 1, cv2.LINE_AA)
+        if filled and -0.01 <= age < 2.5:
+            sp = (int(n["spot"][0] * scale), int(n["spot"][1] * scale))
+            cv2.ellipse(img, sp, (26, 9), 0, 0, 360, (0, 255, 255), 2, cv2.LINE_AA)
+            if "wide" in n["px"]:
+                cv2.line(img, sp, (int(n["px"]["wide"][0] * scale), int(n["px"]["wide"][1] * scale)), (0, 255, 255), 1,
+                         cv2.LINE_AA)
+            fit = ", ".join(f"{tm} {v:.2f}" for tm, v in sorted(e["node"]["at_spot"].items(), key=lambda kv: -kv[1]))
+            label = f"3D: {n['level']} on {n['branch']}" + (f" (or {'/'.join(e['node']['or'])})" if e["node"].get("or") else "") + f" | at spot: {fit}"
+            wide_view = r["calibration"]["view"]
+            y_ = int((wide_view[1] + wide_view[3]) * scale) - (12 if n["alliance"] == "blue" else 32)
+            cv2.putText(img, label, (12, y_), FONT, 0.5, (0, 0, 0), 4, cv2.LINE_AA)
+            cv2.putText(img, label, (12, y_), FONT, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+
+
 def draw_2025(img, t):
     """Debug layers: coral placements on the reefs (ring when it appears, then a dot labelled with the
     team credited), moving algae seen in the wide shot, close-up reads on the reef cams, and a banner
@@ -380,6 +454,7 @@ for t, frame in video.iter_frames(t0, t1, step=step):
                 cv2.putText(img, label, tuple(pts[-1] + [5, -5]), FONT, .4, col, 1, cv2.LINE_AA)
     if year == 2025:
         draw_2025(img, t)
+        draw_nodes(img, t)
     # robots
     for slot in tracks:
         b, obs = box_at(slot, t)
@@ -428,7 +503,8 @@ for t, frame in video.iter_frames(t0, t1, step=step):
             if year == 2025 and e.get("shares"):
                 sh = sorted(e["shares"].items(), key=lambda kv: -kv[1])
                 desc = f"{k} {int(100 * sh[0][1])}%" + (f" ({sh[1][0]} {int(100 * sh[1][1])}%)" if len(sh) > 1 and sh[1][1] >= 0.1 else "")
-                feed.append((e["t"], team, desc + (" *" if e.get("placed") else "")))
+                feed.append((e["t"], team, desc + (f" [3D {e['node']['branch']}]" if e.get("node") and max(e["node"]["at_spot"].values()) >= 0.1
+                                                   else " *" if e.get("placed") else "")))
             else:
                 feed.append((e["t"], team, msg[1:] if year == 2026 else k))
         ei += 1

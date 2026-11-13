@@ -400,6 +400,9 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
             _scaled_views(base_cal, video), normalize_aux=True)
     fused = fuse_closeups(ctx, m.event_key)
     ctx.event_matches = _event_matches(tba, m)
+    extra3d = {"video": Path(video_path).stem}
+    _attach_3d(ctx, match_key, extra3d, video)
+    extra3d.pop("video")
     res = plugin.analyze(ctx)
     finish_stage("analysis")
     result = {
@@ -434,6 +437,7 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
                               "weak_conf": WEAK_CONF, "robot_hz": robot_hz},
         "processing_s": round(time.time() - t_start, 1),
         "processing_stages_s": stage_timings,
+        **extra3d,
         **res,
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -442,6 +446,42 @@ def _process(match_key, opts, tba, video_path, detector, log, t_start, m, plugin
     log(f"done in {result['processing_s']}s")
     log("stage seconds: " + ", ".join(f"{k}={v:.1f}" for k, v in stage_timings.items()))
     return result
+
+
+def _attach_3d(ctx, match_key: str, saved: dict, video=None) -> None:
+    """Give the analysis the event's 3D wide camera, moved to where this match's picture sits, and the
+    CORAL detector's boxes for the match when they were collected. `saved` (the result dict) keeps the
+    measured shift under "cam3d_shift"; without one the video is opened once to measure it from the tags."""
+    from .vision import camera3d
+
+    cam = camera3d.load_event_camera(ctx.match.event_key)
+    if cam is None:
+        return
+    shift = saved.get("cam3d_shift")
+    cache = config.DATA_DIR / "cam3d_shift" / f"{match_key}.json"  # measured once per video, reused by reanalysis
+    if shift is None and cache.exists():
+        shift = json.loads(cache.read_text())
+        saved["cam3d_shift"] = shift
+    if shift is None:
+        try:
+            if video is None:
+                p = VIDEO_DIR / f"{saved.get('video')}.mp4"
+                video = Video(str(p)) if p.exists() else None
+            if video is not None and ctx.clock is not None:
+                ts = np.linspace(ctx.clock.auto_end_vt, ctx.clock.teleop_end_vt - 10, 8)
+                region = json.loads(camera3d.event_camera_path(ctx.match.event_key).read_text())["wide"]["region"]
+                frames = [f for f in (video.frame_at(float(t)) for t in ts) if f is not None]
+                shift = list(camera3d.frame_shift(ctx.match.event_key, frames, region))
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                cache.write_text(json.dumps([float(shift[0]), float(shift[1]), int(shift[2])]))
+        except Exception:  # a missing or unreadable video must not stop an analysis that worked without it
+            shift = None
+        if shift is not None:
+            saved["cam3d_shift"] = [round(float(shift[0]), 2), round(float(shift[1]), 2), int(shift[2])]
+    ctx.cam3d = cam.shifted(shift[0], shift[1]) if shift and shift[2] else cam
+    side = RESULTS_DIR / f"{match_key}_coral.json"
+    if side.exists():
+        ctx.coral_obs = json.loads(side.read_text())
 
 
 def _json_default(o):
@@ -522,6 +562,7 @@ def reanalyze(match_key: str, tba: TBA | None = None, save: bool = True) -> dict
     old["fused_sightings"] = fuse_closeups(ctx, m.event_key)
     old["fused_rows"] = getattr(ctx, "fused_rows", [])
     ctx.event_matches = _event_matches(tba, m)
+    _attach_3d(ctx, match_key, old)
     res = plugin.analyze(ctx)
     old["identity_timeline"] = ctx.identity_tl
     old["launches"] = {name: [dict(L.to_dict(), pts=[[round(t, 3), round(x, 1), round(y, 1)]
