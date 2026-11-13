@@ -115,12 +115,18 @@ def node_fills(obs: list, cams: dict[str, Camera], alliance: str, nodes: list[di
     tips = F.branch_tips(alliance)
     found: dict[int, list] = {}
     for view, cam in cams.items():
-        R = rests(obs, lambda x, y, v=view: in_view(v, alliance, x, y))
-        if not R or not nodes:
+        if not nodes:
             continue
         P = cam.project([tips[(n["branch"], n["level"])] for n in nodes])
         dist = np.array([np.linalg.norm(tips[(n["branch"], n["level"])] - cam.centre) for n in nodes])
         length = np.maximum(cam.f * CORAL_LEN / dist, 14.0)  # px a coral spans at each node
+        # Only coral near these branches can be on them. The detector boxes every coral in the frame
+        # (loading stations, robots, the carpet): clustering all of them took most of a minute a match.
+        pad = 2.0 * MATCH_LEN * float(length.max())
+        x0, y0, x1, y1 = P[:, 0].min() - pad, P[:, 1].min() - pad, P[:, 0].max() + pad, P[:, 1].max() + pad
+        R = rests(obs, lambda x, y, v=view: x0 <= x <= x1 and y0 <= y <= y1 and in_view(v, alliance, x, y))
+        if not R:
+            continue
         shown = np.array([in_view(view, alliance, *p) for p in P])
         big = 1e6
         cost = np.full((len(nodes), len(R)), big)
