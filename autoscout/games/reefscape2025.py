@@ -88,6 +88,7 @@ NODE_SCORE_TRUST = 0.5  # weight of a pairing timed by the score rather than by 
 # A coral seen landing on a branch with no robot seen at its spot was placed by a robot out of sight
 # (behind the REEF). Partners seen more than NODE_AWAY_M from the spot at that moment did not place it.
 NODE_HIDDEN_MIX, NODE_AWAY_M, NODE_AWAY_W = 0.6, 1.5, 0.05
+NET_LAG_MAX = 10.0  # s beyond PLACE_WINDOW a NET score may trail the shot seen flying
 # L1: coral coming to rest in the trough of a REEF face, credited to the robot in front of that face.
 TROUGH_CREDIT = True
 TROUGH_TRUST = 0.8  # weight of a trough arrival next to a branch's (the trough has no single spot)
@@ -768,9 +769,11 @@ class Reefscape2025(GamePlugin):
             w.update({tm: w.get(tm, 0.0) * (1 - CAM_AWAY_FIT) for tm, v in cam.items() if v < CAM_AWAY_MAX})
         return _normalized(w, FACE_MIN, True)
 
-    def _pair(self, actions: list[dict], idx: list[int], pls: list[dict], level_px=None) -> list[tuple[int, dict]]:
+    def _pair(self, actions: list[dict], idx: list[int], pls: list[dict], level_px=None,
+              late: float = 0.0) -> list[tuple[int, dict]]:
         """One-to-one pairs (action index, placement) with the placement up to PLACE_WINDOW before the post
-        (level_px(placement, level): how far it sits from that level's tips, preferring matching heights)."""
+        (level_px(placement, level): how far it sits from that level's tips, preferring matching heights).
+        late: s beyond PLACE_WINDOW a post may still trail (scores are tapped in by people), at NODE_LAG_COST."""
         from scipy.optimize import linear_sum_assignment
 
         if not pls or not idx:
@@ -780,8 +783,8 @@ class Reefscape2025(GamePlugin):
         for r, i in enumerate(idx):
             for c, p in enumerate(pls):
                 lag = actions[i]["t"] - p["t"]
-                if PLACE_WINDOW[0] <= lag <= PLACE_WINDOW[1]:
-                    cost[r, c] = abs(lag - PLACE_LAG)
+                if PLACE_WINDOW[0] <= lag <= PLACE_WINDOW[1] + late:
+                    cost[r, c] = abs(min(lag, PLACE_WINDOW[1]) - PLACE_LAG) + NODE_LAG_COST * max(lag - PLACE_WINDOW[1], 0.0)
                     d = level_px(p, actions[i]["cat"]) if level_px else None
                     if d is not None and d > LEVEL_PX_MAX * FACE_PX_REF:
                         # Nowhere near that level's branch tips (often a robot moving at the REEF's base,
@@ -1167,7 +1170,7 @@ class Reefscape2025(GamePlugin):
                 continue
             candidates.append({"t": release_t, "team": team, "launch": L})
         idx = [i for i, action in enumerate(actions) if action["cat"] == "net"]
-        for i, shot in self._pair(actions, idx, candidates):
+        for i, shot in self._pair(actions, idx, candidates, late=NET_LAG_MAX):
             A, team, L = actions[i], shot["team"], shot["launch"]
             base = A["p"] or {tm: 1 / len(teams) for tm in teams}
             A["p"] = {tm: .15 * base.get(tm, 0) + .85 * (tm == team) for tm in teams}
