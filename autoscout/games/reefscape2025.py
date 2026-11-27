@@ -90,6 +90,12 @@ NODE_CAM = True
 NODE_SIGMA_CAM = 0.6  # m: a close-up position is rougher than a wide-shot one
 NODE_ROBOT_WIDTH = 0.9  # m across a robot with bumpers, for distance from box width
 NODE_CAM_MIN_PX = 60.0  # px: narrower close-up boxes are robots far behind the REEF or cut off by it
+# Per-score credit comes out too timid: where a robot is seen at the branch the top-credited robot is
+# right far more often than its share says (scripts/bench2025.py, plays with a known scorer), and every
+# timid share leaks a fraction of a coral to partners who scored none. Shares are raised to this power
+# and renormalized before the official counts are split (1 = as computed). Coral only: algae credit has
+# no branch to stand at, and sharpening it measured no better.
+CREDIT_SHARPEN = {"coral": 3.0, "algae": 1.0}
 SHARE_MODE = "hybrid"  # "nearest" | "soft" | "dwell" | "hybrid" (dwell for coral, soft for algae): see _shares
 SOFT_SCALE = 1.0  # m
 DWELL_SLACK = 0.5  # m added to an element's reach when timing how long a robot stayed there
@@ -1159,6 +1165,11 @@ class Reefscape2025(GamePlugin):
         else:
             credit = [A["p"] for A in actions]
         for A, cr in zip(actions, credit):
+            power = CREDIT_SHARPEN.get(A["piece"], 1.0)
+            if power != 1.0 and cr:
+                top = max(cr.values())
+                tot = sum((v / top) ** power for v in cr.values())
+                cr = {who: (v / top) ** power / tot for who, v in cr.items()}
             # actions the video says little about weigh little in splitting the official counts
             k = A["conf"] if CONF_WEIGHT else 1.0
             for who, share in cr.items():

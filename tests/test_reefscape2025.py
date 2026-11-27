@@ -347,3 +347,29 @@ def test_a_robot_across_the_barge_is_not_at_its_own_net():
     assert plugin._dwell(SimpleNamespace(), "blue0", 0, 2, "blue")["net"] == 0
     track[:] = [(i / 10, 8.0, 5.0, True, None) for i in range(20)]
     assert plugin._dwell(SimpleNamespace(), "blue0", 0, 2, "blue")["net"] > 1.5
+
+
+def test_coral_credit_is_sharpened_and_algae_credit_is_not(monkeypatch):
+    from collections import defaultdict
+    from types import SimpleNamespace
+
+    from autoscout.games import reefscape2025 as r
+
+    plugin = Reefscape2025()
+    acts = {"L4": {"t": 50.0, "cat": "L4", "phase": "teleop", "piece": "coral", "p": {1: 0.6, 2: 0.4}, "conf": 1.0, "jump": 5},
+            "net": {"t": 90.0, "cat": "net", "phase": "teleop", "piece": "algae", "p": {1: 0.6, 2: 0.4}, "conf": 1.0, "jump": 4}}
+    monkeypatch.setattr(plugin, "_credit", lambda ctx, a, teams, t, cat: (dict(acts[cat]["p"]), 1.0))
+    for name in ("_match_placements", "_match_nodes", "_match_algae"):
+        monkeypatch.setattr(plugin, name, lambda *a, **k: None)
+    monkeypatch.setattr(plugin, "_evidence", lambda *a, **k: ({1: {"reef": 0.1, "net": 0.1, "processor": 9.0},
+                                                               2: {"reef": 0.1, "net": 0.1, "processor": 9.0}}, {}))
+    monkeypatch.setattr(r.Reefscape2025, "decode_jumps", staticmethod(lambda jumps, need, foul: [["teleop_L4"], ["net"]]))
+    tl = SimpleNamespace(deltas=lambda a: [(50.0, 5), (90.0, 4)], counters={}, counter_deltas=lambda k: [])
+    ctx = SimpleNamespace(timeline=tl, clock=SimpleNamespace(start_vt=0.0, auto_end_vt=15.0, teleop_end_vt=150.0),
+                          match=SimpleNamespace(breakdown=None, key="m"), element_changes=[], event_matches=[])
+    weights = {ph: defaultdict(lambda: defaultdict(float)) for ph in ("auto", "teleop")}
+    events = []
+    plugin._decode_alliance(ctx, "red", [1, 2], weights, events)
+    by = {e["kind"]: e["shares"] for e in events}
+    assert by["L4"]["1"] > 0.75  # 0.6 against 0.4, cubed
+    assert abs(by["net"]["1"] - 0.6) < 0.03  # algae left as computed

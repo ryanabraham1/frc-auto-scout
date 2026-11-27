@@ -160,6 +160,13 @@ def node_fills(obs: list, cams: dict[str, Camera], alliance: str, nodes: list[di
     return out
 
 
+def read_reef(obs: list, cams: dict[str, Camera], alliance: str) -> list[dict]:
+    """The REEF as vision alone reads it, with no official node map: [{branch, level, t, ...}] for every
+    branch a coral was seen coming to rest on and staying. scripts/bench2025.py grades this against FMS."""
+    every = [{"branch": b, "level": level, "phase": "teleop"} for level in LEVELS for b in LETTERS]
+    return [n for n in node_fills(obs, cams, alliance, every) if "t" in n]
+
+
 def pair_jumps(nodes: list[dict], jumps: list[dict], lag: float = 1.0, window=(-1.5, 6.0)) -> dict[int, int]:
     """{jump index: node index}: each decoded coral score ({t, level, phase}) with the official node it
     filled. A node seen filling pairs with the score of its level posted about `lag` s later; nodes
