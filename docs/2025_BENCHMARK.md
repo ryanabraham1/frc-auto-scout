@@ -59,9 +59,9 @@ scouted robot (an equal three-way split scores 44%):
 | Hidden robots, L1 trough credit | 89.0% | 91.2% | 75.3% |
 | Close-up cameras refined, AUTO branches take AUTO coral | 88.8% | 91.2% | 74.1% |
 
-Fourteen matches that were never used to tune anything (qm45 to qm58) score 88.0% (L2-L4 89.1%, L1
-80.0%), and 88 of their 90 plays with a known scorer go to the right robot. Without the 3D branch
-credit the same matches score 79.5%.
+Eighteen matches that were never used to tune anything (qm45 to qm62) score 88.1% (L2-L4 89.8%, L1
+76.7%), and 99 of their 102 plays with a known scorer go to the right robot. On the first fourteen of
+them, turning the 3D branch credit off drops 88.0% to 79.5%.
 
 The last row is within noise of the one above it on this measure; those two changes were kept for what
 they fixed directly (camera error at the branches from 15 and 21 px to 6 and 5 px, and the
@@ -90,8 +90,11 @@ check of the geometry, not of the credit.
 - **Identity when robots are packed at the REEF.** Their tracklets are cut short there and the
   labelling has least to go on; several of the remaining wrong calls are a partner standing in for the
   scorer (qm4 blue: a box labelled 2643 whose bumper reads 581).
-- **Coral that vision did not time** (about a third of L2-L4 scores): a new coral lands against one
-  already boxed and never gets its own track.
+- **Coral that vision did not time** (a third of L2-L4 scores). Of all L2-L4 scores: 16% have a branch
+  whose coral vision only dated long after the score, 9% a branch never seen filling, 5% are decoded
+  scores with no official branch left for them. The first two are mostly a coral landing in front of
+  or behind one already there: the two share one box and one track, so the second has no arrival of
+  its own (qm14 blue: A4/H4 and B4/G4 are two tracks for four coral).
 - **AUTO tracking.** Robots are often lost as they first drive off: of robots FMS says left their
   line, many are only seen standing at it.
 - **Algae** is untouched by any of this: NET and PROCESSOR credit still follows the score's time.
@@ -106,6 +109,14 @@ check of the geometry, not of the credit.
 - **Constants.** The windows and spreads around the scoring spot, the trust in a score-timed pairing,
   the arrival step level and the trough geometry were all swept; every variant moved the result by
   less than a point.
+- **Four attempts at the coral vision does not time**, none of which moved the result: letting a coral
+  seen up to 8 s after its score count as timed; dating a second coral from the moment a track's box
+  grows for good (timed 67% to 68%); refitting the wide camera to scored coral (only about 70 usable
+  coral, and the focal length kept drifting); and discounting decoded scores left without a branch.
+  Telling two coral apart inside one box needs a better picture of them (a detector trained to separate
+  them, or one that classifies each branch as full or empty), not more arithmetic on the boxes.
+- **Algae.** Crediting by time at the NET or PROCESSOR over the whole match, and by dwell instead of
+  closeness, both scored worse than what is there.
 
 ## Limits of the benchmark
 
