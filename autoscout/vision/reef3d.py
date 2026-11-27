@@ -32,6 +32,8 @@ STAY_FRAC, STAY_S = 0.5, 10.0  # once there it is seen this much; one hidden lat
 FIT_SIGMA, SIZE_SIGMA = 0.35, 0.35  # box sizes a resting coral's centre may sit off its node's; log size ratio
 MIN_BOX_PX = 14.0  # the detector's boxes do not get smaller than this, however far the coral
 MAX_FIT_COST = 9.0  # beyond this a resting coral is not on that node
+BLIND_MAX_COST = 3.0  # read_reef: how squarely a coral must sit on a branch only the close-up shows it on
+AUTO_SLACK = (1.0, 2.5)  # s before / after the end of AUTO that a coral's landing can still be TELEOP's / AUTO's
 TROUGH_R, TROUGH_Z = 0.72, 0.52  # m from the REEF centre and above the carpet of a coral lying in the trough
 TROUGH_SIGMA = 0.6  # box sizes a trough coral may lie from its trough spot
 TROUGH_SAME_S = 2.5  # s between two views' sightings of one coral landing
@@ -175,8 +177,12 @@ def _fit_cost(boxes: np.ndarray, r: dict) -> np.ndarray:
     return (d / FIT_SIGMA) ** 2 + (np.log(max(r["size"], 1.0) / size) / SIZE_SIGMA) ** 2
 
 
-def _view_matches(obs: list, cam: Camera, view: str, alliance: str, nodes: list[dict]) -> dict[int, tuple]:
-    """{node index: (resting coral, cost, [other node indices it fits nearly as well])} in one view."""
+def _view_matches(obs: list, cam: Camera, view: str, alliance: str, nodes: list[dict],
+                  auto_end: float | None = None) -> dict[int, tuple]:
+    """{node index: (resting coral, cost, [other node indices it fits nearly as well])} in one view.
+    With auto_end (video s), a node the breakdown says filled in AUTO only takes coral that landed by
+    then, and a TELEOP node only coral that landed after: two branches that share pixels are often one
+    of each."""
     B = coral_boxes(cam, alliance, nodes)
     # Only coral near these branches can be on them. The detector boxes every coral in the frame
     # (loading stations, robots, the carpet): tracking all of them took most of a minute a match.
@@ -188,9 +194,12 @@ def _view_matches(obs: list, cam: Camera, view: str, alliance: str, nodes: list[
     shown = np.array([in_view(view, alliance, b[0], b[1]) for b in B])
     big = 1e6
     cost = np.full((len(nodes), len(R)), big)
+    in_auto = np.array([n.get("phase") == "auto" for n in nodes])
     for j, r in enumerate(R):
         c = _fit_cost(B, r)
         ok = (c < MAX_FIT_COST) & shown
+        if auto_end is not None:
+            ok &= np.where(in_auto, r["t"] <= auto_end + AUTO_SLACK[1], r["t"] >= auto_end - AUTO_SLACK[0])
         cost[ok, j] = c[ok]
     rows, cols = linear_sum_assignment(cost)
     out = {}
@@ -204,7 +213,8 @@ def _view_matches(obs: list, cam: Camera, view: str, alliance: str, nodes: list[
     return out
 
 
-def node_fills(obs: list, cams: dict[str, Camera], alliance: str, nodes: list[dict]) -> list[dict]:
+def node_fills(obs: list, cams: dict[str, Camera], alliance: str, nodes: list[dict],
+               auto_end: float | None = None) -> list[dict]:
     """Fill time of each node where a resting coral shows it: nodes gain "t" (when it came to rest, video
     s), "views" and "fit" (how well the resting coral sits on the branch, 0..1). Each view's resting coral
     are matched one-to-one to the nodes it can show; a node seen filling in both views takes the
@@ -213,8 +223,8 @@ def node_fills(obs: list, cams: dict[str, Camera], alliance: str, nodes: list[di
     for view, cam in cams.items():
         if not nodes:
             continue
-        for i, (r, c, alts) in _view_matches(obs, cam, view, alliance, nodes).items():
-            found.setdefault(i, []).append((view, r, float(np.exp(-0.5 * c)), alts))
+        for i, (r, c, alts) in _view_matches(obs, cam, view, alliance, nodes, auto_end).items():
+            found.setdefault(i, []).append((view, r, float(np.exp(-0.5 * c)), alts, c))
     out = []
     for i, n in enumerate(nodes):
         n = dict(n)
@@ -225,6 +235,7 @@ def node_fills(obs: list, cams: dict[str, Camera], alliance: str, nodes: list[di
             n["t"] = float(ts[0]) if len(ts) == 1 or agree else float(max(got, key=lambda g: g[2])[1]["t"])
             n["views"] = [g[0] for g in got]
             n["fit"] = float(max(g[2] for g in got))
+            n["cost"] = float(min(g[4] for g in got))
             n["agree"] = bool(agree)
             # two views that agree on the moment have pinned the branch; one view alone has not
             n["alts"] = [] if agree else sorted({nodes[k]["branch"] for g in got for k in g[3]})
@@ -234,9 +245,18 @@ def node_fills(obs: list, cams: dict[str, Camera], alliance: str, nodes: list[di
 
 def read_reef(obs: list, cams: dict[str, Camera], alliance: str) -> list[dict]:
     """The REEF as vision alone reads it, with no official node map: [{branch, level, t, ...}] for every
-    branch a coral was seen coming to rest on and staying. scripts/bench2025.py grades this against FMS."""
+    branch (and trough spot, level "L1") a coral was seen coming to rest on and staying.
+    scripts/bench2025.py grades this against FMS.
+
+    Without the node map to say which branches can hold coral, a coral lying in the trough or on the
+    carpet, or held at the REEF, is easily taken for the nearest branch. So a branch counts when both
+    views show a coral on it, or the close-up alone shows one sitting squarely on it."""
     every = [{"branch": b, "level": level, "phase": "teleop"} for level in LEVELS + ("L1",) for b in LETTERS]
-    return [n for n in node_fills(obs, cams, alliance, every) if "t" in n]
+    out = []
+    for n in node_fills(obs, cams, alliance, every):
+        if "t" in n and (len(n["views"]) > 1 or n["level"] == "L1" or (n["views"] == ["cam"] and n["cost"] <= BLIND_MAX_COST)):
+            out.append(n)
+    return out
 
 
 def trough_fills(obs: list, cams: dict[str, Camera], alliance: str) -> list[dict]:

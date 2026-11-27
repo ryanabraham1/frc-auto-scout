@@ -887,7 +887,8 @@ class Reefscape2025(GamePlugin):
         cams = reef3d.views(ctx.match.event_key, a)
         cams["wide"] = wide
         idx = [i for i, A in enumerate(actions) if A["cat"] in reef3d.LEVELS]
-        nodes = reef3d.node_fills(obs, cams, a, reef3d.official_nodes(bd))
+        nodes = reef3d.node_fills(obs, cams, a, reef3d.official_nodes(bd),
+                                  ctx.clock.auto_end_vt if ctx.clock is not None else None)
         for n in nodes:
             if "t" in n and n["fit"] < NODE_MIN_FIT:
                 n.pop("t")

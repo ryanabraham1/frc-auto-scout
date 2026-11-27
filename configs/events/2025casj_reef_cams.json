@@ -1,37 +1,38 @@
 {
  "note": "REEF close-up cameras (fixed all event), in two-panel layout panel pixels (948x370). blue: solved from tags 12/13 plus hand-marked centres of base tags 22 (385,350) and 20 (630,355), cut off by the panel edge; 2.0 px tag error. Used by scripts/reef_state_check.py when a close-up shows too few tags. red: solved from tags [1, 2, 11] in 2025casj_qm2, 1.2 px.",
  "blue": {
-  "f": 602.0634502994902,
+  "f": 661.4273145319256,
   "size": [
    948,
    370
   ],
   "rvec": [
-   1.2824459961465826,
-   1.375133139415732,
-   -1.141632064981448
+   1.317121665849512,
+   1.4297291873927698,
+   -1.118188120086169
   ],
   "tvec": [
-   -3.5978909109035886,
-   0.3795378585056155,
-   8.610338803850649
+   -3.5162643681203716,
+   0.17045757298143555,
+   8.946627063267949
   ]
  },
  "red": {
-  "f": 662.4742835526177,
+  "f": 616.9468977058607,
   "size": [
    954,
    370
   ],
   "rvec": [
-   1.401210032216842,
-   -1.3867861731649433,
-   1.086255513974183
+   1.429391380403323,
+   -1.37256529558967,
+   1.048265307978998
   ],
   "tvec": [
-   4.154345529389637,
-   4.494504689424895,
-   -7.71985993840125
+   3.6200170933711755,
+   4.639856246726851,
+   -8.534974934689897
   ]
- }
+ },
+ "refined": "focal length and pose refitted to scored coral on official branches over 16 matches (scripts/refine_reef_cams.py)"
 }
