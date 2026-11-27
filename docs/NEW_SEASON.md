@@ -25,3 +25,27 @@ Week 0 / week 1:
 7. Run a few matches with `--debug-video` and check that launches and robot boxes look right.
 8. Check `autoscout report <event>`: the overlay score must match the official scores, and identity confidence
    should be high.
+
+## If the game is pick and place
+
+What 2025 taught, measured in `docs/2025_BENCHMARK.md`. Build the plugin around these from the start;
+the 2025 plugin grew them late, on top of older logic that did worse.
+
+- **Credit the piece, not the score.** Scores entered by people post up to 20 s late and in bursts.
+  Find when each piece came to rest on its scoring location in the video, and credit the robot standing
+  at that location's scoring spot then. Use the score's jumps only to keep the counts right.
+- **Check on kickoff day what FMS publishes per location.** A per-location map (2025's `teleopReef`
+  node rows) is what makes this sharp: 91% right for the mapped levels against 75% for the trough,
+  which FMS only counts.
+- **The pieces that carry over:** `vision/camera3d.py` (cameras from AprilTags; add
+  `configs/fields/<year>_tags.json`), `vision/reef3d.rests` (pieces that come to rest, from detector
+  boxes), `Reefscape2025._spot_evidence` and `_credit_spot` (robot at the spot; hidden partner),
+  `scripts/refine_reef_cams.py` (refit a fixed camera to scored pieces after about 15 matches) and
+  `CREDIT_SHARPEN`. They are written for the REEF; lift them into shared code when the second game
+  needs them.
+- **The pieces to write:** the 3D position of every scoring location and of a robot scoring there
+  (`reef3d.coral_ends`, `node_pose`), a detector for the new piece (needs real match footage), and
+  the point values.
+- **Build the benchmark in week 1.** `scripts/bench2025.py` is the pattern: read the scoring
+  locations with the score hidden and compare with FMS; use scout sheets only in cells where the
+  scouts' sum equals the FMS count. Without it, constants get tuned to noise.
