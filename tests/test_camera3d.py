@@ -156,3 +156,48 @@ def test_scoring_spot_is_in_front_of_the_branch_face():
     assert a[0] < centre[0] and b[0] < centre[0]  # face 0 looks at the blue driver stations (x = 0)
     assert np.linalg.norm(a - b) == pytest.approx(2 * F.BRANCH_HALF, abs=1e-6)
     assert np.linalg.norm((a + b) / 2 - centre) == pytest.approx(reef3d.ROBOT_REACH, abs=1e-6)
+
+
+def _boxes_over_time(spans, n=300, dt=0.2):
+    """[[t, boxes]] with each (t0, t1, box) present from t0 to t1."""
+    return [[k * dt, [list(b) + [0.9] for t0, t1, b in spans if t0 <= k * dt < t1]] for k in range(n)]
+
+
+def test_a_coral_held_at_the_branch_earlier_does_not_date_it_early():
+    box = (100, 100, 110, 130)
+    obs = _boxes_over_time([(4.0, 4.8, box), (20.0, 99.0, box)])
+    for row in obs:  # the robot backing away hides it for a moment
+        if 22.0 <= row[0] < 22.6:
+            row[1].clear()
+    got = reef3d.rests(obs, lambda x, y: True)
+    assert len(got) == 1 and got[0]["t"] == pytest.approx(20.0, abs=0.01)
+
+
+def test_two_coral_that_share_pixels_keep_their_own_arrival_times():
+    # a far branch's coral, then a near branch's coral in front of it: nearly the same box centre
+    obs = _boxes_over_time([(10.0, 99.0, (100, 100, 112, 132)), (30.0, 99.0, (98, 98, 118, 140))])
+    got = reef3d.rests(obs, lambda x, y: True)
+    assert [round(r["t"]) for r in got] == [10, 30]
+
+
+def test_a_coral_on_l4_is_boxed_below_the_branch_tip():
+    from autoscout.vision import field3d as F
+
+    cam = _camera()
+    box = reef3d.coral_boxes(cam, "blue", [{"branch": "A", "level": "L4"}])[0]
+    tip = cam.project([F.branch_tips("blue")[("A", "L4")]])[0]
+    assert box[3] > 1.5 * box[2]  # upright on the vertical post
+    assert box[1] > tip[1] and abs(box[0] - tip[0]) < 2  # hangs below the tip, not centred on it
+
+
+def test_a_coral_landing_in_the_trough_is_an_arrival_on_that_face():
+    cam = _camera()
+    spot = reef3d.coral_boxes(cam, "blue", [{"branch": "E", "level": "L1"}])[0]
+    box = (spot[0] - 6, spot[1] - 4, spot[0] + 6, spot[1] + 4)  # lying end-on: small, but where the trough is
+    obs = _boxes_over_time([(40.0, 99.0, box)])
+    got = reef3d.trough_fills(obs, {"wide": cam}, "blue")
+    assert len(got) == 1 and got[0]["face"] == 2 and got[0]["t"] == pytest.approx(40.0, abs=0.01)
+    # the same picture on a branch is not a trough coral
+    branch = reef3d.coral_boxes(cam, "blue", [{"branch": "E", "level": "L3"}])[0]
+    box = (branch[0] - branch[2] / 2, branch[1] - branch[3] / 2, branch[0] + branch[2] / 2, branch[1] + branch[3] / 2)
+    assert reef3d.trough_fills(_boxes_over_time([(40.0, 99.0, box)]), {"wide": cam}, "blue") == []

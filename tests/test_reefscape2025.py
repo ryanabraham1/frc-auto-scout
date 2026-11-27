@@ -373,3 +373,36 @@ def test_coral_credit_is_sharpened_and_algae_credit_is_not(monkeypatch):
     by = {e["kind"]: e["shares"] for e in events}
     assert by["L4"]["1"] > 0.75  # 0.6 against 0.4, cubed
     assert abs(by["net"]["1"] - 0.6) < 0.03  # algae left as computed
+
+
+def _spot_action(p=None):
+    return {"t": 60.0, "cat": "L4", "phase": "teleop", "piece": "coral", "p": p or {1: 0.2, 2: 0.6, 3: 0.2},
+            "conf": 0.3, "jump": 5, "node": {}}
+
+
+def test_a_robot_seen_elsewhere_did_not_place_a_coral_nobody_was_seen_placing():
+    plugin = Reefscape2025()
+    A = _spot_action()
+    # nobody at the branch; team 2 was seen across the field, team 1 was not seen at all (behind the REEF)
+    plugin._credit_spot(None, "red", [1, 2, 3], A, 59.0, {1: 0.0, 2: 0.0, 3: 0.0}, {1: None, 2: "away", 3: "away"}, True, 1.0)
+    assert max(A["p"], key=A["p"].get) == 1 and A["node"]["hidden"] == [1]
+    # with nobody seen elsewhere there is nothing to rule out: the other evidence stands
+    B = _spot_action()
+    plugin._credit_spot(None, "red", [1, 2, 3], B, 59.0, {1: 0.0, 2: 0.0, 3: 0.0}, {1: None, 2: None, 3: None}, True, 1.0)
+    assert B["p"] == {1: 0.2, 2: 0.6, 3: 0.2}
+
+
+def test_a_late_score_post_is_credited_from_when_its_coral_landed(monkeypatch):
+    plugin = Reefscape2025()
+    asked = []
+
+    def credit(ctx, a, teams, t, cat):
+        asked.append(t)
+        return {1: 0.1, 2: 0.1, 3: 0.8}, 0.5
+
+    monkeypatch.setattr(plugin, "_credit", credit)
+    A = _spot_action()
+    A["t"] = 80.0  # the scorer tapped it in 21 s after the coral came to rest at 59 s
+    plugin._credit_spot(None, "red", [1, 2, 3], A, 59.0, {1: 0.9, 2: 0.0, 3: 0.0}, {1: "at", 2: "away", 3: None}, True, 1.0)
+    assert asked == [60.0]  # who stood at the REEF around the post says nothing
+    assert max(A["p"], key=A["p"].get) == 1 and A["t_place"] == 59.0

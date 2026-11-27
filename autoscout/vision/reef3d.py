@@ -22,11 +22,20 @@ CORAL_LEN = 0.30  # m
 LEVELS = ("L4", "L3", "L2")
 ROWS = {"L4": "topRow", "L3": "midRow", "L2": "botRow"}
 LETTERS = "ABCDEFGHIJKL"
+CORAL_RADIUS = 0.055  # m
+BRANCH_TILT = 35.0  # deg above level of the L2 and L3 arms
 LINK_PX = 12.0  # px between boxes of one resting coral
-HOLD_S, HOLD_FRAC = 2.0, 0.6  # a coral rests when it is seen this much of the next HOLD_S
 MIN_SEEN = 15
+MIN_CONF = 0.1  # detector confidence a box needs to count as a coral
+STEP_LEVEL = 0.5  # sightings per frame above which a coral is there (the step that dates its arrival)
+STAY_FRAC, STAY_S = 0.5, 10.0  # once there it is seen this much; one hidden later (a coral placed in front) stayed this long
+FIT_SIGMA, SIZE_SIGMA = 0.35, 0.35  # box sizes a resting coral's centre may sit off its node's; log size ratio
+MIN_BOX_PX = 14.0  # the detector's boxes do not get smaller than this, however far the coral
+MAX_FIT_COST = 9.0  # beyond this a resting coral is not on that node
+TROUGH_R, TROUGH_Z = 0.72, 0.52  # m from the REEF centre and above the carpet of a coral lying in the trough
+TROUGH_SIGMA = 0.6  # box sizes a trough coral may lie from its trough spot
+TROUGH_SAME_S = 2.5  # s between two views' sightings of one coral landing
 PANEL_Y, PANEL_SPLIT = 645, 958  # close-up band and where the two REEF panels meet (1080p two-panel layout)
-MATCH_LEN = 1.3  # coral lengths from a tip within which a resting coral can be on that branch
 ALT_COST = 4.0  # how much worse another branch may fit one view's coral and still be a candidate
 ROBOT_REACH = 0.83 + 0.55  # m from the REEF centre to the centre of a robot placing on a face
 ROBOT_SIGMA = 0.55  # m: how well a robot's centre is known from its box
@@ -68,81 +77,144 @@ def official_nodes(breakdown_alliance: dict) -> list[dict]:
 
 
 def rests(obs: list, keep) -> list[dict]:
-    """Coral that came to rest and stayed to the end: [{t, x, y, size, seen, frac}] from the detector's
-    boxes [[t, [[x0, y0, x1, y1, conf], ...]], ...]; keep(x, y) limits it to one view."""
-    clusters: list[dict] = []
+    """Coral that came to rest and stayed: [{t, x, y, w, h, size, seen, frac, t_end}] from the detector's
+    boxes [[t, [[x0, y0, x1, y1, conf], ...]], ...]; keep(x, y) limits it to one view.
+
+    Boxes are linked into tracks one box per track per frame, so two coral whose boxes nearly coincide
+    (a near branch in front of a far one) stay two tracks and the second keeps its own arrival time. A
+    track's coral arrived at the step that best splits its sightings into "not there" before and
+    "there" after: a robot holding a coral at the branch for a moment earlier does not date it early,
+    and a few missed frames after it lands do not date it late."""
+    tracks: list[dict] = []
     for t, boxes in obs:
-        for x0, y0, x1, y1, _c in boxes:
-            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-            if not keep(cx, cy):
+        cand = [((x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0, conf) for x0, y0, x1, y1, conf in boxes if conf >= MIN_CONF]
+        cand = [c for c in cand if keep(c[0], c[1])]
+        pairs = sorted((float(np.hypot(k["x"] - c[0], k["y"] - c[1])), i, j) for i, k in enumerate(tracks)
+                       for j, c in enumerate(cand) if abs(k["x"] - c[0]) < LINK_PX and abs(k["y"] - c[1]) < LINK_PX)
+        used_t, used_c = set(), set()
+        for d, i, j in pairs:
+            if d >= LINK_PX or i in used_t or j in used_c:
                 continue
-            best, bd = None, LINK_PX
-            for k in clusters:
-                d = float(np.hypot(k["x"] - cx, k["y"] - cy))
-                if d < bd:
-                    best, bd = k, d
-            if best is None:
-                clusters.append({"x": cx, "y": cy, "obs": [(t, max(x1 - x0, y1 - y0))]})
-            else:
-                best["obs"].append((t, max(x1 - x0, y1 - y0)))
-                n = min(len(best["obs"]), 10)
-                best["x"] += (cx - best["x"]) / n
-                best["y"] += (cy - best["y"]) / n
+            used_t.add(i)
+            used_c.add(j)
+            k, c = tracks[i], cand[j]
+            k["obs"].append((t, c[2], c[3], c[4]))
+            n = min(len(k["obs"]), 10)
+            k["x"] += (c[0] - k["x"]) / n
+            k["y"] += (c[1] - k["y"]) / n
+        for j, c in enumerate(cand):
+            if j not in used_c:
+                tracks.append({"x": c[0], "y": c[1], "obs": [(t, c[2], c[3], c[4])]})
     times = np.array([o[0] for o in obs])
     if not len(times):
         return []
     out = []
-    for k in clusters:
-        seen = np.array(sorted({o[0] for o in k["obs"]}))
-        if len(seen) < MIN_SEEN or seen[-1] < times[-1] - 30.0:
+    for k in tracks:
+        seen = np.array([o[0] for o in k["obs"]])
+        if len(seen) < MIN_SEEN:
             continue
-        for t in seen:
-            frames = max(((times >= t) & (times < t + HOLD_S)).sum(), 1)
-            if ((seen >= t) & (seen < t + HOLD_S)).sum() >= HOLD_FRAC * frames:
-                after = times[times >= t]
-                out.append({"t": float(t), "x": float(k["x"]), "y": float(k["y"]), "seen": int(len(seen)),
-                            "size": float(np.median([o[1] for o in k["obs"]])),
-                            "frac": float(len(seen[seen >= t]) / max(len(after), 1))})
-                break
+        hit = np.isin(times, seen).astype(float)
+        last = int(np.searchsorted(times, seen[-1], side="right"))  # nothing is known after its last sighting
+        s = hit[:last] - STEP_LEVEL
+        after = np.cumsum(s[::-1])[::-1]  # sum of (hit - level) from each frame on
+        before = np.cumsum(s) - s  # ... and before it
+        i = int(np.argmax(after - before))
+        stay = float(hit[i:last].mean())
+        t_end = float(seen[-1])
+        if stay < STAY_FRAC or (t_end < times[-1] - 30.0 and t_end - times[i] < STAY_S):
+            continue
+        obs_after = [o for o in k["obs"] if o[0] >= times[i]]
+        if len(obs_after) < MIN_SEEN:
+            continue  # the best step left almost nothing after it: never really there
+        w, h = float(np.median([o[1] for o in obs_after])), float(np.median([o[2] for o in obs_after]))
+        out.append({"t": float(times[i]), "x": float(k["x"]), "y": float(k["y"]), "w": w, "h": h, "size": max(w, h),
+                    "seen": int(len(obs_after)), "frac": stay, "t_end": t_end,
+                    "conf": float(np.median([o[3] for o in obs_after]))})
     return sorted(out, key=lambda r: r["t"])
 
 
+def coral_ends(alliance: str, branch: str, level: str) -> tuple[np.ndarray, np.ndarray]:
+    """3D ends of a coral sitting on a branch: its outer end at the branch tip, the rest back along the
+    branch (straight down the vertical L4 post, down the slanted L2 and L3 arms). L1 is the trough: a
+    coral lying along the face, centred on the trough spot."""
+    tip = F.branch_tips(alliance)[(branch, level)]
+    k = LETTERS.index(branch)
+    a = np.radians(F.face_normal_deg(alliance, k // 2))
+    n = np.array([np.cos(a), np.sin(a), 0.0])
+    if level == "L4":
+        axis = np.array([0.0, 0.0, 1.0])
+    elif level == "L1":
+        along = np.array([-n[1], n[0], 0.0])
+        centre = np.array([*F.REEF_CENTRE[alliance], 0.0]) + TROUGH_R * n + (-1 if k % 2 == 0 else 1) * F.BRANCH_HALF * along
+        centre[2] = TROUGH_Z
+        return centre + 0.5 * CORAL_LEN * along, centre - 0.5 * CORAL_LEN * along
+    else:
+        tilt = np.radians(BRANCH_TILT)
+        axis = np.cos(tilt) * n + np.array([0.0, 0.0, np.sin(tilt)])
+    return tip, tip - CORAL_LEN * axis
+
+
+def coral_boxes(cam: Camera, alliance: str, nodes: list[dict]) -> np.ndarray:
+    """(N, 4) centre x, centre y, width, height in pixels of the box a coral on each node shows in a view."""
+    out = np.zeros((len(nodes), 4))
+    for i, n in enumerate(nodes):
+        a, b = coral_ends(alliance, n["branch"], n["level"])
+        P = cam.project([a, b])
+        r = cam.f * CORAL_RADIUS / max(float(np.linalg.norm((a + b) / 2 - cam.centre)), 1e-6)
+        x0, y0 = P.min(0) - r
+        x1, y1 = P.max(0) + r
+        out[i] = ((x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0)
+    return out
+
+
+def _fit_cost(boxes: np.ndarray, r: dict) -> np.ndarray:
+    """How badly a resting coral fits each node's expected box: its centre in units of the expected box
+    size, and its size against the expected size (a near branch's coral is bigger than a far one's)."""
+    size = np.maximum(np.maximum(boxes[:, 2], boxes[:, 3]), MIN_BOX_PX)
+    d = np.hypot(boxes[:, 0] - r["x"], boxes[:, 1] - r["y"]) / size
+    return (d / FIT_SIGMA) ** 2 + (np.log(max(r["size"], 1.0) / size) / SIZE_SIGMA) ** 2
+
+
+def _view_matches(obs: list, cam: Camera, view: str, alliance: str, nodes: list[dict]) -> dict[int, tuple]:
+    """{node index: (resting coral, cost, [other node indices it fits nearly as well])} in one view."""
+    B = coral_boxes(cam, alliance, nodes)
+    # Only coral near these branches can be on them. The detector boxes every coral in the frame
+    # (loading stations, robots, the carpet): tracking all of them took most of a minute a match.
+    pad = 2.0 * float(np.maximum(B[:, 2], B[:, 3]).max())
+    x0, y0, x1, y1 = B[:, 0].min() - pad, B[:, 1].min() - pad, B[:, 0].max() + pad, B[:, 1].max() + pad
+    R = rests(obs, lambda x, y: x0 <= x <= x1 and y0 <= y <= y1 and in_view(view, alliance, x, y))
+    if not R:
+        return {}
+    shown = np.array([in_view(view, alliance, b[0], b[1]) for b in B])
+    big = 1e6
+    cost = np.full((len(nodes), len(R)), big)
+    for j, r in enumerate(R):
+        c = _fit_cost(B, r)
+        ok = (c < MAX_FIT_COST) & shown
+        cost[ok, j] = c[ok]
+    rows, cols = linear_sum_assignment(cost)
+    out = {}
+    for i, j in zip(rows, cols):
+        if cost[i, j] < big:
+            # other branches of that level this coral fits nearly as well in this view: the REEF is an
+            # open frame, so a front branch and the one behind it can share pixels
+            alts = [k for k in range(len(nodes)) if k != i and nodes[k]["level"] == nodes[i]["level"]
+                    and nodes[k].get("phase") == nodes[i].get("phase") and cost[k, j] < cost[i, j] + ALT_COST]
+            out[i] = (R[j], float(cost[i, j]), alts)
+    return out
+
+
 def node_fills(obs: list, cams: dict[str, Camera], alliance: str, nodes: list[dict]) -> list[dict]:
-    """Fill time of each official node where a resting coral shows it: nodes gain "t" (first rest, video s),
-    "views" and "fit" (how well the resting coral sits on the branch, 0..1). Each view's resting coral
-    are matched one-to-one to the official nodes it can show; a node seen filling in both views takes
-    the earlier time when they agree within a few seconds, else the better-fitting view's."""
-    tips = F.branch_tips(alliance)
+    """Fill time of each node where a resting coral shows it: nodes gain "t" (when it came to rest, video
+    s), "views" and "fit" (how well the resting coral sits on the branch, 0..1). Each view's resting coral
+    are matched one-to-one to the nodes it can show; a node seen filling in both views takes the
+    earlier time when they agree within a few seconds, else the better-fitting view's."""
     found: dict[int, list] = {}
     for view, cam in cams.items():
         if not nodes:
             continue
-        P = cam.project([tips[(n["branch"], n["level"])] for n in nodes])
-        dist = np.array([np.linalg.norm(tips[(n["branch"], n["level"])] - cam.centre) for n in nodes])
-        length = np.maximum(cam.f * CORAL_LEN / dist, 14.0)  # px a coral spans at each node
-        # Only coral near these branches can be on them. The detector boxes every coral in the frame
-        # (loading stations, robots, the carpet): clustering all of them took most of a minute a match.
-        pad = 2.0 * MATCH_LEN * float(length.max())
-        x0, y0, x1, y1 = P[:, 0].min() - pad, P[:, 1].min() - pad, P[:, 0].max() + pad, P[:, 1].max() + pad
-        R = rests(obs, lambda x, y, v=view: x0 <= x <= x1 and y0 <= y <= y1 and in_view(v, alliance, x, y))
-        if not R:
-            continue
-        shown = np.array([in_view(view, alliance, *p) for p in P])
-        big = 1e6
-        cost = np.full((len(nodes), len(R)), big)
-        for j, r in enumerate(R):
-            d = np.hypot(P[:, 0] - r["x"], P[:, 1] - r["y"])
-            ok = (d < MATCH_LEN * length) & shown
-            c = (d / (0.5 * length)) ** 2 + (np.log(max(r["size"], 1.0) / length) / 0.35) ** 2
-            cost[ok, j] = c[ok]
-        rows, cols = linear_sum_assignment(cost)
-        for i, j in zip(rows, cols):
-            if cost[i, j] < big:
-                # other official branches of that level this coral fits nearly as well in this view: the
-                # REEF is an open frame, so a front branch and the one behind it can share pixels
-                alts = [k for k in range(len(nodes)) if k != i and nodes[k]["level"] == nodes[i]["level"]
-                        and nodes[k]["phase"] == nodes[i]["phase"] and cost[k, j] < cost[i, j] + ALT_COST]
-                found.setdefault(i, []).append((view, R[j], float(np.exp(-0.5 * cost[i, j])), alts))
+        for i, (r, c, alts) in _view_matches(obs, cam, view, alliance, nodes).items():
+            found.setdefault(i, []).append((view, r, float(np.exp(-0.5 * c)), alts))
     out = []
     for i, n in enumerate(nodes):
         n = dict(n)
@@ -163,8 +235,45 @@ def node_fills(obs: list, cams: dict[str, Camera], alliance: str, nodes: list[di
 def read_reef(obs: list, cams: dict[str, Camera], alliance: str) -> list[dict]:
     """The REEF as vision alone reads it, with no official node map: [{branch, level, t, ...}] for every
     branch a coral was seen coming to rest on and staying. scripts/bench2025.py grades this against FMS."""
-    every = [{"branch": b, "level": level, "phase": "teleop"} for level in LEVELS for b in LETTERS]
+    every = [{"branch": b, "level": level, "phase": "teleop"} for level in LEVELS + ("L1",) for b in LETTERS]
     return [n for n in node_fills(obs, cams, alliance, every) if "t" in n]
+
+
+def trough_fills(obs: list, cams: dict[str, Camera], alliance: str) -> list[dict]:
+    """Coral seen coming to rest in the trough (L1): [{t, face, branch, views}], in time order. A resting
+    coral is a trough coral when it sits on a trough spot and fits no branch better. The trough holds many
+    coral, so several can land on one face; the same coral seen in both views is one arrival."""
+    every = [{"branch": b, "level": level} for level in ("L1",) + LEVELS for b in LETTERS]
+    found = []
+    for view, cam in cams.items():
+        B = coral_boxes(cam, alliance, every)
+        size = np.maximum(np.maximum(B[:, 2], B[:, 3]), MIN_BOX_PX)
+        pad = 2.0 * float(size[:12].max())
+        x0, y0, x1, y1 = B[:12, 0].min() - pad, B[:12, 1].min() - pad, B[:12, 0].max() + pad, B[:12, 1].max() + pad
+        shown = np.array([in_view(view, alliance, b[0], b[1]) for b in B])
+        for r in rests(obs, lambda x, y: x0 <= x <= x1 and y0 <= y <= y1 and in_view(view, alliance, x, y)):
+            c = _fit_cost(B, r)
+            # a coral lies in the trough any way round: only where it is says it is there, not its size
+            c[:12] = (np.hypot(B[:12, 0] - r["x"], B[:12, 1] - r["y"]) / size[:12] / TROUGH_SIGMA) ** 2
+            c[~shown] = np.inf
+            i = int(np.argmin(c))
+            if i < 12 and c[i] < MAX_FIT_COST:
+                found.append({"t": r["t"], "face": i // 2, "branch": LETTERS[i], "views": [view], "fit": float(np.exp(-0.5 * c[i]))})
+    out: list[dict] = []
+    for f in sorted(found, key=lambda f: f["t"]):
+        same = next((o for o in out if o["face"] == f["face"] and f["t"] - o["t"] <= TROUGH_SAME_S
+                     and f["views"][0] not in o["views"]), None)
+        if same is not None:
+            same["views"].append(f["views"][0])
+        else:
+            out.append(f)
+    return out
+
+
+def face_pose(alliance: str, face: int) -> np.ndarray:
+    """Field (x, y) of the centre of a robot scoring on a REEF face (for the trough: anywhere along it)."""
+    a = np.radians(F.face_normal_deg(alliance, face))
+    return np.array(F.REEF_CENTRE[alliance]) + ROBOT_REACH * np.array([np.cos(a), np.sin(a)])
 
 
 def pair_jumps(nodes: list[dict], jumps: list[dict], lag: float = 1.0, window=(-1.5, 6.0)) -> dict[int, int]:
