@@ -57,9 +57,19 @@ scouted robot (an equal three-way split scores 44%):
 | Shares sharpened | 84.2% | 88.0% | 61.2% |
 | Late posts keep the coral's time, new REEF reader | 86.3% | 90.6% | 60.0% |
 | Hidden robots, L1 trough credit | 89.0% | 91.2% | 75.3% |
+| Close-up cameras refined, AUTO branches take AUTO coral | 88.8% | 91.2% | 74.1% |
 
-Nine matches that were never used to tune anything (qm45 to qm53) score 89.1%, and all 50 of their
-plays with a known scorer go to the right robot.
+Fourteen matches that were never used to tune anything (qm45 to qm58) score 88.0% (L2-L4 89.1%, L1
+80.0%), and 88 of their 90 plays with a known scorer go to the right robot. Without the 3D branch
+credit the same matches score 79.5%.
+
+The last row is within noise of the one above it on this measure; those two changes were kept for what
+they fixed directly (camera error at the branches from 15 and 21 px to 6 and 5 px, and the
+user-verified qm1 L4 at 0:53).
+
+Per team, the average coral a match now sits 0.45 from the scouts' average (0.62 before), and the top
+scorers are no longer short: 1323 gets 22.9 a match (scouts 23.2, OPR 24.4; 21.1 before), 581 gets
+15.3 (scouts 16.0; 13.9 before).
 
 **Where a robot is seen at the branch as the coral lands, the call is right about 94% of the time**
 (203 of 216). Where the coral was not timed by vision and the score's own time had to be used, 89%.
